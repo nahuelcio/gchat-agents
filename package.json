@@ -1,0 +1,23 @@
+{
+  "name": "gchat-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Google Chat bridge for a local OpenCode agent",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "smoke": "npm run -s build && node dist/scripts/smoke.js"
+  },
+  "dependencies": {
+    "google-auth-library": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
