@@ -81,6 +81,13 @@ export class SessionStore {
     return write;
   }
 
+  async delete(threadKey: string): Promise<void> {
+    this.entries.delete(threadKey);
+    const write = this.writing.then(() => this.persist());
+    this.writing = write.catch(() => {});
+    return write;
+  }
+
   private writing: Promise<void> = Promise.resolve();
 
   private async persist(): Promise<void> {

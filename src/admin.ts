@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
 import { contextLine, type HandlerDeps } from "./handler.js";
-import { TEAM_PREFIX, teamSend, teamThread, THREAD_ID } from "./team.js";
+import { TEAM_PREFIX, teamDelete, teamSend, teamThread, THREAD_ID } from "./team.js";
 import type { TranscriptStore } from "./transcripts.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
@@ -138,7 +138,8 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       const transcripts = ctx.transcripts;
       if (!deps || !transcripts) throw new HttpError(500, "team chat unavailable");
       if (url === "/api/team/threads" && method === "GET") {
-        return send(res, 200, transcripts.list(TEAM_PREFIX).map(({ key, ...t }) => ({ id: key.slice(TEAM_PREFIX.length), ...t })));
+        const archived = parsed.searchParams.get("archived") === "1";
+        return send(res, 200, transcripts.list(TEAM_PREFIX, { archived }).map(({ key, ...t }) => ({ id: key.slice(TEAM_PREFIX.length), ...t })));
       }
       const thread = method === "GET" ? (parsed.searchParams.get("thread") ?? "") : "";
       if (url === "/api/team/thread" && method === "GET") {
@@ -150,6 +151,15 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
         if (!THREAD_ID.test(body.thread ?? "") || !body.text?.trim()) throw new HttpError(400, "thread and text are required");
         // The owner (loopback) gets every command; guests on the public port are restricted.
         return send(res, 200, await teamSend(deps, transcripts, { thread: body.thread!, text: body.text.trim(), name: (body.name?.trim() || "Owner").slice(0, 40) }));
+      }
+      if ((url === "/api/team/archive" || url === "/api/team/delete") && method === "POST") {
+        const body = await jsonBody<{ thread?: string; archived?: boolean }>(req);
+        if (!THREAD_ID.test(body.thread ?? "")) throw new HttpError(400, "bad thread id");
+        if (url === "/api/team/archive") {
+          await transcripts.archive(`${TEAM_PREFIX}${body.thread}`, body.archived !== false);
+          return send(res, 200, { ok: true });
+        }
+        return send(res, 200, { ok: true, ...(await teamDelete(deps, transcripts, body.thread!)) });
       }
       throw new HttpError(404, "not found");
     }

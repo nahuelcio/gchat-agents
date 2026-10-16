@@ -167,7 +167,10 @@ export interface TeamThreadSummary {
 export interface TeamTransport {
   guest: boolean;
   /** Owner: every thread on the server. Guest: undefined (they keep their own list). */
-  threads?: () => Promise<TeamThreadSummary[]>;
+  threads?: (archived?: boolean) => Promise<TeamThreadSummary[]>;
+  /** Owner only. */
+  archive?: (id: string, archived: boolean) => Promise<unknown>;
+  remove?: (id: string) => Promise<{ branchKept?: string }>;
   thread: (id: string) => Promise<TeamThreadState>;
   send: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
@@ -175,7 +178,9 @@ export interface TeamTransport {
 
 export const ownerTransport: TeamTransport = {
   guest: false,
-  threads: () => call<TeamThreadSummary[]>("/api/team/threads"),
+  threads: (archived = false) => call<TeamThreadSummary[]>(`/api/team/threads${archived ? "?archived=1" : ""}`),
+  archive: (id, archived) => call("/api/team/archive", { thread: id, archived }),
+  remove: (id) => call<{ branchKept?: string }>("/api/team/delete", { thread: id }),
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
   send: (id, text, name) => call("/api/team/send", { thread: id, text, name }),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),

@@ -1,5 +1,6 @@
 import { processMessage, type HandlerDeps } from "./handler.js";
 import type { TranscriptStore } from "./transcripts.js";
+import { threadSlug } from "./workspace.js";
 
 /** Team chat threads live under this key prefix (sessions, transcripts). */
 export const TEAM_PREFIX = "share/";
@@ -45,4 +46,25 @@ export function teamThread(deps: HandlerDeps, transcripts: TranscriptStore, thre
     branch: record?.branch ?? null,
     busy: deps.queue.busy(threadKey),
   };
+}
+
+/**
+ * Deletes a team thread: history, agent session, and its worktree (app stopped).
+ * The branch stays in the repo so no commit is lost. Queued on the thread so a
+ * running turn finishes first instead of re-creating the record afterwards.
+ */
+export function teamDelete(deps: HandlerDeps, transcripts: TranscriptStore, thread: string): Promise<{ branchKept?: string }> {
+  const threadKey = `${TEAM_PREFIX}${thread}`;
+  return deps.queue.run(threadKey, async () => {
+    const record = deps.store.get(threadKey);
+    if (record?.worktree && record.repo && deps.workspaces) {
+      deps.workspaces.down(threadSlug(threadKey));
+      await deps.workspaces.remove(record.repo, record.worktree).catch((err: unknown) => {
+        console.error(`[team ${thread}] worktree removal failed:`, err);
+      });
+    }
+    await deps.store.delete(threadKey);
+    await transcripts.remove(threadKey);
+    return record?.branch ? { branchKept: record.branch } : {};
+  });
 }

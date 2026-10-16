@@ -60,3 +60,15 @@ describe("SessionStore", () => {
     expect(store.get("anything")).toBeUndefined();
   });
 });
+
+describe("SessionStore.delete", () => {
+  it("removes a thread's record and persists it", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const file = join(await mkdtemp(join(tmpdir(), "gchat-store-")), "sessions.json");
+    const store = new SessionStore(file);
+    await store.set("t1", { sessionRef: "ses_1", space: "s", updatedAt: "a" });
+    await store.delete("t1");
+    expect(new SessionStore(file).get("t1")).toBeUndefined();
+  });
+});

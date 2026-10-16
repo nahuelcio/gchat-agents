@@ -45,6 +45,7 @@ interface Props {
 
 export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos }: Props) {
   const [picking, setPicking] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [name, setName] = useState<string>(() => remember("gchat-agents.name", ""));
   const [nameDraft, setNameDraft] = useState("");
   const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("gchat-agents.guest-threads", []) : []));
@@ -65,8 +66,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }, [transport.guest, threads]);
 
   const loadThreads = useCallback(() => {
-    transport.threads?.().then(setThreads, () => {});
-  }, [transport]);
+    transport.threads?.(showArchived).then(setThreads, () => {});
+  }, [transport, showArchived]);
 
   useEffect(() => {
     loadThreads();
@@ -131,6 +132,40 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     setActiveId(id);
     setState({ messages: [], agent: null, busy: false });
     if (repo) void send(`/repo ${repo}`, id);
+  }
+
+  async function archive() {
+    if (!activeId || !transport.archive) return;
+    await transport.archive(activeId, !showArchived).then(
+      () => notify(showArchived ? "Thread restored" : "Thread archived — find it under Archived"),
+      (e: Error) => notify(e.message, true),
+    );
+    setActiveId(undefined);
+    setState(undefined);
+    loadThreads();
+  }
+
+  async function remove() {
+    if (!activeId) return;
+    if (!transport.remove) {
+      // Guests only forget it locally; the thread stays for everyone else.
+      setThreads((list) => list.filter((t) => t.id !== activeId));
+      setActiveId(undefined);
+      setState(undefined);
+      return;
+    }
+    const hasRepo = Boolean(state?.repo);
+    const ok = confirm(
+      `Delete this thread for everyone? Its history and agent session are removed${hasRepo ? `, and its worktree too (branch ${state?.branch} stays in the repo)` : ""}. This cannot be undone.`,
+    );
+    if (!ok) return;
+    await transport.remove(activeId).then(
+      (r) => notify(r.branchKept ? `Thread deleted; branch ${r.branchKept} kept` : "Thread deleted"),
+      (e: Error) => notify(e.message, true),
+    );
+    setActiveId(undefined);
+    setState(undefined);
+    loadThreads();
   }
 
   function copyLink() {
@@ -201,8 +236,18 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           </div>
         )}
         {shareSlot}
+        {transport.threads && (
+          <div className="tabs" role="tablist" aria-label="Thread list">
+            <button role="tab" aria-selected={!showArchived} className={showArchived ? "" : "on"} onClick={() => { setShowArchived(false); setActiveId(undefined); }}>
+              Active
+            </button>
+            <button role="tab" aria-selected={showArchived} className={showArchived ? "on" : ""} onClick={() => { setShowArchived(true); setActiveId(undefined); }}>
+              Archived
+            </button>
+          </div>
+        )}
         <div className="play-list">
-          {threads.length === 0 && <p className="muted small pad">No threads yet. Start one with +.</p>}
+          {threads.length === 0 && <p className="muted small pad">{showArchived ? "No archived threads." : "No threads yet. Start one with +."}</p>}
           {threads.map((t) => (
             <button key={t.id} className={t.id === activeId ? "active" : ""} onClick={() => setActiveId(t.id)}>
               <span className="strong">{t.title}</span>
@@ -235,11 +280,23 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               </select>
             </label>
           )}
-          {activeId && linkFor && (
-            <button className="btn small push" onClick={copyLink}>
-              Copy link
-            </button>
-          )}
+          <span className="head-actions push">
+            {activeId && linkFor && (
+              <button className="btn small" onClick={copyLink}>
+                Copy link
+              </button>
+            )}
+            {activeId && transport.archive && (
+              <button className="btn small" onClick={() => void archive()} disabled={working}>
+                {showArchived ? "Restore" : "Archive"}
+              </button>
+            )}
+            {activeId && (
+              <button className="btn small danger" onClick={() => void remove()} disabled={working}>
+                {transport.remove ? "Delete" : "Hide"}
+              </button>
+            )}
+          </span>
         </header>
 
         <div className="messages">

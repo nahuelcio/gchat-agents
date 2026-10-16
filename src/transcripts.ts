@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface TranscriptMessage {
@@ -18,11 +18,35 @@ export class TranscriptStore {
   private max: number;
   private cache = new Map<string, TranscriptMessage[]>();
   private writing = new Map<string, Promise<void>>();
+  /** Archived thread keys: hidden from the list, history kept (deeplinks still open them). */
+  private archived: Set<string>;
 
   constructor(dir: string, max = 500) {
     this.dir = dir;
     this.max = max;
     mkdirSync(dir, { recursive: true });
+    try {
+      this.archived = new Set(JSON.parse(readFileSync(join(dir, "archived.json"), "utf8")) as string[]);
+    } catch {
+      this.archived = new Set();
+    }
+  }
+
+  async archive(threadKey: string, archived: boolean): Promise<void> {
+    if (archived) this.archived.add(threadKey);
+    else this.archived.delete(threadKey);
+    const file = join(this.dir, "archived.json");
+    await writeFile(`${file}.tmp`, JSON.stringify([...this.archived]), "utf8");
+    await rename(`${file}.tmp`, file);
+  }
+
+  /** Deletes the thread's history for good. */
+  async remove(threadKey: string): Promise<void> {
+    await (this.writing.get(threadKey) ?? Promise.resolve()); // let a pending write land first
+    this.cache.delete(threadKey);
+    this.writing.delete(threadKey);
+    await unlink(this.fileFor(threadKey)).catch(() => {});
+    if (this.archived.has(threadKey)) await this.archive(threadKey, false);
   }
 
   /** Thread keys become flat, safe file names. */
@@ -31,7 +55,7 @@ export class TranscriptStore {
   }
 
   /** Threads whose key starts with `prefix` (e.g. "share/"), newest activity first. */
-  list(prefix: string): { key: string; title: string; updatedAt?: string; count: number }[] {
+  list(prefix: string, opts: { archived?: boolean } = {}): { key: string; title: string; updatedAt?: string; count: number }[] {
     const filePrefix = prefix.replace(/[^\w-]+/g, "_");
     let files: string[] = [];
     try {
@@ -40,8 +64,9 @@ export class TranscriptStore {
       // no transcripts yet
     }
     return files
-      .map((f) => {
-        const key = prefix + f.slice(filePrefix.length, -".json".length);
+      .map((f) => prefix + f.slice(filePrefix.length, -".json".length))
+      .filter((key) => this.archived.has(key) === Boolean(opts.archived))
+      .map((key) => {
         const messages = this.get(key);
         const first = messages.find((m) => !m.bot)?.text ?? "New thread";
         return { key, title: first.slice(0, 60), updatedAt: messages.at(-1)?.at, count: messages.length };

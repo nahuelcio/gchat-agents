@@ -28,3 +28,24 @@ describe("TranscriptStore", () => {
     expect(store.fileFor("../../evil").startsWith(dir)).toBe(true);
   });
 });
+
+describe("TranscriptStore archive and delete", () => {
+  it("archives out of the list, restores, and deletes for good", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "gchat-tx-"));
+    const store = new TranscriptStore(dir);
+    await store.append("share/aaaa1111", [{ author: "A", text: "first", bot: false }]);
+    await store.append("share/bbbb2222", [{ author: "B", text: "second", bot: false }]);
+
+    await store.archive("share/aaaa1111", true);
+    expect(store.list("share/").map((t) => t.key)).toEqual(["share/bbbb2222"]);
+    expect(store.list("share/", { archived: true }).map((t) => t.key)).toEqual(["share/aaaa1111"]);
+    expect(new TranscriptStore(dir).get("share/aaaa1111")[0]?.text).toBe("first"); // kept on disk
+
+    await store.archive("share/aaaa1111", false);
+    expect(store.list("share/").map((t) => t.key).sort()).toEqual(["share/aaaa1111", "share/bbbb2222"]);
+
+    await store.remove("share/bbbb2222");
+    expect(store.list("share/").map((t) => t.key)).toEqual(["share/aaaa1111"]);
+    expect(new TranscriptStore(dir).get("share/bbbb2222")).toEqual([]);
+  });
+});

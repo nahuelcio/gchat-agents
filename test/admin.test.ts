@@ -242,4 +242,32 @@ describe("admin server", () => {
     expect((await post("/test", { space: "spaces/AAA" })).status).toBe(200);
     expect(posted).toEqual(["spaces/AAA"]);
   });
+
+  it("archives, restores and deletes team threads (history and session gone, worktree removed)", async () => {
+    const { TranscriptStore } = await import("../src/transcripts.js");
+    ctx.transcripts = new TranscriptStore(join(dir, "transcripts"));
+    ctx.handler = {
+      verifier: { verify: async () => {} },
+      driver: new EchoDriver(),
+      chat: { postMessage: async () => {} },
+      store: ctx.store!,
+      queue: new TurnQueue(),
+      config: { allowedSpaces: [], workdir: dir },
+    };
+    const post = (path: string, body: unknown) =>
+      fetch(`${base}/api/team/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const list = async (archived = false) =>
+      ((await (await fetch(`${base}/api/team/threads${archived ? "?archived=1" : ""}`)).json()) as { id: string }[]).map((t) => t.id);
+
+    await post("send", { thread: "keep-0001", text: "a", name: "N" });
+    await post("send", { thread: "gone-0001", text: "b", name: "N" });
+    await post("archive", { thread: "keep-0001", archived: true });
+    expect(await list()).toEqual(["gone-0001"]);
+    expect(await list(true)).toEqual(["keep-0001"]);
+    await post("archive", { thread: "keep-0001", archived: false });
+
+    expect((await post("delete", { thread: "gone-0001" })).status).toBe(200);
+    expect(await list()).toEqual(["keep-0001"]);
+    expect(ctx.store!.get("share/gone-0001")).toBeUndefined();
+  });
 });
