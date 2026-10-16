@@ -281,3 +281,8 @@ td { padding: 14px 20px; border-top: 1px solid var(--line-2); vertical-align: mi
 .name-gate .card { width: min(420px, 100%); }
 .name-gate h1 { font-size: 22px; }
 .name-gate p { margin: 0; }
+
+.repo-pick { margin: 0 8px 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--accent); background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
+.repo-pick > span { padding: 2px 4px 4px; }
+.repo-pick button { text-align: left; padding: 8px 10px; border-radius: 8px; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; }
+.repo-pick button:hover { background: var(--accent-soft); }

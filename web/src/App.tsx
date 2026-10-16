@@ -134,9 +134,10 @@ function OwnerApp() {
           <TeamChat
             transport={ownerTransport}
             initialThread={hashThread()}
-            linkFor={(id) => (shareLink ? `${shareLink}&thread=${id}` : undefined)}
+            linkFor={shareLink ? (id) => `${shareLink}&thread=${id}` : undefined}
             notify={notify}
             shareSlot={<SharePanel link={shareLink} setLink={setShareLink} notify={notify} />}
+            repos={Object.entries(settings.repos).map(([name, r]) => ({ name, ...(r.base && { base: r.base }) }))}
           />
         )}
         {props && view === "schedules" && <Schedules {...props} />}

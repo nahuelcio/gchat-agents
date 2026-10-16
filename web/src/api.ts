@@ -152,6 +152,8 @@ export interface TeamMessage {
 export interface TeamThreadState {
   messages: TeamMessage[];
   agent: "opencode" | "claude" | null;
+  repo?: string | null;
+  branch?: string | null;
   busy: boolean;
 }
 

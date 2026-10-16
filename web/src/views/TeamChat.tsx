@@ -39,9 +39,12 @@ interface Props {
   notify: (text: string, error?: boolean) => void;
   /** Owner only: the share panel. */
   shareSlot?: React.ReactNode;
+  /** Owner only: repos a new thread can start in. */
+  repos?: { name: string; base?: string }[];
 }
 
-export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot }: Props) {
+export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos }: Props) {
+  const [picking, setPicking] = useState(false);
   const [name, setName] = useState<string>(() => remember("gchat-agents.name", ""));
   const [nameDraft, setNameDraft] = useState("");
   const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("gchat-agents.guest-threads", []) : []));
@@ -103,15 +106,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot 
     bottom.current?.scrollIntoView({ block: "end" });
   }, [state?.messages.length, sending]);
 
-  async function send(text = draft) {
+  async function send(text = draft, threadId = activeId) {
     const value = text.trim();
-    if (!value || sending || !activeId) return;
+    if (!value || sending || !threadId) return;
     setDraft("");
     setSending(true);
     setState((s) => (s ? { ...s, messages: [...s.messages, { author: name, text: value, bot: false }], busy: true } : s));
     try {
-      await transport.send(activeId, value, name);
-      setState(await transport.thread(activeId));
+      await transport.send(threadId, value, name);
+      setState(await transport.thread(threadId));
       loadThreads();
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), true);
@@ -120,11 +123,14 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot 
     }
   }
 
-  function newThread() {
+  /** Owners pick where the thread works first; guests (no repos) start chat-only. */
+  function newThread(repo?: string) {
     const id = newId();
-    setThreads((list) => [{ id, title: "New thread", count: 0 }, ...list]);
+    setPicking(false);
+    setThreads((list) => [{ id, title: repo ? `Work in ${repo}` : "New thread", count: 0 }, ...list]);
     setActiveId(id);
     setState({ messages: [], agent: null, busy: false });
+    if (repo) void send(`/repo ${repo}`, id);
   }
 
   function copyLink() {
@@ -167,7 +173,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot 
       <aside className="play-threads" aria-label="Threads">
         <div className="play-threads-head">
           <h1>Team chat</h1>
-          <button className="btn icon" onClick={newThread} aria-label="New thread">
+          <button className="btn icon" onClick={() => (repos?.length ? setPicking(!picking) : newThread())} aria-label="New thread" aria-expanded={picking}>
             <Icon>
               <path d="M12 5v14M5 12h14" />
             </Icon>
@@ -179,6 +185,21 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot 
             Change name
           </button>
         </p>
+        {picking && (
+          <div className="repo-pick" role="group" aria-label="Where should the new thread work?">
+            <span className="small strong">Where should it work?</span>
+            <button onClick={() => newThread()}>
+              <span className="strong">Chat only</span>
+              <span className="muted small">No repo, an empty workspace</span>
+            </button>
+            {repos?.map((r) => (
+              <button key={r.name} onClick={() => newThread(r.name)}>
+                <span className="strong">{r.name}</span>
+                <span className="muted small">New worktree from {r.base ?? "HEAD"}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {shareSlot}
         <div className="play-list">
           {threads.length === 0 && <p className="muted small pad">No threads yet. Start one with +.</p>}
@@ -196,6 +217,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot 
       <section className="play-chat" aria-label="Conversation">
         <header className="play-head">
           <span className="strong title">{active?.title ?? "Team chat"}</span>
+          {state?.repo && <code className="tag">{state.repo} · {state.branch}</code>}
           {activeId && agents.length > 1 && (
             <label className="agent-pick">
               <span className="sr-only">Agent for this thread</span>
