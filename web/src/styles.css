@@ -200,7 +200,7 @@ td { padding: 14px 20px; border-top: 1px solid var(--line-2); vertical-align: mi
 .add-row { align-items: center; }
 .add-row select:first-child { flex: 0 1 200px; }
 
-/* playground */
+/* chat layout (team chat) */
 .playground { display: flex; flex-wrap: wrap; margin: -32px -40px -64px; min-height: calc(100vh); }
 .play-threads { flex: 1 1 260px; max-width: 280px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 8px; padding: 20px 8px; }
 .play-threads-head { display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }
@@ -267,3 +267,17 @@ td { padding: 14px 20px; border-top: 1px solid var(--line-2); vertical-align: mi
 .copy { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .copy code { word-break: break-all; }
 @media (max-width: 640px) { .fields { grid-template-columns: 1fr; } .fields dd { margin-bottom: 6px; } }
+
+/* team chat */
+.playground.standalone { margin: 0; min-height: 100vh; }
+.playground.standalone .play-chat { height: 100vh; }
+.play-head .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+.agent-pick select { padding: 4px 8px; font-size: 13px; }
+.linklike { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.pad { padding: 8px 12px; margin: 0; }
+.share-panel { margin: 4px 8px 8px; padding: 12px; border-radius: 10px; background: var(--side); border: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 8px; }
+.share-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.name-gate { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.name-gate .card { width: min(420px, 100%); }
+.name-gate h1 { font-size: 22px; }
+.name-gate p { margin: 0; }

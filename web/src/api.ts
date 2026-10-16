@@ -97,8 +97,8 @@ export const api = {
   agents: () => call<Agent[]>("/api/agents"),
   models: () => call<string[]>("/api/agents/opencode/models"),
   health: () => call<Health>("/api/health"),
-  playground: (thread: string, text: string) =>
-    call<{ ok: boolean; replies: string[]; context?: string }>("/api/playground", { thread, text }),
+  share: () => call<{ link: string }>("/api/share"),
+  rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
   schedules: () => call<Job[]>("/api/schedules"),
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string }) => call<Job[]>("/api/schedules", job),
   updateSchedule: (id: string, patch: { enabled?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
@@ -138,4 +138,62 @@ export function duration(sec: number): string {
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+}
+
+// --- team chat: one UI, two transports (owner on the control plane, guests on the public link) ---
+
+export interface TeamMessage {
+  author: string;
+  text: string;
+  bot: boolean;
+  at?: string;
+}
+
+export interface TeamThreadState {
+  messages: TeamMessage[];
+  agent: "opencode" | "claude" | null;
+  busy: boolean;
+}
+
+export interface TeamThreadSummary {
+  id: string;
+  title: string;
+  updatedAt?: string;
+  count: number;
+}
+
+export interface TeamTransport {
+  guest: boolean;
+  /** Owner: every thread on the server. Guest: undefined (they keep their own list). */
+  threads?: () => Promise<TeamThreadSummary[]>;
+  thread: (id: string) => Promise<TeamThreadState>;
+  send: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
+  agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
+}
+
+export const ownerTransport: TeamTransport = {
+  guest: false,
+  threads: () => call<TeamThreadSummary[]>("/api/team/threads"),
+  thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
+  send: (id, text, name) => call("/api/team/send", { thread: id, text, name }),
+  agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
+};
+
+export function guestTransport(token: string): TeamTransport {
+  const req = async <T,>(path: string, body?: unknown): Promise<T> => {
+    const res = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  };
+  return {
+    guest: true,
+    thread: (id) => req<TeamThreadState>(`/play/api/thread?thread=${encodeURIComponent(id)}`),
+    send: (id, text, name) => req("/play/api/send", { thread: id, text, name }),
+    agents: () => req("/play/api/agents"),
+  };
 }

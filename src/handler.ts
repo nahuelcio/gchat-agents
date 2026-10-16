@@ -61,14 +61,14 @@ export interface HandleResult {
   done: Promise<void>;
 }
 
-/** One message to process for a thread, from Chat, the playground or a schedule. */
+/** One message to process for a thread, from Google Chat, the team chat or a schedule. */
 export interface TurnRequest {
   threadKey: string;
   spaceName: string;
   text: string;
   sender?: string;
   reply: (text: string) => Promise<void>;
-  /** Restrict which /commands may run (shared playground); omitted = all. */
+  /** Restrict which /commands may run (team chat guests); omitted = all. */
   allowCommands?: ReadonlySet<string>;
 }
 

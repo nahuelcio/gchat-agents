@@ -1,14 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { DetectedAgent } from "./agents.js";
-import { handleEvent, processMessage, type ChatEvent, type HandlerDeps } from "./handler.js";
+import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
 import { GUEST_COMMANDS, type ShareToken } from "./share.js";
 import { serveStatic } from "./static.js";
+import { teamSend, teamThread, THREAD_ID } from "./team.js";
+import type { TranscriptStore } from "./transcripts.js";
 
-/** The shared playground: a token-gated slice of the bridge on the public port. */
+/** Team chat for guests: a token-gated slice of the bridge on the public port. */
 export interface ShareOptions {
   token: ShareToken;
   webDir?: string;
   agents: () => Promise<DetectedAgent[]>;
+  transcripts: TranscriptStore;
 }
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -53,6 +56,15 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     send(res, 200, agents.filter((a) => a.supported && a.installed).map(({ id, name, ready }) => ({ id, name, ready })));
     return;
   }
+  if (req.method === "GET" && url === "/play/api/thread") {
+    const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
+    if (!THREAD_ID.test(thread)) {
+      send(res, 400, { error: "bad thread id" });
+      return;
+    }
+    send(res, 200, teamThread(deps, share.transcripts, thread));
+    return;
+  }
   if (req.method === "POST" && url === "/play/api/send") {
     let body: { thread?: string; text?: string; name?: string };
     try {
@@ -64,16 +76,11 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     const thread = body.thread ?? "";
     const text = body.text?.trim() ?? "";
     const name = (body.name?.trim() || "Guest").slice(0, 40);
-    if (!/^[\w-]{8,40}$/.test(thread) || !text) {
+    if (!THREAD_ID.test(thread) || !text) {
       send(res, 400, { error: "thread and text are required" });
       return;
     }
-    const replies: string[] = [];
-    const { ok } = await processMessage(
-      { threadKey: `share/${thread}`, spaceName: "shared", text, sender: name, reply: async (r) => void replies.push(r), allowCommands: GUEST_COMMANDS },
-      deps,
-    );
-    send(res, 200, { ok, replies });
+    send(res, 200, await teamSend(deps, share.transcripts, { thread, text, name, allowCommands: GUEST_COMMANDS }));
     return;
   }
   send(res, 404, { error: "not found" });

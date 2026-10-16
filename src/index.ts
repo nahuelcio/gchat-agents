@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,11 +20,15 @@ import { GoogleTokenVerifier } from "./verify.js";
 import { threadSlug, Workspaces } from "./workspace.js";
 import { ensureTunnel } from "./tunnel.js";
 import { ShareToken } from "./share.js";
+import { TranscriptStore } from "./transcripts.js";
 
 const config = loadConfig();
 
 mkdirSync(config.dataDir, { recursive: true });
 mkdirSync(config.workdir, { recursive: true });
+// Its own git root: agents walk up to the nearest .git to pick their project (and AGENTS.md);
+// without this, a workdir inside this checkout would make the bridge itself the agent's project.
+if (!existsSync(join(config.workdir, ".git"))) execFileSync("git", ["init", "-q", config.workdir]);
 
 // Google signs each event for the public endpoint URL; with the tunnel on, that URL is known only now.
 let publicUrl: string | undefined;
@@ -87,9 +92,9 @@ async function runJob(job: Job): Promise<boolean> {
       spaceName: job.space,
       text: job.prompt,
       sender: `Schedule "${job.name}"`,
-      // Playground-made jobs have no Chat space to post to: the run still happens and is recorded.
+      // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
       reply: async (text) => {
-        if (job.space !== "playground") await deps.chat.postMessage(job.space, { text, thread: { threadKey: `schedule-${job.id}` } });
+        if (job.space.startsWith("spaces/")) await deps.chat.postMessage(job.space, { text, thread: { threadKey: `schedule-${job.id}` } });
       },
     },
     deps,
@@ -110,12 +115,13 @@ settings.onChange((s) => {
 const shareToken = new ShareToken(join(config.dataDir, "share-token"));
 const webDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
 const listAgents = () => detectAgents({ opencode: config.opencodeBin, claude: config.claudeBin });
-const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents });
+const transcripts = new TranscriptStore(join(config.dataDir, "transcripts"));
+const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents, transcripts });
 server.listen(config.port, () => {
   console.info(`gchat-agents listening on :${config.port} (workdir: ${config.workdir})`);
   console.info(`allowlist: ${deps.config.allowedSpaces.join(", ") || "EMPTY — set spaces in the control plane"}`);
   if (!google.status().configured) {
-    console.warn("Google Chat not connected: replies are off. Connect it in the control plane (Settings › Google Chat); the playground works meanwhile.");
+    console.warn("Google Chat not connected: replies are off. Connect it in the control plane (Settings › Google Chat); the team chat works meanwhile.");
   }
 });
 
@@ -135,6 +141,7 @@ const admin = createAdminServer(settings, {
   google,
   webDir,
   shareToken,
+  transcripts,
 });
 admin.listen(config.adminPort, "127.0.0.1", () => {
   console.info(`control plane: http://127.0.0.1:${config.adminPort}`);

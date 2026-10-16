@@ -1,11 +1,11 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
-/** Commands a shared-playground guest may run: chat and session only, nothing that touches this machine. */
+/** Commands a team chat guest may run: chat and session only, nothing that touches this machine. */
 export const GUEST_COMMANDS: ReadonlySet<string> = new Set(["help", "context", "compact", "clear", "model", "agent"]);
 
 /**
- * Access token for the shared playground (public port). Created on first start,
+ * Access token for the team chat link (public port). Created on first start,
  * kept in DATA_DIR/share-token (0600); rotating it cuts off every old link.
  */
 export class ShareToken {

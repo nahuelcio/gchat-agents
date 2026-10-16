@@ -2,7 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
-import { contextLine, processMessage, type HandlerDeps } from "./handler.js";
+import { contextLine, type HandlerDeps } from "./handler.js";
+import { TEAM_PREFIX, teamSend, teamThread, THREAD_ID } from "./team.js";
+import type { TranscriptStore } from "./transcripts.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
 import type { ShareToken } from "./share.js";
@@ -26,7 +28,7 @@ export interface AdminContext {
   /** Installed coding agents and the models opencode can use (slow: shelled out, cached here). */
   detectAgents?: () => Promise<DetectedAgent[]>;
   opencodeModels?: () => Promise<string[]>;
-  /** The bridge's handler deps: the playground runs real turns through them. */
+  /** The bridge's handler deps: the team chat runs real turns through them. */
   handler?: HandlerDeps;
   schedules?: ScheduleStore;
   scheduler?: Scheduler;
@@ -35,6 +37,7 @@ export interface AdminContext {
   publicUrl?: string;
   google?: GoogleConnection;
   shareToken?: ShareToken;
+  transcripts?: TranscriptStore;
 }
 
 const CACHE_MS = 60_000;
@@ -130,21 +133,25 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return send(res, 200, threads);
     }
-    if (url === "/api/playground" && method === "POST") {
+    if (url.startsWith("/api/team/")) {
       const deps = ctx.handler;
-      if (!deps) throw new HttpError(500, "playground unavailable");
-      const { thread, text } = await jsonBody<{ thread: string; text: string }>(req);
-      if (!/^[\w-]{1,40}$/.test(thread ?? "") || !text?.trim()) throw new HttpError(400, "thread and text are required");
-      const threadKey = `playground/${thread}`;
-      const replies: string[] = [];
-      // Same path as a Chat message, minus Google: commands, worktrees, sessions, footer.
-      const { ok } = await processMessage(
-        { threadKey, spaceName: "playground", text: text.trim(), sender: "Playground", reply: async (r) => void replies.push(r) },
-        deps,
-      );
-      const record = deps.store.get(threadKey);
-      const options = deps.options?.();
-      return send(res, 200, { ok, replies, context: record && options ? contextLine(record, options).slice(2) : undefined });
+      const transcripts = ctx.transcripts;
+      if (!deps || !transcripts) throw new HttpError(500, "team chat unavailable");
+      if (url === "/api/team/threads" && method === "GET") {
+        return send(res, 200, transcripts.list(TEAM_PREFIX).map(({ key, ...t }) => ({ id: key.slice(TEAM_PREFIX.length), ...t })));
+      }
+      const thread = method === "GET" ? (parsed.searchParams.get("thread") ?? "") : "";
+      if (url === "/api/team/thread" && method === "GET") {
+        if (!THREAD_ID.test(thread)) throw new HttpError(400, "bad thread id");
+        return send(res, 200, teamThread(deps, transcripts, thread));
+      }
+      if (url === "/api/team/send" && method === "POST") {
+        const body = await jsonBody<{ thread?: string; text?: string; name?: string }>(req);
+        if (!THREAD_ID.test(body.thread ?? "") || !body.text?.trim()) throw new HttpError(400, "thread and text are required");
+        // The owner (loopback) gets every command; guests on the public port are restricted.
+        return send(res, 200, await teamSend(deps, transcripts, { thread: body.thread!, text: body.text.trim(), name: (body.name?.trim() || "Owner").slice(0, 40) }));
+      }
+      throw new HttpError(404, "not found");
     }
 
     if (url.startsWith("/api/google")) {

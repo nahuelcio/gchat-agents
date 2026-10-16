@@ -10,6 +10,7 @@ import { TurnQueue } from "../src/queue.js";
 import { createHttpServer } from "../src/server.js";
 import { ShareToken } from "../src/share.js";
 import { SessionStore } from "../src/store.js";
+import { TranscriptStore } from "../src/transcripts.js";
 
 let close: (() => Promise<void>) | undefined;
 afterEach(async () => close?.());
@@ -48,6 +49,7 @@ describe("shared playground on the public port", () => {
       token,
       webDir: join(dir, "web"),
       agents: async () => [{ id: "opencode", name: "OpenCode", installed: true, supported: true, ready: true }],
+      transcripts: new TranscriptStore(join(dir, "transcripts")),
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -82,5 +84,22 @@ describe("shared playground on the public port", () => {
   it("does not expose the control plane API on the public port", async () => {
     const { base } = await start();
     expect((await fetch(`${base}/api/settings`)).status).toBe(404);
+  });
+
+  it("keeps the thread's history so a deeplink shows the whole conversation", async () => {
+    const { base, token, send } = await start();
+    await send({ thread: "guest-a1b2", text: "hi", name: "Ana" });
+    await send({ thread: "guest-a1b2", text: "and me", name: "Luis" });
+    const res = (await (await fetch(`${base}/play/api/thread?thread=guest-a1b2`, { headers: { authorization: `Bearer ${token.value()}` } })).json()) as {
+      messages: { author: string; text: string }[];
+      busy: boolean;
+    };
+    expect(res.messages.map((m) => `${m.author}: ${m.text}`)).toEqual([
+      "Ana: hi",
+      "gchat-agents: Echo: Ana: hi",
+      "Luis: and me",
+      "gchat-agents: Echo: Luis: and me",
+    ]);
+    expect(res.busy).toBe(false);
   });
 });

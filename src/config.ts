@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { RepoConfig } from "./workspace.js";
@@ -8,7 +9,7 @@ export interface Config {
   tokenAudience?: string;
   /** Expose the bridge through opentunnel on startup (default on). */
   tunnel: boolean;
-  /** Omitted = no Chat replies (playground, schedules to "playground" and the control plane still work). */
+  /** Omitted = no Chat replies (team chat and the control plane still work). */
   serviceAccountJson?: string;
   allowedSpaces: string[];
   agentDriver: AgentDriverKind;
@@ -55,8 +56,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     serviceAccountJson: env["GOOGLE_SERVICE_ACCOUNT_JSON"]?.trim() || undefined,
     allowedSpaces,
     agentDriver: driverKind(env["AGENT_DRIVER"]?.trim() || "opencode"),
-    // Never the bridge's own checkout: a chat message must not be able to edit the service running it.
-    workdir: env["AGENT_WORKDIR"]?.trim() || join(env["DATA_DIR"]?.trim() || "./data", "workspace"),
+    // Outside this checkout: agents must neither edit the bridge nor take it as their project.
+    workdir: env["AGENT_WORKDIR"]?.trim() || join(env["XDG_DATA_HOME"]?.trim() || join(homedir(), ".local", "share"), "gchat-agents", "workspace"),
     opencodeBin: env["OPENCODE_BIN"]?.trim() || "opencode",
     opencodeModel,
     claudeBin: env["CLAUDE_BIN"]?.trim() || "claude",

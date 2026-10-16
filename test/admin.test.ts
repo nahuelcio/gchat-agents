@@ -174,7 +174,9 @@ describe("admin server", () => {
     expect(calls).toBe(2);
   });
 
-  it("runs playground messages through the real handler: commands and agent turns", async () => {
+  it("team chat: owner sends with every command, history is listed and survives a new store", async () => {
+    const { TranscriptStore } = await import("../src/transcripts.js");
+    ctx.transcripts = new TranscriptStore(join(dir, "transcripts"));
     ctx.handler = {
       verifier: { verify: async () => {} },
       driver: new EchoDriver(),
@@ -185,12 +187,16 @@ describe("admin server", () => {
       options: () => ({ contextFooter: "never", autoCompactAt: 0, defaultModel: "m1" }),
     };
     const post = (text: string) =>
-      fetch(`${base}/api/playground`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread: "p1", text }) }).then((r) => r.json());
-    expect(await post("hello")).toMatchObject({ ok: true, replies: ["Echo: Playground: hello"] });
+      fetch(`${base}/api/team/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread: "team-0001", text, name: "Nahuel" }) }).then((r) => r.json());
+    expect(await post("hello")).toMatchObject({ ok: true, replies: ["Echo: Nahuel: hello"] });
     const help = (await post("/help")) as { replies: string[] };
-    expect(help.replies[0]).toContain("/compact");
-    const ctxRes = (await post("/context")) as { context: string };
-    expect(ctxRes.context).toContain("m1 · chat only");
+    expect(help.replies[0]).toContain("/repo"); // owner is not restricted
+
+    ctx.transcripts = new TranscriptStore(join(dir, "transcripts")); // like a restart
+    const threads = (await (await fetch(`${base}/api/team/threads`)).json()) as { id: string; title: string; count: number }[];
+    expect(threads).toEqual([expect.objectContaining({ id: "team-0001", title: "hello", count: 4 })]);
+    const thread = (await (await fetch(`${base}/api/team/thread?thread=team-0001`)).json()) as { messages: { text: string }[] };
+    expect(thread.messages[1]?.text).toBe("Echo: Nahuel: hello");
   });
 
   it("creates, pauses, runs and deletes schedules", async () => {
