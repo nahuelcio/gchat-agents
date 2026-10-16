@@ -29,4 +29,14 @@ describe("ConfiguredDriver", () => {
     await settings.update({ models: { claude: "m2" } });
     expect((await driver.runTurn(input)).reply).toBe("m2");
   });
+
+  it("uses the thread's agent override instead of the configured one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "gchat-cfg-"));
+    const fake = join(dir, "fake-claude");
+    await writeFile(fake, `#!/bin/sh\nprintf '{"type":"result","result":"from claude","session_id":"x","is_error":false}'\n`);
+    await chmod(fake, 0o755);
+    const settings = new SettingsStore(join(dir, "config.json"), { agentDriver: "opencode", models: {}, repos: {}, allowedSpaces: [] });
+    const driver = new ConfiguredDriver(settings, { opencodeBin: "/nonexistent/opencode", claudeBin: fake, timeoutMs: 5000 });
+    expect((await driver.runTurn({ threadKey: "t", text: "hi", workdir: dir, driver: "claude" })).reply).toBe("from claude");
+  });
 });

@@ -35,6 +35,9 @@ export interface TurnOptions {
   autoCompactAt: number;
   /** Default model label for the footer when the thread has no override. */
   defaultModel?: string;
+  /** Configured agent and per-agent default models, to label threads that switched with /agent. */
+  defaultDriver?: "opencode" | "claude";
+  defaultModels?: { opencode?: string; claude?: string };
 }
 
 export interface HandlerDeps {
@@ -65,6 +68,8 @@ export interface TurnRequest {
   text: string;
   sender?: string;
   reply: (text: string) => Promise<void>;
+  /** Restrict which /commands may run (shared playground); omitted = all. */
+  allowCommands?: ReadonlySet<string>;
 }
 
 const REPLY_LIMIT = 3800;
@@ -87,6 +92,7 @@ const HELP = [
   "/compact — summarize the session and continue in a fresh one",
   "/clear — start a fresh session (worktree untouched)",
   "/model <id>|default — model for this thread only",
+  "/agent opencode|claude|default — agent for this thread only",
   "",
   "Schedules:",
   "/schedule <m h dom mon dow> <prompt> — run a prompt on a cron, results in this space",
@@ -216,6 +222,7 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
       text,
       workdir: record?.worktree ?? deps.config.workdir,
       model: record?.model,
+      driver: record?.driver,
     });
   } catch (err) {
     console.error(`[turn ${threadKey}] failed:`, err);
@@ -277,8 +284,14 @@ function formatTokens(n: number): string {
 }
 
 /** "glm-5.3-flash · yFlow@chat/abc · context 62% (79k/128k)" — `~` marks an estimate. */
+function modelLabel(r: SessionRecord, options: TurnOptions): string {
+  const driver = r.driver ?? options.defaultDriver;
+  const model = r.model ?? (driver && options.defaultModels?.[driver]) ?? options.defaultModel ?? "default model";
+  return driver ? `${driver} · ${model}` : model;
+}
+
 export function contextLine(r: SessionRecord, options: TurnOptions): string {
-  const model = r.model ?? options.defaultModel ?? "default model";
+  const model = modelLabel(r, options);
   const where = r.repo ? `${r.repo}@${r.branch}` : "chat only";
   const pct = contextPercent(r);
   const tokens = r.contextTokens ?? 0;
@@ -302,6 +315,7 @@ async function compact(threadKey: string, spaceName: string, deps: HandlerDeps):
     text: COMPACT_PROMPT,
     workdir: record.worktree ?? deps.config.workdir,
     model: record.model,
+    driver: record.driver,
   });
   const after = Math.ceil(result.reply.length / 4);
   await deps.store.update(threadKey, spaceName, {
@@ -319,6 +333,9 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
   const [command = "", arg, ...rest] = req.text.slice(1).split(/\s+/);
   const record = deps.store.get(threadKey);
   const options = deps.options?.() ?? DEFAULT_OPTIONS;
+  if (req.allowCommands && !req.allowCommands.has(command)) {
+    return `/${command} is not available here. Available: ${[...req.allowCommands].map((c) => `/${c}`).join(" ")}`;
+  }
 
   switch (command) {
     case "help":
@@ -331,10 +348,17 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
     case "compact":
       return compact(threadKey, spaceName, deps);
     case "model": {
-      if (!arg) return `This thread uses ${record?.model ?? options.defaultModel ?? "the default model"}. /model <id> or /model default.`;
+      if (!arg) return `This thread uses ${record ? modelLabel(record, options) : (options.defaultModel ?? "the default model")}. /model <id> or /model default.`;
       const model = arg === "default" ? undefined : arg;
       await deps.store.update(threadKey, spaceName, { model });
       return model ? `This thread now uses ${model}. Other threads keep the default.` : "This thread is back on the default model.";
+    }
+    case "agent": {
+      if (arg !== "opencode" && arg !== "claude" && arg !== "default") return "Usage: /agent opencode|claude|default";
+      const driver = arg === "default" ? undefined : arg;
+      // Sessions belong to one agent: switching starts fresh (and drops a model meant for the other agent).
+      await deps.store.update(threadKey, spaceName, { driver, model: undefined, sessionRef: undefined, contextTokens: 0, turns: 0 });
+      return driver ? `This thread now talks to ${driver === "claude" ? "Claude Code" : "OpenCode"} (fresh session).` : "This thread is back on the configured agent (fresh session).";
     }
     case "schedule":
     case "schedules":

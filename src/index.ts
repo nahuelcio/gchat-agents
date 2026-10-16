@@ -18,6 +18,7 @@ import { ConfiguredDriver } from "./driver/configured.js";
 import { GoogleTokenVerifier } from "./verify.js";
 import { threadSlug, Workspaces } from "./workspace.js";
 import { ensureTunnel } from "./tunnel.js";
+import { ShareToken } from "./share.js";
 
 const config = loadConfig();
 
@@ -63,7 +64,13 @@ const deps: HandlerDeps = {
   schedules,
   options: () => {
     const s = settings.get();
-    return { contextFooter: s.contextFooter, autoCompactAt: s.autoCompactAt, defaultModel: s.models[s.agentDriver] };
+    return {
+      contextFooter: s.contextFooter,
+      autoCompactAt: s.autoCompactAt,
+      defaultModel: s.models[s.agentDriver],
+      defaultDriver: s.agentDriver,
+      defaultModels: s.models,
+    };
   },
 };
 
@@ -100,7 +107,10 @@ settings.onChange((s) => {
   console.info(`[settings] updated: driver=${s.agentDriver}, repos=${Object.keys(s.repos).join(", ") || "none"}`);
 });
 
-const server = createHttpServer(deps);
+const shareToken = new ShareToken(join(config.dataDir, "share-token"));
+const webDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
+const listAgents = () => detectAgents({ opencode: config.opencodeBin, claude: config.claudeBin });
+const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents });
 server.listen(config.port, () => {
   console.info(`gchat-agents listening on :${config.port} (workdir: ${config.workdir})`);
   console.info(`allowlist: ${deps.config.allowedSpaces.join(", ") || "EMPTY — set spaces in the control plane"}`);
@@ -115,7 +125,7 @@ const admin = createAdminServer(settings, {
   workspaces,
   reposDir: join(config.dataDir, "repos"),
   detectAdo: () => detectAdo(homedir(), process.env),
-  detectAgents: () => detectAgents({ opencode: config.opencodeBin, claude: config.claudeBin }),
+  detectAgents: listAgents,
   opencodeModels: () => opencodeModels(config.opencodeBin),
   handler: deps,
   schedules,
@@ -123,8 +133,8 @@ const admin = createAdminServer(settings, {
   health,
   publicUrl,
   google,
-  // dist/src/index.js -> <repo>/web/dist
-  webDir: fileURLToPath(new URL("../../web/dist", import.meta.url)),
+  webDir,
+  shareToken,
 });
 admin.listen(config.adminPort, "127.0.0.1", () => {
   console.info(`control plane: http://127.0.0.1:${config.adminPort}`);

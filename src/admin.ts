@@ -1,13 +1,14 @@
-import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
 import { contextLine, processMessage, type HandlerDeps } from "./handler.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
+import type { ShareToken } from "./share.js";
 import { describeCron, type NewJob, type Scheduler, type ScheduleStore } from "./schedules.js";
 import { readBody } from "./server.js";
+import { serveStatic } from "./static.js";
 import type { Settings, SettingsStore } from "./settings.js";
 import type { SessionStore } from "./store.js";
 import { threadSlug, type Workspaces } from "./workspace.js";
@@ -33,6 +34,7 @@ export interface AdminContext {
   /** Public HTTPS URL of the bridge (tunnel), shown so the Chat app can be pointed at it. */
   publicUrl?: string;
   google?: GoogleConnection;
+  shareToken?: ShareToken;
 }
 
 const CACHE_MS = 60_000;
@@ -50,14 +52,6 @@ function cached<T>(load: () => Promise<T>): (refresh: boolean) => Promise<T> {
   };
 }
 
-const TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-};
 
 function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
@@ -84,34 +78,6 @@ async function jsonBody<T>(req: IncomingMessage): Promise<T> {
   }
 }
 
-async function serveStatic(res: ServerResponse, webDir: string | undefined, url: string): Promise<void> {
-  if (!webDir) throw new HttpError(404, "not found");
-  const root = resolve(webDir);
-  const file = resolve(join(root, url === "/" ? "index.html" : decodeURIComponent(url)));
-  if (file !== root && !file.startsWith(root + sep)) throw new HttpError(404, "not found");
-  let body: Buffer;
-  try {
-    body = await readFile(file);
-  } catch {
-    if (url.startsWith("/assets/")) throw new HttpError(404, "not found");
-    try {
-      body = await readFile(join(root, "index.html")); // SPA fallback
-    } catch {
-      res.writeHead(503, { "content-type": "text/plain" });
-      res.end("Control plane UI not built. Run: npm run build:web");
-      return;
-    }
-    res.writeHead(200, { "content-type": TYPES[".html"] });
-    res.end(body);
-    return;
-  }
-  res.writeHead(200, {
-    "content-type": TYPES[extname(file)] ?? "application/octet-stream",
-    "content-security-policy":
-      "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com",
-  });
-  res.end(body);
-}
 
 /**
  * Local control plane: settings, live threads/apps, Azure DevOps repos, TokenBank models.
@@ -129,7 +95,8 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
 
     if (!url.startsWith("/api/")) {
       if (method !== "GET") throw new HttpError(405, "method not allowed");
-      return serveStatic(res, ctx.webDir, url);
+      if (!(await serveStatic(res, ctx.webDir, url))) throw new HttpError(404, "not found");
+      return;
     }
 
     if (url === "/api/settings" && method === "GET") return send(res, 200, settings.get());
@@ -201,6 +168,18 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
         throw new HttpError(400, err instanceof Error ? err.message : String(err));
       }
       return send(res, 200, status());
+    }
+
+    if (url === "/api/share" || url === "/api/share/rotate") {
+      const token = ctx.shareToken;
+      if (!token || !ctx.publicUrl) throw new HttpError(404, "sharing needs the tunnel");
+      if (url === "/api/share/rotate") {
+        if (method !== "POST") throw new HttpError(405, "method not allowed");
+        await jsonBody(req);
+        token.rotate();
+      }
+      // The token rides in the fragment: browsers never send it to the server or to logs.
+      return send(res, 200, { link: `${ctx.publicUrl}/play#${token.value()}` });
     }
 
     if (url === "/api/health" && method === "GET") {

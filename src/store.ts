@@ -12,6 +12,8 @@ export interface SessionRecord {
   branch?: string;
   /** Per-thread model override set with /model. */
   model?: string;
+  /** Per-thread agent set with /agent. */
+  driver?: "opencode" | "claude";
   /** Summary from /compact, prepended to the next turn of the fresh session. */
   summary?: string;
   /** Context size after the last turn; `estimated` when the agent does not report it. */
@@ -71,8 +73,17 @@ export class SessionStore {
 
   async set(threadKey: string, record: SessionRecord): Promise<void> {
     this.entries.set(threadKey, record);
-    // Unique staging name: concurrent set() calls from different threads must
-    // not overwrite each other's tmp file before rename.
+    // Writes run one at a time and each snapshots the map when it starts: concurrent
+    // set() calls could otherwise finish out of order and an older snapshot would
+    // overwrite a newer one, silently dropping another thread's session.
+    const write = this.writing.then(() => this.persist());
+    this.writing = write.catch(() => {});
+    return write;
+  }
+
+  private writing: Promise<void> = Promise.resolve();
+
+  private async persist(): Promise<void> {
     const tmp = `${this.filePath}.${Date.now()}.${++this.tmpSeq}.tmp`;
     try {
       await writeFile(tmp, `${JSON.stringify(Object.fromEntries(this.entries), null, 2)}\n`, "utf8");

@@ -456,4 +456,33 @@ describe("handleEvent", () => {
       expect(deps.schedules.all()[0]).toMatchObject({ prompt: "Summarize yesterday's commits", cron: "0 9 * * 1-5", space: "spaces/OK" });
     });
   });
+
+  describe("per-thread agent and restricted commands", () => {
+    const say = (text: string) => messageEvent({ message: { argumentText: text, thread: { threadKey: "t" } } });
+
+    it("/agent sets the thread's agent, starts a fresh session, and the footer names it", async () => {
+      const driver = new FakeDriver();
+      driver.sessionRef = "ses_1";
+      const { deps, chat } = makeDeps({ driver });
+      deps.options = () => ({ contextFooter: "every", autoCompactAt: 0, defaultDriver: "opencode", defaultModels: { opencode: "glm", claude: "opus" } });
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("— opencode · glm");
+      await (await handleEvent("Bearer t", say("/agent claude"), deps)).done;
+      driver.sessionRef = undefined;
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(driver.calls.at(-1)).toMatchObject({ driver: "claude", sessionRef: undefined });
+      expect(chat.posts.at(-1)?.body.text).toContain("— claude · opus");
+    });
+
+    it("refuses commands outside the allowlist without running them", async () => {
+      const { deps } = makeDeps();
+      const replies: string[] = [];
+      const { processMessage } = await import("../src/handler.js");
+      await processMessage(
+        { threadKey: "share/x", spaceName: "shared", text: "/repo yFlow", reply: async (r) => void replies.push(r), allowCommands: new Set(["help", "agent"]) },
+        deps,
+      );
+      expect(replies[0]).toBe("/repo is not available here. Available: /help /agent");
+    });
+  });
 });

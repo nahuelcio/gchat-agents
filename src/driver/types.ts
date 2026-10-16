@@ -6,6 +6,8 @@ export interface AgentTurnInput {
   workdir: string;
   /** Per-thread model override (from /model); omitted = the driver's default. */
   model?: string;
+  /** Per-thread agent override (from /agent); omitted = the configured one. */
+  driver?: "opencode" | "claude";
 }
 
 export interface ContextUsage {
