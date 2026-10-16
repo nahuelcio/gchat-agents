@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -49,7 +49,9 @@ export class Workspaces {
   private apps: Map<string, RunningApp> = new Map();
 
   constructor(root: string, repos: Record<string, RepoConfig>) {
-    this.root = root;
+    // Absolute on purpose: worktree paths go to `git -C <repo>`, which would resolve a
+    // relative one against the repo (worktree created inside the clone, agent cwd missing).
+    this.root = resolve(root);
     this.repos = repos;
   }
 

@@ -69,6 +69,16 @@ describe("Workspaces", () => {
     await expect(ws.create("app", "t10")).rejects.toThrow(/base branch "nope"/);
   });
 
+  it("puts worktrees under its root even when the root is relative (git resolves -C paths against the repo)", async () => {
+    const { relative } = await import("node:path");
+    const ws = new Workspaces(relative(process.cwd(), join(dir, "wt")), { app: { path: repo } });
+    const { worktree } = await ws.create("app", "rel1");
+    expect(worktree).toBe(join(dir, "wt", "app-rel1"));
+    expect(existsSync(join(worktree, "README.md"))).toBe(true);
+    const listed = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    expect(listed).toContain(`worktree ${join(dir, "wt", "app-rel1")}\n`);
+  });
+
   it("rejects unknown repos", async () => {
     const ws = new Workspaces(join(dir, "wt"), { app: { path: repo } });
     await expect(ws.create("nope", "t1")).rejects.toThrow(/unknown repo/);
