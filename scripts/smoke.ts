@@ -6,6 +6,8 @@
  *   npm run smoke -- --driver opencode            (real CLI; uses env config)
  *   npm run smoke -- --driver claude              (real CLI; uses env config)
  *   npm run smoke -- --text "list files here"
+ *   AGENT_REPOS_FILE=repos.json npm run smoke -- --driver echo --text "/repo app" --text "/up" --text "/logs"
+ *     (each --text is one message in the same thread, sent in order)
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +20,8 @@ import { TurnQueue } from "../src/queue.js";
 import { SessionStore } from "../src/store.js";
 import type { ChatClient } from "../src/chat-client.js";
 import type { TokenVerifier } from "../src/verify.js";
+import { loadRepos } from "../src/config.js";
+import { Workspaces } from "../src/workspace.js";
 
 const argv = process.argv.slice(2);
 function argValue(name: string): string | undefined {
@@ -26,7 +30,8 @@ function argValue(name: string): string | undefined {
 }
 
 const driverName = argValue("--driver") ?? "opencode";
-const text = argValue("--text") ?? "Introduce yourself in one sentence.";
+const texts = argv.flatMap((a, i) => (a === "--text" && argv[i + 1] ? [argv[i + 1]!] : []));
+if (texts.length === 0) texts.push("Introduce yourself in one sentence.");
 
 const env = process.env;
 const dataDir = env["DATA_DIR"]?.trim() || "./data";
@@ -69,20 +74,27 @@ const deps: HandlerDeps = {
   queue: new TurnQueue(),
   config: { allowedSpaces: ["spaces/SMOKE"], workdir },
 };
-
-const event: ChatEvent = {
-  type: "MESSAGE",
-  space: { name: "spaces/SMOKE" },
-  message: {
-    name: "messages/smoke-1",
-    argumentText: text,
-    thread: { threadKey: "smoke-thread" },
-  },
-};
+const repos = loadRepos(env["AGENT_REPOS_FILE"]?.trim() || undefined);
+if (Object.keys(repos).length) deps.workspaces = new Workspaces(join(dataDir, "worktrees"), repos);
 
 console.log(`smoke: driver=${driverName} workdir=${workdir}`);
-console.log(`user > ${text}`);
-const result = await handleEvent("Bearer smoke-token", event, deps);
-console.log(`http > ${result.status} ${JSON.stringify(result.body)}`);
-await result.done;
+for (const [n, text] of texts.entries()) {
+  const event: ChatEvent = {
+    type: "MESSAGE",
+    space: { name: "spaces/SMOKE" },
+    message: {
+      name: `messages/smoke-${n + 1}`,
+      argumentText: text,
+      thread: { name: "spaces/SMOKE/threads/smoke" },
+      sender: { displayName: "Smoke User" },
+    },
+  };
+  console.log(`\nuser > ${text}`);
+  const result = await handleEvent("Bearer smoke-token", event, deps);
+  console.log(`http > ${result.status} ${JSON.stringify(result.body)}`);
+  await result.done;
+  // Give a just-started app a moment to print before a following /logs.
+  if (text.startsWith("/up")) await new Promise((r) => setTimeout(r, 1500));
+}
+deps.workspaces?.killAll();
 console.log("\nsmoke: done");

@@ -1,4 +1,6 @@
-import { mkdtemp } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +11,7 @@ import { TurnQueue } from "../src/queue.js";
 import { SessionStore } from "../src/store.js";
 import type { PostMessageBody } from "../src/chat-client.js";
 import type { TokenVerifier } from "../src/verify.js";
+import { Workspaces } from "../src/workspace.js";
 
 function messageEvent(overrides: Partial<ChatEvent> = {}): ChatEvent {
   return {
@@ -74,7 +77,9 @@ class FakeChat {
   }
 }
 
-function makeDeps(options: { verifierOk?: boolean; driver?: AgentDriver; allowed?: string[] } = {}) {
+function makeDeps(
+  options: { verifierOk?: boolean; driver?: AgentDriver; allowed?: string[]; workspaces?: Workspaces } = {},
+) {
   const chat = new FakeChat();
   const driver = options.driver ?? new FakeDriver();
   const deps: HandlerDeps = {
@@ -84,6 +89,7 @@ function makeDeps(options: { verifierOk?: boolean; driver?: AgentDriver; allowed
     store: new SessionStore(join(globalDir, "sessions.json")),
     queue: new TurnQueue(),
     config: { allowedSpaces: options.allowed ?? ["spaces/OK"], workdir: "/tmp/agent-wd" },
+    workspaces: options.workspaces,
   };
   return { deps, chat, driver: driver as FakeDriver, store: deps.store };
 }
@@ -309,5 +315,75 @@ describe("handleEvent", () => {
     expect(driver.maxActive).toBe(2);
     gate.resolve();
     await Promise.all([a.done, b.done]);
+  });
+
+  it("prefixes the prompt with the sender name so the agent knows who is talking", async () => {
+    const { deps, driver } = makeDeps();
+    const result = await handleEvent(
+      "Bearer t",
+      messageEvent({
+        message: { argumentText: "fix it", thread: { threadKey: "t" }, sender: { displayName: "Ana" } },
+      }),
+      deps,
+    );
+    await result.done;
+    expect(driver.calls[0]?.text).toBe("Ana: fix it");
+  });
+
+  describe("thread commands", () => {
+    async function setup() {
+      const repo = join(globalDir, "repo");
+      execFileSync("git", ["init", "-q", "-b", "main", repo]);
+      await writeFile(join(repo, "README.md"), "hi\n");
+      execFileSync("git", ["-C", repo, "add", "."]);
+      execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]);
+      const workspaces = new Workspaces(join(globalDir, "wt"), {
+        app: { path: repo, up: "echo up on {port}; sleep 30" },
+      });
+      return makeDeps({ workspaces });
+    }
+    const say = (text: string) =>
+      messageEvent({ message: { argumentText: text, thread: { name: "spaces/OK/threads/abc" } } });
+
+    it("/repo creates a worktree and later turns run the agent inside it", async () => {
+      const { deps, driver, chat, store } = await setup();
+      await (await handleEvent("Bearer t", say("/repo app"), deps)).done;
+      const worktree = store.get("spaces/OK/threads/abc")?.worktree;
+      expect(worktree).toBe(join(globalDir, "wt", "app-abc"));
+      expect(existsSync(join(worktree!, "README.md"))).toBe(true);
+      expect(chat.posts[0]?.body.text).toContain("chat/abc");
+      expect(driver.calls).toHaveLength(0);
+
+      await (await handleEvent("Bearer t", say("add a test"), deps)).done;
+      expect(driver.calls[0]?.workdir).toBe(worktree);
+    });
+
+    it("/up starts the configured app, /logs shows output, /close tears everything down", async () => {
+      const { deps, chat, store } = await setup();
+      await (await handleEvent("Bearer t", say("/repo app"), deps)).done;
+      await (await handleEvent("Bearer t", say("/up"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toMatch(/http:\/\/localhost:\d+/);
+
+      await new Promise((r) => setTimeout(r, 200));
+      await (await handleEvent("Bearer t", say("/logs"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("up on");
+
+      const worktree = store.get("spaces/OK/threads/abc")!.worktree!;
+      await (await handleEvent("Bearer t", say("/close"), deps)).done;
+      expect(existsSync(worktree)).toBe(false);
+      expect(store.get("spaces/OK/threads/abc")?.worktree).toBeUndefined();
+    });
+
+    it("/up without a worktree explains what to do instead of failing silently", async () => {
+      const { deps, chat } = await setup();
+      await (await handleEvent("Bearer t", say("/up"), deps)).done;
+      expect(chat.posts[0]?.body.text).toContain("/repo");
+    });
+
+    it("unknown repos get a readable error listing the configured ones", async () => {
+      const { deps, chat } = await setup();
+      await (await handleEvent("Bearer t", say("/repo nope"), deps)).done;
+      expect(chat.posts[0]?.body.text).toContain("app");
+    });
   });
 });

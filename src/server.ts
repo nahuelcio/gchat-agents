@@ -3,7 +3,7 @@ import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
 
 const MAX_BODY_BYTES = 1_000_000;
 
-function readBody(req: IncomingMessage): Promise<string> {
+export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import type { RepoConfig } from "./workspace.js";
+
 export interface Config {
   port: number;
   tokenAudience: string;
@@ -11,6 +14,8 @@ export interface Config {
   claudeModel?: string;
   turnTimeoutMs: number;
   dataDir: string;
+  repos: Record<string, RepoConfig>;
+  adminPort: number;
 }
 
 export type AgentDriverKind = "opencode" | "claude";
@@ -18,6 +23,16 @@ export type AgentDriverKind = "opencode" | "claude";
 function driverKind(value: string): AgentDriverKind {
   if (value === "opencode" || value === "claude") return value;
   throw new Error(`AGENT_DRIVER must be "opencode" or "claude" (got "${value}")`);
+}
+
+/** AGENT_REPOS_FILE: JSON {"name": {"path": "/abs/clone", "up": "npm run dev -- --port {port}"}}. */
+export function loadRepos(file: string | undefined): Record<string, RepoConfig> {
+  if (!file) return {};
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, RepoConfig>;
+  for (const [name, repo] of Object.entries(parsed)) {
+    if (!repo || typeof repo.path !== "string") throw new Error(`AGENT_REPOS_FILE: repo "${name}" needs a "path"`);
+  }
+  return parsed;
 }
 
 function required(env: Record<string, string | undefined>, key: string): string {
@@ -31,9 +46,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  if (allowedSpaces.length === 0) {
-    throw new Error("CHAT_ALLOWED_SPACES must list at least one space (e.g. spaces/AAA)");
-  }
   const turnTimeoutMs = Number(env["AGENT_TURN_TIMEOUT_MS"] ?? "") || 600_000;
   const opencodeModel = env["OPENCODE_MODEL"]?.trim() || undefined;
   const claudeModel = env["CLAUDE_MODEL"]?.trim() || undefined;
@@ -50,5 +62,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     claudeModel,
     turnTimeoutMs,
     dataDir: env["DATA_DIR"]?.trim() || "./data",
+    adminPort: Number(env["ADMIN_PORT"] ?? "") || 8081,
+    repos: loadRepos(env["AGENT_REPOS_FILE"]?.trim() || undefined),
   };
 }

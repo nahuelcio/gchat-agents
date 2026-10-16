@@ -2,9 +2,14 @@ import { readFileSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
 
 export interface SessionRecord {
-  sessionRef: string;
+  sessionRef?: string;
   space: string;
   updatedAt: string;
+  /** Repo name from the repos config, set by /repo. */
+  repo?: string;
+  /** Git worktree the agent works in for this thread. */
+  worktree?: string;
+  branch?: string;
 }
 
 /** threadKey -> session record, persisted as JSON with atomic writes (tmp + rename). */
@@ -37,8 +42,22 @@ export class SessionStore {
     }
   }
 
+  all(): [string, SessionRecord][] {
+    return [...this.entries];
+  }
+
   get(threadKey: string): SessionRecord | undefined {
     return this.entries.get(threadKey);
+  }
+
+  /** Merges fields into the thread's record (creating it) and persists. */
+  async update(threadKey: string, space: string, patch: Partial<SessionRecord>): Promise<void> {
+    await this.set(threadKey, {
+      ...this.entries.get(threadKey),
+      ...patch,
+      space,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async set(threadKey: string, record: SessionRecord): Promise<void> {

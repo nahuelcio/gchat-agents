@@ -3,3 +3,7 @@ node_modules/
 data/
 dist/
 *.tsbuildinfo
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
+web/dist/
