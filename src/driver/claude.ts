@@ -1,4 +1,4 @@
-import type { AgentDriver, AgentTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentDriver, AgentTurnInput, AgentTurnResult, ContextUsage } from "./types.js";
 import { runCaptured, type CapturedRun } from "./spawn-capture.js";
 
 export interface ClaudeDriverOptions {
@@ -12,6 +12,30 @@ export interface ParsedClaudeOutput {
   reply: string;
   sessionId?: string;
   error?: string;
+  usage?: ContextUsage;
+}
+
+interface ModelUsage {
+  inputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  contextWindow?: number;
+}
+
+/**
+ * Context size after the turn = prompt tokens incl. cache (output joins the next prompt anyway).
+ * modelUsage lists helper models too (e.g. haiku for titles): the window is the busiest model's.
+ */
+function contextUsage(
+  usage: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined,
+  modelUsage: Record<string, ModelUsage> | undefined,
+): ContextUsage | undefined {
+  if (!usage) return undefined;
+  const contextTokens =
+    (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+  const size = (m: ModelUsage) => (m.inputTokens ?? 0) + (m.cacheCreationInputTokens ?? 0) + (m.cacheReadInputTokens ?? 0);
+  const main = Object.values(modelUsage ?? {}).sort((a, b) => size(b) - size(a))[0];
+  return { contextTokens, ...(main?.contextWindow && { contextWindow: main.contextWindow }) };
 }
 
 /** claude session ids are UUIDs; any other stored ref means "start fresh". */
@@ -30,6 +54,8 @@ export function parseClaudeOutput(stdout: string): ParsedClaudeOutput {
     result?: string;
     session_id?: string;
     is_error?: boolean;
+    usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+    modelUsage?: Record<string, ModelUsage>;
   };
   try {
     obj = JSON.parse(stdout) as typeof obj;
@@ -43,6 +69,7 @@ export function parseClaudeOutput(stdout: string): ParsedClaudeOutput {
     reply: obj.is_error ? "" : (obj.result ?? ""),
     sessionId: obj.session_id,
     error: obj.is_error ? (obj.result ?? "claude reported an error") : undefined,
+    usage: contextUsage(obj.usage, obj.modelUsage),
   };
 }
 
@@ -67,7 +94,8 @@ export class ClaudeDriver implements AgentDriver {
     const args = ["-p", "--output-format", "json"];
     const sessionRef = UUID_RE.test(input.sessionRef ?? "") ? input.sessionRef : undefined;
     if (sessionRef) args.push("--resume", sessionRef);
-    if (this.model) args.push("--model", this.model);
+    const model = input.model ?? this.model;
+    if (model) args.push("--model", model);
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (claude v2.1.296 verified to honor the separator).
     args.push("--", input.text);
@@ -84,6 +112,6 @@ export class ClaudeDriver implements AgentDriver {
     if (result.timedOut) throw new Error(`claude timed out after ${this.timeoutMs}ms`);
     if (result.code !== 0) throw new Error(`claude exited with code ${result.code}`);
     if (!parsed.reply) throw new Error("claude returned no reply text");
-    return { reply: parsed.reply, sessionRef: parsed.sessionId ?? sessionRef };
+    return { reply: parsed.reply, sessionRef: parsed.sessionId ?? sessionRef, ...(parsed.usage && { usage: parsed.usage }) };
   }
 }

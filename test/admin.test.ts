@@ -10,6 +10,10 @@ import type { FetchFn } from "../src/integrations.js";
 import { SettingsStore } from "../src/settings.js";
 import { SessionStore } from "../src/store.js";
 import { Workspaces } from "../src/workspace.js";
+import { EchoDriver } from "../src/driver/echo.js";
+import { TurnQueue } from "../src/queue.js";
+import { Scheduler, ScheduleStore } from "../src/schedules.js";
+import { GoogleConnection } from "../src/google.js";
 
 let store: SettingsStore;
 let base: string;
@@ -168,5 +172,68 @@ describe("admin server", () => {
     expect(calls).toBe(1);
     await fetch(`${base}/api/agents?refresh=1`);
     expect(calls).toBe(2);
+  });
+
+  it("runs playground messages through the real handler: commands and agent turns", async () => {
+    ctx.handler = {
+      verifier: { verify: async () => {} },
+      driver: new EchoDriver(),
+      chat: { postMessage: async () => {} },
+      store: ctx.store!,
+      queue: new TurnQueue(),
+      config: { allowedSpaces: [], workdir: dir },
+      options: () => ({ contextFooter: "never", autoCompactAt: 0, defaultModel: "m1" }),
+    };
+    const post = (text: string) =>
+      fetch(`${base}/api/playground`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread: "p1", text }) }).then((r) => r.json());
+    expect(await post("hello")).toMatchObject({ ok: true, replies: ["Echo: Playground: hello"] });
+    const help = (await post("/help")) as { replies: string[] };
+    expect(help.replies[0]).toContain("/compact");
+    const ctxRes = (await post("/context")) as { context: string };
+    expect(ctxRes.context).toContain("m1 · chat only");
+  });
+
+  it("creates, pauses, runs and deletes schedules", async () => {
+    const schedules = new ScheduleStore(join(dir, "schedules.json"));
+    let ran = 0;
+    ctx.schedules = schedules;
+    ctx.scheduler = new Scheduler(schedules, async () => {
+      ran++;
+      return true;
+    });
+    const call = (path: string, body: unknown) =>
+      fetch(`${base}/api/schedules${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const created = (await (await call("", { prompt: "Summarize commits", cron: "0 9 * * 1-5", space: "spaces/AAA" })).json()) as { id: string; when: string }[];
+    expect(created[0]?.when).toBe("Weekdays at 09:00");
+    const id = created[0]!.id;
+    await call("/update", { id, enabled: false });
+    expect(schedules.get(id)?.enabled).toBe(false);
+    await call("/run", { id });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ran).toBe(1);
+    expect((await call("", { prompt: "x", cron: "bad", space: "spaces/AAA" })).status).toBe(400);
+    await call("/delete", { id });
+    expect(schedules.all()).toHaveLength(0);
+  });
+
+  it("connects Google Chat from a pasted key without ever returning the key, and sends a test message", async () => {
+    const posted: string[] = [];
+    ctx.google = new GoogleConnection(join(dir, "google-sa.json"), undefined, () => ({ postMessage: async (space) => void posted.push(space) }));
+    ctx.publicUrl = "https://abc.opentunnel.xyz";
+    const post = (path: string, body: unknown) =>
+      fetch(`${base}/api/google${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    expect(await (await fetch(`${base}/api/google`)).json()).toEqual({ configured: false, source: "none", endpoint: "https://abc.opentunnel.xyz/google/chat" });
+    const key = JSON.stringify({ type: "service_account", project_id: "p", client_email: "b@p.iam.gserviceaccount.com", private_key: "SECRET-PEM" });
+    const res = await post("/key", { key });
+    const text = await res.text();
+    expect(res.status).toBe(200);
+    expect(text).toContain("b@p.iam.gserviceaccount.com");
+    expect(text).not.toContain("SECRET-PEM");
+
+    expect((await post("/test", { space: "nope" })).status).toBe(400);
+    expect((await post("/test", { space: "spaces/AAA" })).status).toBe(200);
+    expect(posted).toEqual(["spaces/AAA"]);
   });
 });

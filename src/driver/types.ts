@@ -4,12 +4,22 @@ export interface AgentTurnInput {
   sessionRef?: string;
   text: string;
   workdir: string;
+  /** Per-thread model override (from /model); omitted = the driver's default. */
+  model?: string;
+}
+
+export interface ContextUsage {
+  /** Tokens the session occupies in the model's context after this turn. */
+  contextTokens: number;
+  contextWindow?: number;
 }
 
 export interface AgentTurnResult {
   reply: string;
   /** Session id to pass back on the next turn of this thread. */
   sessionRef?: string;
+  /** Reported by agents that expose it (claude); omitted when unknown. */
+  usage?: ContextUsage;
 }
 
 export interface AgentDriver {

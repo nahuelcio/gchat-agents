@@ -1,294 +1,110 @@
-import { useEffect, useState, type FocusEvent } from "react";
-import { api, type AdoRepo, type AdoStatus, type Agent, type RepoConfig, type Settings, type Thread } from "./api";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { api, type Settings } from "./api";
+import { Overview } from "./views/Overview";
+import { Playground } from "./views/Playground";
+import { Schedules } from "./views/Schedules";
+import { SettingsView } from "./views/Settings";
+
+const VIEWS = [
+  { id: "overview", label: "Overview", icon: <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" /> },
+  { id: "playground", label: "Playground", icon: <path d="M4 5h16v11H9l-5 4z" /> },
+  { id: "schedules", label: "Schedules", icon: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></> },
+  { id: "settings", label: "Settings", icon: <><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></> },
+] as const;
+type ViewId = (typeof VIEWS)[number]["id"];
+
+const current = (): ViewId => (VIEWS.find((v) => `#${v.id}` === location.hash)?.id ?? "overview") as ViewId;
+
+export function Icon({ children, size = 16 }: { children: ReactNode; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+export interface ViewProps {
+  settings: Settings;
+  save: (patch: Partial<Settings>, ok?: string) => Promise<void>;
+  setSettings: (s: Settings) => void;
+  notify: (text: string, error?: boolean) => void;
+}
 
 export function App() {
+  const [view, setView] = useState<ViewId>(current);
   const [settings, setSettings] = useState<Settings>();
-  const [message, setMessage] = useState<{ text: string; error?: boolean }>();
+  const [toast, setToast] = useState<{ text: string; error?: boolean }>();
 
-  useEffect(() => {
-    api.settings().then(setSettings, (e: Error) => setMessage({ text: e.message, error: true }));
+  const notify = useCallback((text: string, error = false) => {
+    setToast({ text, error });
+    setTimeout(() => setToast((t) => (t?.text === text ? undefined : t)), error ? 6000 : 2500);
   }, []);
 
-  async function act(fn: () => Promise<Settings | unknown>, ok: string) {
-    try {
-      const out = await fn();
-      if (out && typeof out === "object" && "agentDriver" in out) setSettings(out as Settings);
-      setMessage({ text: ok });
-    } catch (err) {
-      setMessage({ text: err instanceof Error ? err.message : String(err), error: true });
-    }
-  }
-  const save = (patch: Partial<Settings>, ok = "Saved") => act(() => api.save(patch), ok);
-
-  return (
-    <main>
-      <header className="hero">
-        <span className="logo" aria-hidden>
-          🤖
-        </span>
-        <div>
-          <h1>Control plane</h1>
-          <p className="muted">your agents, repos & threads — on this machine</p>
-        </div>
-      </header>
-      {message && <p className={message.error ? "msg error" : "msg"}>{message.text}</p>}
-      <Threads />
-      {settings && (
-        <>
-          <AgentSection settings={settings} save={save} />
-          <Repos settings={settings} save={save} act={act} />
-          <Spaces settings={settings} save={save} />
-        </>
-      )}
-    </main>
-  );
-}
-
-type SectionProps = { settings: Settings; save: (patch: Partial<Settings>, ok?: string) => Promise<void> };
-
-function Threads() {
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [logs, setLogs] = useState<{ slug: string; text: string }>();
-
   useEffect(() => {
-    const load = () => api.threads().then(setThreads, () => {});
-    load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
-  }, []);
+    const onHash = () => setView(current());
+    addEventListener("hashchange", onHash);
+    api.settings().then(setSettings, (e: Error) => notify(e.message, true));
+    return () => removeEventListener("hashchange", onHash);
+  }, [notify]);
 
-  return (
-    <section>
-      <h2>💬 Threads</h2>
-      {threads.length === 0 && <p className="empty">No threads yet — mention the bot in the team space ✨</p>}
-      {threads.map((t) => (
-        <div className="row" key={t.key}>
-          <span className="grow">
-            <b>{t.slug}</b> <span className="muted">{t.repo ? `${t.repo} · ${t.branch}` : "chat only"}</span>
-          </span>
-          {t.app.running && (
-            <a className="pill ok" href={`http://localhost:${t.app.port}`} target="_blank" rel="noreferrer">
-              ● :{t.app.port}
-            </a>
-          )}
-          {t.repo && <button onClick={() => api.logs(t.slug).then((r) => setLogs({ slug: t.slug, text: r.logs || "No output." }))}>Logs</button>}
-          {t.app.running && <button onClick={() => void api.stop(t.slug)}>Stop</button>}
-        </div>
-      ))}
-      {logs && (
-        <div className="logs">
-          <div className="row">
-            <b className="grow">{logs.slug}</b>
-            <button onClick={() => setLogs(undefined)}>Close</button>
-          </div>
-          <pre>{logs.text}</pre>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function AgentSection({ settings, save }: SectionProps) {
-  const [agents, setAgents] = useState<Agent[]>();
-  const [models, setModels] = useState<string[]>([]);
-  const driver = settings.agentDriver;
-  const [model, setModel] = useState(settings.models[driver] ?? "");
-
-  useEffect(() => {
-    api.agents().then(setAgents, () => setAgents([]));
-    api.models().then(setModels, () => {});
-  }, []);
-  useEffect(() => setModel(settings.models[driver] ?? ""), [settings.models, driver]);
-
-  const others = agents?.filter((a) => a.installed && !a.supported) ?? [];
-
-  return (
-    <section>
-      <h2>🧠 Agent</h2>
-      {!agents && <p className="muted">Detecting…</p>}
-      {agents
-        ?.filter((a) => a.supported)
-        .map((a) => (
-          <label className="row" key={a.id}>
-            <input
-              type="radio"
-              name="driver"
-              checked={driver === a.id}
-              disabled={!a.installed}
-              onChange={() => void save({ agentDriver: a.id as Settings["agentDriver"] }, `Using ${a.name}`)}
-            />
-            <span className="grow">
-              <b>{a.name}</b> <span className="muted">{a.installed ? `v${a.version} · ${a.detail ?? ""}` : "not installed"}</span>
-            </span>
-            {a.installed && (a.ready ? <span className="pill ok">ready</span> : <span className="pill warn">needs setup</span>)}
-          </label>
-        ))}
-      {others.length > 0 && <p className="muted">Also installed, no driver yet: {others.map((a) => a.name).join(", ")}</p>}
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save({ models: { ...settings.models, [driver]: model.trim() || undefined } }, model.trim() ? `Model: ${model.trim()}` : "Default model");
-        }}
-      >
-        <input
-          className="grow"
-          list={driver === "opencode" ? "models" : undefined}
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder={driver === "opencode" ? `Model (${models.length} available) — empty = default` : "Model, e.g. claude-opus-5-5 — empty = default"}
-          aria-label="Model"
-        />
-        <datalist id="models">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <button className="primary">Save</button>
-      </form>
-    </section>
-  );
-}
-
-function Repos({ settings, save, act }: SectionProps & { act: (fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
-  const [ado, setAdo] = useState<AdoStatus>();
-  const [projects, setProjects] = useState<string[]>([]);
-  const [project, setProject] = useState("");
-  const [repos, setRepos] = useState<AdoRepo[]>([]);
-  const [repo, setRepo] = useState("");
-  const [cloning, setCloning] = useState(false);
-
-  useEffect(() => {
-    api.adoStatus().then((s) => {
-      setAdo(s);
-      if (!s.connected) return;
-      api.adoProjects().then((list) => {
-        setProjects(list.map((p) => p.name));
-        // ado CLI profiles are case-insensitive ("ysocial" vs "ySocial").
-        const match = list.find((p) => p.name.toLowerCase() === s.defaultProject?.toLowerCase());
-        if (match) setProject(match.name);
-      }, () => {});
-    }, () => setAdo({ connected: false }));
-  }, []);
-  useEffect(() => {
-    setRepos([]);
-    setRepo("");
-    if (project) api.adoRepos(project).then(setRepos, () => {});
-  }, [project]);
-
-  const configured = Object.entries(settings.repos);
-
-  return (
-    <section>
-      <h2>📦 Repos</h2>
-      {configured.length === 0 && <p className="empty">No repos yet — add one below, then use <code>/repo &lt;name&gt;</code> in a thread 🌱</p>}
-      {configured.map(([name, r]) => (
-        <RepoRow
-          key={name}
-          name={name}
-          repo={r}
-          onChange={(next) => void save({ repos: { ...settings.repos, [name]: next } }, `${name} updated`)}
-          onRemove={() => {
-            const { [name]: _removed, ...rest } = settings.repos;
-            void save({ repos: rest }, `${name} removed`);
-          }}
-        />
-      ))}
-
-      {ado && !ado.connected && <p className="muted">Azure DevOps not configured on this machine — run <code>ado init</code>.</p>}
-      {ado?.connected && (
-        <form
-          className="row"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setCloning(true);
-            await act(() => api.adoClone(project, repo), `${repo} cloned`);
-            setCloning(false);
-          }}
-        >
-          <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project">
-            <option value="">Project</option>
-            {projects.map((p) => (
-              <option key={p}>{p}</option>
-            ))}
-          </select>
-          <select className="grow" value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="Repository" disabled={!repos.length}>
-            <option value="">Repository</option>
-            {repos
-              .filter((r) => !settings.repos[r.name])
-              .map((r) => (
-                <option key={r.id}>{r.name}</option>
-              ))}
-          </select>
-          <button className="primary" disabled={!repo || cloning}>{cloning ? "Cloning… ⏳" : `Add from ${ado.org}`}</button>
-        </form>
-      )}
-    </section>
-  );
-}
-
-/** Last two path segments: enough to recognize a clone without the full absolute path. */
-function shortPath(path: string): string {
-  return path.split("/").slice(-2).join("/");
-}
-
-function RepoRow({ name, repo, onChange, onRemove }: { name: string; repo: RepoConfig; onChange: (r: RepoConfig) => void; onRemove: () => void }) {
-  // Saves one field on blur, dropping it when emptied.
-  const field = (key: "base" | "up") => ({
-    defaultValue: repo[key] ?? "",
-    onBlur: (e: FocusEvent<HTMLInputElement>) => {
-      const value = e.target.value.trim();
-      if (value === (repo[key] ?? "")) return;
-      const { [key]: _old, ...rest } = repo;
-      onChange(value ? { ...rest, [key]: value } : rest);
+  const save = useCallback(
+    async (patch: Partial<Settings>, ok = "Saved") => {
+      try {
+        setSettings(await api.save(patch));
+        notify(ok);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), true);
+      }
     },
-  });
-  return (
-    <div className="repo">
-      <div className="row">
-        <span className="grow">
-          <b>{name}</b> <span className="muted" title={repo.path}>{shortPath(repo.path)}</span>
-        </span>
-        <button className="ghost" onClick={onRemove} aria-label={`Remove ${name}`}>
-          ✕
-        </button>
-      </div>
-      <div className="row">
-        <label className="chip">
-          🌿 <input {...field("base")} placeholder="HEAD" aria-label={`Base branch for ${name}`} />
-        </label>
-        <label className="chip grow">
-          ▶ <input {...field("up")} placeholder="up command, e.g. npm run dev -- --port {port}" aria-label={`Up command for ${name}`} />
-        </label>
-      </div>
-    </div>
+    [notify],
   );
-}
 
-function Spaces({ settings, save }: SectionProps) {
-  const [space, setSpace] = useState("");
+  const model = settings?.models[settings.agentDriver];
+  const props = settings && { settings, save, setSettings, notify };
+
   return (
-    <section>
-      <h2>🏠 Spaces</h2>
-      {settings.allowedSpaces.length === 0 && <p className="empty error">No spaces yet — the bot is ignoring everyone 🙈</p>}
-      {settings.allowedSpaces.map((s) => (
-        <div className="row" key={s}>
-          <span className="grow">{s}</span>
-          <button onClick={() => void save({ allowedSpaces: settings.allowedSpaces.filter((x) => x !== s) }, `${s} removed`)}>Remove</button>
+    <div className="shell">
+      <nav className="sidebar" aria-label="Control plane">
+        <div className="brand">
+          <span className="brand-mark">
+            <Icon size={18}>
+              <path d="M4 6h16v10H8l-4 4z" />
+              <path d="M9 11h6" />
+            </Icon>
+          </span>
+          <span className="brand-text">
+            <strong>gchat-agents</strong>
+            <small>this machine</small>
+          </span>
         </div>
-      ))}
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const value = space.trim().startsWith("spaces/") ? space.trim() : `spaces/${space.trim()}`;
-          void save({ allowedSpaces: [...settings.allowedSpaces, value] }, `${value} added`).then(() => setSpace(""));
-        }}
-      >
-        <input className="grow" value={space} onChange={(e) => setSpace(e.target.value)} placeholder="spaces/XXXX" aria-label="Space" required />
-        <button className="primary">Add</button>
-      </form>
-    </section>
+        <div className="nav">
+          {VIEWS.map((v) => (
+            <a key={v.id} href={`#${v.id}`} className={view === v.id ? "active" : ""} aria-current={view === v.id ? "page" : undefined}>
+              <Icon>{v.icon}</Icon>
+              {v.label}
+            </a>
+          ))}
+        </div>
+        {settings && (
+          <div className="agent-card">
+            <small>Agent</small>
+            <span>{settings.agentDriver === "claude" ? "Claude Code" : "OpenCode"}</span>
+            <code>{model ?? "default model"}</code>
+          </div>
+        )}
+      </nav>
+      <main className="content">
+        {!props && <div className="skeleton" aria-busy="true" />}
+        {props && view === "overview" && <Overview {...props} />}
+        {props && view === "playground" && <Playground {...props} />}
+        {props && view === "schedules" && <Schedules {...props} />}
+        {props && view === "settings" && <SettingsView {...props} />}
+      </main>
+      {toast && (
+        <div className={`toast ${toast.error ? "error" : ""}`} role="status">
+          {toast.text}
+        </div>
+      )}
+    </div>
   );
 }

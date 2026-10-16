@@ -1,10 +1,15 @@
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { RepoConfig } from "./workspace.js";
 
 export interface Config {
   port: number;
-  tokenAudience: string;
-  serviceAccountJson: string;
+  /** Omitted = derived from the tunnel URL at startup. */
+  tokenAudience?: string;
+  /** Expose the bridge through opentunnel on startup (default on). */
+  tunnel: boolean;
+  /** Omitted = no Chat replies (playground, schedules to "playground" and the control plane still work). */
+  serviceAccountJson?: string;
   allowedSpaces: string[];
   agentDriver: AgentDriverKind;
   workdir: string;
@@ -35,12 +40,6 @@ export function loadRepos(file: string | undefined): Record<string, RepoConfig> 
   return parsed;
 }
 
-function required(env: Record<string, string | undefined>, key: string): string {
-  const value = env[key]?.trim();
-  if (!value) throw new Error(`Missing required env var ${key} (see .env.example)`);
-  return value;
-}
-
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   const allowedSpaces = (env["CHAT_ALLOWED_SPACES"] ?? "")
     .split(",")
@@ -51,11 +50,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const claudeModel = env["CLAUDE_MODEL"]?.trim() || undefined;
   return {
     port: Number(env["PORT"] ?? "") || 8080,
-    tokenAudience: required(env, "GOOGLE_TOKEN_AUDIENCE"),
-    serviceAccountJson: required(env, "GOOGLE_SERVICE_ACCOUNT_JSON"),
+    tokenAudience: env["GOOGLE_TOKEN_AUDIENCE"]?.trim() || undefined,
+    tunnel: (env["TUNNEL"]?.trim() || "on") !== "off",
+    serviceAccountJson: env["GOOGLE_SERVICE_ACCOUNT_JSON"]?.trim() || undefined,
     allowedSpaces,
     agentDriver: driverKind(env["AGENT_DRIVER"]?.trim() || "opencode"),
-    workdir: env["AGENT_WORKDIR"]?.trim() || process.cwd(),
+    // Never the bridge's own checkout: a chat message must not be able to edit the service running it.
+    workdir: env["AGENT_WORKDIR"]?.trim() || join(env["DATA_DIR"]?.trim() || "./data", "workspace"),
     opencodeBin: env["OPENCODE_BIN"]?.trim() || "opencode",
     opencodeModel,
     claudeBin: env["CLAUDE_BIN"]?.trim() || "claude",

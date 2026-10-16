@@ -71,7 +71,8 @@ export class OpenCodeDriver implements AgentDriver {
     // ref (e.g. from another driver) means: start a fresh session.
     const sessionRef = /^ses_/.test(input.sessionRef ?? "") ? input.sessionRef : undefined;
     if (sessionRef) args.push("--session", sessionRef);
-    if (this.model) args.push("--model", this.model);
+    const model = input.model ?? this.model;
+    if (model) args.push("--model", model);
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
     args.push("--", input.text);

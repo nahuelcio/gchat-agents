@@ -34,6 +34,23 @@ describe("parseClaudeOutput", () => {
     expect(parsed.error).toBe("Failed to authenticate: OAuth session expired");
   });
 
+  it("reports context usage of the main model: input + cache tokens over its context window", () => {
+    const parsed = parseClaudeOutput(
+      JSON.stringify({
+        type: "result",
+        result: "ok",
+        session_id: "3113400e-a4f2-4bae-9eae-94df1490de60",
+        is_error: false,
+        usage: { input_tokens: 2, cache_creation_input_tokens: 62631, cache_read_input_tokens: 1000, output_tokens: 4 },
+        modelUsage: {
+          "claude-haiku-5-5": { inputTokens: 1156, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200000 },
+          "claude-opus-5-5": { inputTokens: 2, cacheCreationInputTokens: 62631, cacheReadInputTokens: 1000, contextWindow: 1000000 },
+        },
+      }),
+    );
+    expect(parsed.usage).toEqual({ contextTokens: 63633, contextWindow: 1000000 });
+  });
+
   it("flags unparseable and non-result output as errors", () => {
     expect(parseClaudeOutput("not json").error).toBeTruthy();
     expect(parseClaudeOutput(JSON.stringify({ type: "assistant" })).error).toBeTruthy();

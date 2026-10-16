@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SettingsStore, type Settings } from "../src/settings.js";
 
-const defaults: Settings = { agentDriver: "opencode", models: {}, repos: {}, allowedSpaces: ["spaces/ENV"] };
+const defaults: Settings = { agentDriver: "opencode", models: {}, repos: {}, allowedSpaces: ["spaces/ENV"], contextFooter: "every5", autoCompactAt: 85 };
 
 let dir: string;
 beforeEach(async () => {
@@ -23,8 +23,11 @@ describe("SettingsStore", () => {
       models: { claude: "claude-opus-5-5" },
       repos: { web: { path: dir, up: "npm start" } },
       allowedSpaces: ["spaces/AAA"],
+      contextFooter: "every",
     });
     expect(new SettingsStore(file, defaults).get()).toEqual({
+      contextFooter: "every",
+      autoCompactAt: 85,
       agentDriver: "claude",
       models: { claude: "claude-opus-5-5" },
       repos: { web: { path: dir, up: "npm start" } },
@@ -39,6 +42,8 @@ describe("SettingsStore", () => {
     await expect(store.update({ repos: { web: { path: join(dir, "missing") } } })).rejects.toThrow(/does not exist/);
     await expect(store.update({ repos: { "a b": { path: dir } } })).rejects.toThrow(/repo name/);
     await expect(store.update({ allowedSpaces: ["AAA"] })).rejects.toThrow(/spaces\//);
+    await expect(store.update({ contextFooter: "sometimes" as never })).rejects.toThrow(/contextFooter/);
+    await expect(store.update({ autoCompactAt: 120 })).rejects.toThrow(/autoCompactAt/);
     expect(store.get()).toEqual(defaults);
   });
 

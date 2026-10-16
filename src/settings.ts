@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentDriverKind } from "./config.js";
+import type { ContextFooter } from "./handler.js";
 import type { RepoConfig } from "./workspace.js";
 
 /** Everything the control plane can change at runtime. Persisted in DATA_DIR/config.json. */
@@ -10,7 +11,13 @@ export interface Settings {
   models: { opencode?: string; claude?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
+  /** When agent replies in Chat carry the context footer. */
+  contextFooter: ContextFooter;
+  /** Compact a thread automatically at this context percent; 0 = never. */
+  autoCompactAt: number;
 }
+
+const DEFAULTS = { contextFooter: "every5" as ContextFooter, autoCompactAt: 85 };
 
 const REPO_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -29,6 +36,8 @@ function validate(s: Settings): void {
     if (repo.up !== undefined && typeof repo.up !== "string") throw new Error(`repo "${name}": up must be a string`);
     if (repo.base !== undefined && !/^[\w./-]+$/.test(repo.base)) throw new Error(`repo "${name}": "${repo.base}" is not a branch name`);
   }
+  if (!["every", "every5", "above60", "never"].includes(s.contextFooter)) throw new Error(`contextFooter: "${s.contextFooter}" is not valid`);
+  if (!Number.isInteger(s.autoCompactAt) || s.autoCompactAt < 0 || s.autoCompactAt > 100) throw new Error("autoCompactAt must be 0-100");
   for (const space of s.allowedSpaces) {
     if (!/^spaces\/[^/\s]+$/.test(space)) throw new Error(`"${space}" is not a space name (spaces/XXXX)`);
   }
@@ -40,7 +49,7 @@ export class SettingsStore {
   private listeners: ((s: Settings) => void)[] = [];
 
   /** `defaults` come from env; anything saved in the file wins. */
-  constructor(filePath: string, defaults: Settings) {
+  constructor(filePath: string, defaults: Omit<Settings, keyof typeof DEFAULTS> & Partial<Settings>) {
     this.filePath = filePath;
     let saved: Partial<Settings> = {};
     try {
@@ -49,8 +58,8 @@ export class SettingsStore {
       // missing or corrupt file -> env defaults
     }
     // Only known fields: files from older versions may carry removed ones.
-    const { agentDriver, models, repos, allowedSpaces } = { ...defaults, ...saved };
-    this.current = { agentDriver, models, repos, allowedSpaces };
+    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt } = { ...DEFAULTS, ...defaults, ...saved };
+    this.current = { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt };
   }
 
   get(): Settings {

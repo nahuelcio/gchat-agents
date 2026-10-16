@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "start": "npm run -s build && node --env-file-if-exists=.env dist/src/index.js",
     "build": "tsc -p tsconfig.json && npm run -s build:web",
     "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",

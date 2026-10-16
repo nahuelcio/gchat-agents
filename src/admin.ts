@@ -3,6 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, resolve, sep } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
+import { contextLine, processMessage, type HandlerDeps } from "./handler.js";
+import type { GoogleConnection } from "./google.js";
+import type { Health } from "./health.js";
+import { describeCron, type NewJob, type Scheduler, type ScheduleStore } from "./schedules.js";
 import { readBody } from "./server.js";
 import type { Settings, SettingsStore } from "./settings.js";
 import type { SessionStore } from "./store.js";
@@ -21,6 +25,14 @@ export interface AdminContext {
   /** Installed coding agents and the models opencode can use (slow: shelled out, cached here). */
   detectAgents?: () => Promise<DetectedAgent[]>;
   opencodeModels?: () => Promise<string[]>;
+  /** The bridge's handler deps: the playground runs real turns through them. */
+  handler?: HandlerDeps;
+  schedules?: ScheduleStore;
+  scheduler?: Scheduler;
+  health?: Health;
+  /** Public HTTPS URL of the bridge (tunnel), shown so the Chat app can be pointed at it. */
+  publicUrl?: string;
+  google?: GoogleConnection;
 }
 
 const CACHE_MS = 60_000;
@@ -144,12 +156,87 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
           worktree: r.worktree,
           updatedAt: r.updatedAt,
           hasSession: Boolean(r.sessionRef),
+          context: ctx.handler?.options ? contextLine(r, ctx.handler.options()).slice(2) : undefined,
           app: { running: ws?.isUp(slug) ?? false, port: ws?.port(slug) },
         };
       });
       threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return send(res, 200, threads);
     }
+    if (url === "/api/playground" && method === "POST") {
+      const deps = ctx.handler;
+      if (!deps) throw new HttpError(500, "playground unavailable");
+      const { thread, text } = await jsonBody<{ thread: string; text: string }>(req);
+      if (!/^[\w-]{1,40}$/.test(thread ?? "") || !text?.trim()) throw new HttpError(400, "thread and text are required");
+      const threadKey = `playground/${thread}`;
+      const replies: string[] = [];
+      // Same path as a Chat message, minus Google: commands, worktrees, sessions, footer.
+      const { ok } = await processMessage(
+        { threadKey, spaceName: "playground", text: text.trim(), sender: "Playground", reply: async (r) => void replies.push(r) },
+        deps,
+      );
+      const record = deps.store.get(threadKey);
+      const options = deps.options?.();
+      return send(res, 200, { ok, replies, context: record && options ? contextLine(record, options).slice(2) : undefined });
+    }
+
+    if (url.startsWith("/api/google")) {
+      const google = ctx.google;
+      if (!google) throw new HttpError(404, "not found");
+      const status = () => ({ ...google.status(), ...(ctx.publicUrl && { endpoint: `${ctx.publicUrl}/google/chat` }) });
+      if (url === "/api/google" && method === "GET") return send(res, 200, status());
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = await jsonBody<{ key?: string; space?: string }>(req);
+      try {
+        if (url === "/api/google/key") await google.setKey(body.key ?? "");
+        else if (url === "/api/google/key/delete") await google.clearKey();
+        else if (url === "/api/google/test") {
+          const space = body.space ?? "";
+          if (!/^spaces\/[^/\s]+$/.test(space)) throw new Error("Pick a space (spaces/XXXX)");
+          await google.postMessage(space, { text: "gchat-agents is connected. Mention me in a thread to start." });
+        } else throw new HttpError(404, "not found");
+      } catch (err) {
+        if (err instanceof HttpError) throw err;
+        // Google's API errors (403 not a member, 404 no such space) are actionable for the user as-is.
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+      return send(res, 200, status());
+    }
+
+    if (url === "/api/health" && method === "GET") {
+      if (!ctx.health) throw new HttpError(404, "not found");
+      return send(res, 200, { ...ctx.health.snapshot(), ...(ctx.publicUrl && { endpoint: `${ctx.publicUrl}/google/chat` }) });
+    }
+
+    if (url.startsWith("/api/schedules")) {
+      const schedules = ctx.schedules;
+      if (!schedules || !ctx.scheduler) throw new HttpError(404, "schedules not enabled");
+      const withText = () => schedules.all().map((j) => ({ ...j, when: describeCron(j.cron) }));
+      if (url === "/api/schedules" && method === "GET") return send(res, 200, withText());
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = await jsonBody<Partial<NewJob> & { id?: string; enabled?: boolean }>(req);
+      try {
+        if (url === "/api/schedules") {
+          const { name, prompt, cron, space, repo } = body;
+          if (!prompt?.trim() || !cron || !space) throw new Error("prompt, cron and space are required");
+          await schedules.add({ name: name?.trim() || prompt.trim().slice(0, 48), prompt: prompt.trim(), cron, space, createdBy: "control plane", ...(repo && { repo }) });
+        } else if (url === "/api/schedules/update" && body.id) {
+          const { id, enabled, cron, prompt, name } = body;
+          await schedules.update(id, { ...(enabled !== undefined && { enabled }), ...(cron && { cron }), ...(prompt && { prompt }), ...(name && { name }) });
+        } else if (url === "/api/schedules/run" && body.id) {
+          void ctx.scheduler.runNow(body.id); // long: report "running" now, the list shows the outcome
+        } else if (url === "/api/schedules/delete" && body.id) {
+          await schedules.remove(body.id);
+        } else {
+          throw new HttpError(404, "not found");
+        }
+      } catch (err) {
+        if (err instanceof HttpError) throw err;
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+      return send(res, 200, withText());
+    }
+
     if (url === "/api/threads/logs" && method === "GET") {
       const slug = parsed.searchParams.get("slug") ?? "";
       return send(res, 200, { logs: ctx.workspaces?.logs(slug, 200) ?? "" });

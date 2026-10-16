@@ -10,6 +10,15 @@ export interface SessionRecord {
   /** Git worktree the agent works in for this thread. */
   worktree?: string;
   branch?: string;
+  /** Per-thread model override set with /model. */
+  model?: string;
+  /** Summary from /compact, prepended to the next turn of the fresh session. */
+  summary?: string;
+  /** Context size after the last turn; `estimated` when the agent does not report it. */
+  contextTokens?: number;
+  contextWindow?: number;
+  estimated?: boolean;
+  turns?: number;
 }
 
 /** threadKey -> session record, persisted as JSON with atomic writes (tmp + rename). */

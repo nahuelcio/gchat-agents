@@ -12,6 +12,8 @@ import { SessionStore } from "../src/store.js";
 import type { PostMessageBody } from "../src/chat-client.js";
 import type { TokenVerifier } from "../src/verify.js";
 import { Workspaces } from "../src/workspace.js";
+import { ScheduleStore } from "../src/schedules.js";
+import type { TurnOptions } from "../src/handler.js";
 
 function messageEvent(overrides: Partial<ChatEvent> = {}): ChatEvent {
   return {
@@ -233,7 +235,7 @@ describe("handleEvent", () => {
     expect(chat.posts).toEqual([
       {
         spaceName: "spaces/OK",
-        body: { text: "⚠️ Agent failed: provider auth failed", thread: { threadKey: "thread-1" } },
+        body: { text: "Agent failed: provider auth failed", thread: { threadKey: "thread-1" } },
       },
     ]);
   });
@@ -384,6 +386,74 @@ describe("handleEvent", () => {
       const { deps, chat } = await setup();
       await (await handleEvent("Bearer t", say("/repo nope"), deps)).done;
       expect(chat.posts[0]?.body.text).toContain("app");
+    });
+  });
+
+  describe("session commands and context", () => {
+    const say = (text: string) => messageEvent({ message: { argumentText: text, thread: { threadKey: "t" } } });
+
+    it("/model sets a per-thread model that the next turn uses; /model default clears it", async () => {
+      const { deps, driver } = makeDeps();
+      await (await handleEvent("Bearer t", say("/model deepseek-v4"), deps)).done;
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(driver.calls[0]?.model).toBe("deepseek-v4");
+      await (await handleEvent("Bearer t", say("/model default"), deps)).done;
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(driver.calls[1]?.model).toBeUndefined();
+    });
+
+    it("/clear drops the session so the next turn starts fresh", async () => {
+      const driver = new FakeDriver();
+      driver.sessionRef = "ses_1";
+      const { deps } = makeDeps({ driver });
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      await (await handleEvent("Bearer t", say("/clear"), deps)).done;
+      driver.sessionRef = undefined;
+      await (await handleEvent("Bearer t", say("again"), deps)).done;
+      expect(driver.calls[1]?.sessionRef).toBeUndefined();
+    });
+
+    it("/compact summarizes, then seeds the fresh session with the summary once", async () => {
+      const driver = new FakeDriver();
+      driver.sessionRef = "ses_1";
+      const { deps, chat } = makeDeps({ driver });
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      driver.reply = "SUMMARY: fixing export";
+      await (await handleEvent("Bearer t", say("/compact"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("compacted");
+      driver.reply = "ok";
+      driver.sessionRef = "ses_2";
+      await (await handleEvent("Bearer t", say("continue"), deps)).done;
+      const seeded = driver.calls.at(-1)!;
+      expect(seeded.sessionRef).toBeUndefined();
+      expect(seeded.text).toContain("SUMMARY: fixing export");
+      await (await handleEvent("Bearer t", say("next"), deps)).done;
+      expect(driver.calls.at(-1)?.text).not.toContain("SUMMARY");
+    });
+
+    it("appends a context footer per settings, with real usage when the agent reports it", async () => {
+      class UsageDriver extends FakeDriver {
+        override async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+          const r = await super.runTurn(input);
+          return { ...r, usage: { contextTokens: 79_000, contextWindow: 128_000 } };
+        }
+      }
+      const { deps, chat } = makeDeps({ driver: new UsageDriver() });
+      const options: TurnOptions = { contextFooter: "every", autoCompactAt: 0, defaultModel: "glm-5.3-flash" };
+      deps.options = () => options;
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toBe("agent reply\n\n— glm-5.3-flash · chat only · context 62% (79.0k/128k)");
+      options.contextFooter = "never";
+      await (await handleEvent("Bearer t", say("hi"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toBe("agent reply");
+    });
+
+    it("/schedule creates a job in this space from a thread", async () => {
+      const { deps, chat } = makeDeps();
+      deps.schedules = new ScheduleStore(join(globalDir, "schedules.json"));
+      await (await handleEvent("Bearer t", say("/schedule 0 9 * * 1-5 Summarize yesterday's commits"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("Weekdays at 09:00");
+      expect(deps.schedules.all()[0]).toMatchObject({ prompt: "Summarize yesterday's commits", cron: "0 9 * * 1-5", space: "spaces/OK" });
     });
   });
 });

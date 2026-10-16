@@ -37,7 +37,8 @@ export class HttpChatClient implements ChatClient {
     const { token } = await client.getAccessToken();
     if (!token) throw new Error("could not obtain Google access token");
     const post = () =>
-      fetch(`https://chat.googleapis.com/v1/${spaceName}/messages`, {
+      // threadKey only groups replies with this option (otherwise every post opens a new thread).
+      fetch(`https://chat.googleapis.com/v1/${spaceName}/messages${body.thread ? "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD" : ""}`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify(body),
