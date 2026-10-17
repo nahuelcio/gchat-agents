@@ -75,6 +75,7 @@ const deps: HandlerDeps = {
     claudeBin: config.claudeBin,
     timeoutMs: config.turnTimeoutMs,
     switchboard: switchboardMcp,
+    readDirs: [media.dir],
   }),
   chat: google,
   store: new SessionStore(join(config.dataDir, "sessions.json")),

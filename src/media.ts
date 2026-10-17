@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 
 /** One attachment shown in a transcript message (bytes live in MediaStore). */
 export interface MessageAttachment {
@@ -43,10 +43,11 @@ function extFor(contentType: string, name?: string): string {
 
 /** Local image files for chat: saved once, referenced by id in transcripts. */
 export class MediaStore {
-  private dir: string;
+  readonly dir: string;
 
   constructor(dir: string) {
-    this.dir = dir;
+    // Absolute: agents run in their workspace, so a relative path (./data/media/...) would not resolve for them.
+    this.dir = resolve(dir);
     mkdirSync(dir, { recursive: true });
   }
 

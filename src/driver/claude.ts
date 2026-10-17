@@ -10,6 +10,8 @@ export interface ClaudeDriverOptions {
   timeoutMs: number;
   /** Expose Switchboard MCP tools (link_work_item, …) for this turn. */
   switchboard?: SwitchboardMcp;
+  /** Extra folders the agent may read outside its workdir (e.g. chat attachments). */
+  readDirs?: string[];
 }
 
 export interface ParsedClaudeOutput {
@@ -126,12 +128,14 @@ export class ClaudeDriver implements AgentDriver {
   private model?: string;
   private timeoutMs: number;
   private switchboard?: SwitchboardMcp;
+  private readDirs: string[];
 
   constructor(options: ClaudeDriverOptions) {
     this.bin = options.bin;
     this.model = options.model;
     this.timeoutMs = options.timeoutMs;
     this.switchboard = options.switchboard;
+    this.readDirs = options.readDirs ?? [];
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -140,6 +144,7 @@ export class ClaudeDriver implements AgentDriver {
     if (sessionRef) args.push("--resume", sessionRef);
     const model = input.model ?? this.model;
     if (model) args.push("--model", model);
+    for (const dir of this.readDirs) args.push("--add-dir", dir);
     if (this.switchboard) {
       args.push(
         "--mcp-config",

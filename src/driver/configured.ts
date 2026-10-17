@@ -9,6 +9,7 @@ export interface ConfiguredDriverOptions {
   claudeBin: string;
   timeoutMs: number;
   switchboard?: SwitchboardMcp;
+  readDirs?: string[];
 }
 
 /** Picks driver (thread override first) and model from the control-plane settings on every turn. */
@@ -23,11 +24,11 @@ export class ConfiguredDriver implements AgentDriver {
 
   runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
     const s = this.settings.get();
-    const { opencodeBin, claudeBin, timeoutMs, switchboard } = this.options;
+    const { opencodeBin, claudeBin, timeoutMs, switchboard, readDirs } = this.options;
     const kind = input.driver ?? s.agentDriver;
     const driver =
       kind === "claude"
-        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs, ...(switchboard && { switchboard }) })
+        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs, readDirs, ...(switchboard && { switchboard }) })
         : new OpenCodeDriver({
             bin: opencodeBin,
             model: s.models.opencode,
