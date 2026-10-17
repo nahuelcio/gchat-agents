@@ -14,6 +14,7 @@ use crate::transcripts::TranscriptStore;
 use crate::workspace::Workspaces;
 
 pub struct AppState {
+    pub activity: Arc<crate::activity::ActivityLog>,
     pub settings: Arc<SettingsStore>,
     pub health: Arc<Mutex<Health>>,
     pub schedules: Arc<ScheduleStore>,

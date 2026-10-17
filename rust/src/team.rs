@@ -165,6 +165,10 @@ pub async fn team_members(
                 Vec::new()
             }
         });
+    let label = match &member {
+        TeamMemberInput::Agent { persona } => format!("@{}", persona.trim_start_matches('@')),
+        TeamMemberInput::Human { name } => name.trim().to_string(),
+    };
     match member {
         TeamMemberInput::Agent { persona } => {
             let persona_name = persona.trim_start_matches('@');
@@ -230,6 +234,8 @@ pub async fn team_members(
             },
         )
         .await?;
+    let kind = if op == "add" { "member_add" } else { "member_remove" };
+    crate::handler::note(&deps, kind, &thread_key, label, "").await;
     Ok(members)
 }
 

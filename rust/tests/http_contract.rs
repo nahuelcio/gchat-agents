@@ -213,3 +213,28 @@ async fn static_ui_when_built() {
     let res = switchboard::static_files::serve_static(Some(&web), "/").await;
     assert_eq!(res.status(), axum::http::StatusCode::OK);
 }
+
+#[tokio::test]
+async fn activity_records_turns_and_members() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    put_json(admin, "/api/settings", json!({ "personas": [{ "name": "qa", "prompt": "QA" }] })).await;
+    post_json(admin, "/api/team/members", json!({ "thread": "act1", "op": "add", "member": { "kind": "agent", "persona": "qa" } })).await;
+    post_json(admin, "/api/team/send", json!({ "thread": "act1", "name": "Ana", "text": "hola equipo" })).await;
+    let mut kinds = Vec::new();
+    for _ in 0..50 {
+        let (_, events) = get_json(admin, "/api/activity").await;
+        kinds = events.as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap().to_string()).collect();
+        if kinds.contains(&"turn_ok".to_string()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(kinds.contains(&"member_add".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"turn_ok".to_string()), "{kinds:?}");
+    let (_, only) = get_json(admin, "/api/activity?kind=member_add").await;
+    let only = only.as_array().unwrap();
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0]["href"], "#team/act1");
+    assert_eq!(only[0]["title"], "@qa");
+}

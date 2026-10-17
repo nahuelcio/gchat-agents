@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod admin;
 pub mod agents;
 pub mod atomic;
@@ -89,6 +90,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let store = Arc::new(SessionStore::open(config.data_dir.join("sessions.json")));
     let queue = Arc::new(TurnQueue::new());
     let media = Arc::new(crate::media::MediaStore::open(config.data_dir.join("media")));
+    let activity = Arc::new(crate::activity::ActivityLog::open(config.data_dir.join("activity.json")));
 
     let switchboard = SwitchboardMcp {
         server_path: std::env::current_exe()
@@ -145,6 +147,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
             workdir: config.workdir.to_string_lossy().to_string(),
         }),
         workspaces: Some(workspaces.clone()),
+        activity: Some(activity.clone()),
         options: Arc::new(move || settings_to_options(&settings_for_opts.get())),
         media: Some(media.clone()),
     });
@@ -158,6 +161,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         }));
     }
 
+    let activity_for_run = activity.clone();
     let schedules_for_run = schedules.clone();
     let driver_for_run = driver;
     let workdir = config.workdir.to_string_lossy().to_string();
@@ -165,9 +169,11 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         let driver = driver_for_run.clone();
         let workdir = workdir.clone();
         let store = schedules_for_run.clone();
+        let activity = activity_for_run.clone();
+        let (key, name) = (format!("schedule/{}", job.id), job.name.clone());
         async move {
             let _ = store;
-            match driver
+            let result = driver
                 .run_turn(crate::driver::types::AgentTurnInput {
                     thread_key: format!("schedule/{}", job.id),
                     session_ref: None,
@@ -178,11 +184,15 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     driver: None,
                     answer_questions: false,
                 })
-                .await
-            {
-                Ok(_) => true,
+                .await;
+            match result {
+                Ok(_) => {
+                    activity.record("schedule_ok", &key, name, "").await;
+                    true
+                }
                 Err(err) => {
                     tracing::error!(%err, "scheduled job failed");
+                    activity.record("schedule_fail", &key, name, err).await;
                     false
                 }
             }
@@ -192,6 +202,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
 
     let web_dir = find_web_dir();
     let state = Arc::new(AppState {
+        activity,
         settings,
         health,
         schedules,

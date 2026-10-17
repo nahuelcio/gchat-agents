@@ -121,6 +121,7 @@ pub struct HandlerDeps {
     pub queue: Arc<TurnQueue>,
     pub config: std::sync::Mutex<HandlerConfig>,
     pub workspaces: Option<Arc<Workspaces>>,
+    pub activity: Option<Arc<crate::activity::ActivityLog>>,
     pub options: Arc<dyn Fn() -> TurnOptions + Send + Sync>,
     pub media: Option<Arc<crate::media::MediaStore>>,
 }
@@ -336,6 +337,11 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
                 req.room_n = Some(room_n);
             }
             let result = agent_turn(&req, &deps).await;
+            let (kind, detail) = match &result {
+                Ok(_) => ("turn_ok", req.sender.clone().unwrap_or_default()),
+                Err(e) => ("turn_fail", e.clone()),
+            };
+            note(&deps, kind, &req.thread_key, req.text.chars().take(80).collect::<String>(), detail).await;
             let room_now = active_personas(
                 &(deps.options)().personas,
                 deps.store.get(&req.thread_key).as_ref().and_then(|r| r.members.as_deref()),
@@ -1140,6 +1146,12 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
     })
 }
 
+pub async fn note(deps: &HandlerDeps, kind: &str, thread_key: &str, title: impl Into<String>, detail: impl Into<String>) {
+    if let Some(log) = &deps.activity {
+        log.record(kind, thread_key, title, detail).await;
+    }
+}
+
 pub fn thread_repos(record: Option<&crate::session::SessionRecord>) -> Vec<String> {
     record
         .and_then(|r| r.repo.as_deref())
@@ -1190,6 +1202,7 @@ async fn repo_command(cmd: &str, args: &[&str], req: &TurnRequest, deps: &Handle
                 repos.push(name);
             }
             set_repos(req, deps, &repos, Some(dir.clone()), Some(branch.clone())).await?;
+            note(deps, "repo_attach", &req.thread_key, branch.clone(), repos.join(", ")).await;
             Ok(format!("Worktrees ready in {dir}: {}
 Branch: {branch}
 The agent now works there for this thread.", repos.join(", ")))
@@ -1214,9 +1227,14 @@ App: {}",
             }
             let path = repo_path(worktree.as_deref().unwrap_or(&dir), &repo);
             let port = ws.up(&slug, &repo, &path).await?;
+            note(deps, "app_up", &req.thread_key, format!("{repo} on :{port}"), branch.clone()).await;
             Ok(format!("{repo} starting on http://localhost:{port} — /logs to follow it."))
         }
-        "down" => Ok(if ws.down(&slug) { "App stopped.".into() } else { "The app is not running.".into() }),
+        "down" if ws.down(&slug) => {
+            note(deps, "app_down", &req.thread_key, "App stopped", branch.clone()).await;
+            Ok("App stopped.".into())
+        }
+        "down" => Ok("The app is not running.".into()),
         "logs" => Ok(Some(ws.logs(&slug, 200)).filter(|l| !l.is_empty()).unwrap_or_else(|| "(no output yet)".into())),
         _ => {
             let wt = worktree.unwrap_or(dir);
@@ -1370,6 +1388,7 @@ mod tests {
                 workdir: dir.to_string_lossy().to_string(),
             }),
             workspaces: None,
+            activity: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1423,6 +1442,7 @@ mod tests {
                 workdir: dir.to_string_lossy().to_string(),
             }),
             workspaces: None,
+            activity: None,
             options: Arc::new(move || TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1467,6 +1487,7 @@ mod tests {
                 workdir: dir.path().to_string_lossy().to_string(),
             }),
             workspaces: None,
+            activity: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1514,6 +1535,7 @@ mod tests {
                 workdir: dir.path().to_string_lossy().to_string(),
             }),
             workspaces: None,
+            activity: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1718,6 +1740,7 @@ mod tests {
                 workdir: dir.path().to_string_lossy().to_string(),
             }),
             workspaces: Some(Arc::new(Workspaces::new(dir.path().join("worktrees"), repos))),
+            activity: None,
             options: base.options.clone(),
             media: None,
         };

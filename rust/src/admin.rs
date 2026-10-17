@@ -21,6 +21,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/health", get(get_health))
+        .route("/api/activity", get(get_activity))
         .route("/api/agents", get(get_agents))
         .route("/api/agents/opencode/models", get(get_opencode_models))
         .route("/api/agents/opencode/agents", get(get_opencode_agents))
@@ -303,6 +304,17 @@ async fn post_schedules_suggest(Json(body): Json<SuggestBody>) -> Response {
     .into_response()
 }
 
+#[derive(Deserialize)]
+struct ActivityQuery {
+    limit: Option<usize>,
+    kind: Option<String>,
+}
+
+async fn get_activity(State(state): State<Arc<AppState>>, Query(q): Query<ActivityQuery>) -> Response {
+    let kinds: Vec<&str> = q.kind.as_deref().map(|k| k.split(',').filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+    Json(state.activity.recent(q.limit.unwrap_or(50).min(500), &kinds)).into_response()
+}
+
 async fn get_share(State(state): State<Arc<AppState>>) -> Response {
     let url = state.public_url.lock().unwrap().clone();
     let Some(url) = url else {
@@ -318,6 +330,7 @@ async fn post_share_rotate(State(state): State<Arc<AppState>>) -> Response {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "sharing needs the tunnel" }))).into_response();
     };
     let token = state.share.lock().await.rotate().to_string();
+    state.activity.record("share_rotate", "", "Share link rotated", "").await;
     Json(json!({ "link": format!("{url}/play#{token}") })).into_response()
 }
 
