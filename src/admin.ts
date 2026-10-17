@@ -119,6 +119,23 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       return send(res, 200, settings.get());
     }
 
+    if (url === "/api/work-item" && method === "PUT") {
+      const store = ctx.store;
+      if (!store) throw new HttpError(500, "session store unavailable");
+      const body = await jsonBody<{ threadKey?: string; id?: number | null }>(req);
+      const threadKey = body.threadKey?.trim() ?? "";
+      if (!threadKey) throw new HttpError(400, "threadKey is required");
+      const space = store.get(threadKey)?.space ?? "team-chat";
+      if (body.id === null || body.id === undefined) {
+        await store.update(threadKey, space, { workItemId: undefined });
+        return send(res, 200, { ok: true, workItemId: null });
+      }
+      const id = Number(body.id);
+      if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "id must be a positive integer");
+      await store.update(threadKey, space, { workItemId: id });
+      return send(res, 200, { ok: true, workItemId: id });
+    }
+
     if (url === "/api/threads" && method === "GET") {
       const ws = ctx.workspaces;
       const threads = (ctx.store?.all() ?? []).map(([key, r]) => {
@@ -245,6 +262,11 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       if (!schedules || !ctx.scheduler) throw new HttpError(404, "schedules not enabled");
       const withText = () => schedules.all().map((j) => ({ ...j, when: describeCron(j.cron) }));
       if (url === "/api/schedules" && method === "GET") return send(res, 200, withText());
+      if (url === "/api/schedules/log" && method === "GET") {
+        const id = parsed.searchParams.get("id") ?? "";
+        if (!schedules.get(id)) throw new HttpError(404, "job not found");
+        return send(res, 200, { messages: ctx.transcripts?.get(`schedule/${id}`) ?? [] });
+      }
       if (method !== "POST") throw new HttpError(405, "method not allowed");
       if (url === "/api/schedules/suggest") {
         const deps = ctx.handler;
@@ -269,6 +291,7 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
           void ctx.scheduler.runNow(body.id); // long: report "running" now, the list shows the outcome
         } else if (url === "/api/schedules/delete" && body.id) {
           await schedules.remove(body.id);
+          await ctx.transcripts?.remove(`schedule/${body.id}`);
         } else {
           throw new HttpError(404, "not found");
         }

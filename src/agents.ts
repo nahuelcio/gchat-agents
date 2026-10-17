@@ -35,6 +35,8 @@ const MODEL_LINE = /^[a-z0-9][\w.-]*\/\S+$/i;
 /** Claude Code aliases from `/model` help (e.g. opus, sonnet[1m]). */
 const CLAUDE_MODEL_ID = /^[a-z][\w.[\]-]*$/i;
 const CLAUDE_AVAILABLE = /Available:\s*(.+?)(?:\.|$)/is;
+/** Aliases Claude Code always accepts; used when `/model` output can't be parsed (newer CLIs answer in prose). */
+const CLAUDE_FALLBACK = ["opus", "sonnet", "haiku", "fable", "best", "opusplan", "opus[1m]", "sonnet[1m]", "fable[1m]"];
 
 export async function opencodeModels(bin: string, run: RunFn = defaultRun): Promise<string[]> {
   const out = await run(bin, ["models"], 60_000);
@@ -71,13 +73,13 @@ export async function opencodeAgents(bin: string, run: RunFn = defaultRun): Prom
  * Parsed from `claude -p /model` (no dedicated list command yet).
  */
 export async function claudeModels(bin: string, run: RunFn = defaultRun): Promise<string[]> {
-  const out = await run(bin, ["-p", "/model", "--output-format", "text", "--bare", "--no-session-persistence"], 30_000);
+  const out = await run(bin, ["-p", "/model", "--output-format", "text", "--bare", "--no-session-persistence"], 30_000).catch(() => "");
   const match = out.match(CLAUDE_AVAILABLE);
-  if (!match?.[1]) return [];
-  return match[1]
+  const ids = (match?.[1] ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((id) => id !== "default" && CLAUDE_MODEL_ID.test(id));
+  return ids.length > 0 ? ids : CLAUDE_FALLBACK;
 }
 
 async function readiness(id: string, bin: string, run: RunFn): Promise<Pick<DetectedAgent, "ready" | "detail">> {

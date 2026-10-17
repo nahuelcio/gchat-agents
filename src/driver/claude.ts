@@ -1,12 +1,15 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, ContextUsage, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
 import { answersFromText, formatQuestions, normalizeQuestions } from "../questions.js";
+import { claudeMcpConfig, SWITCHBOARD_HINT, type SwitchboardMcp } from "../switchboard-mcp.js";
 
 export interface ClaudeDriverOptions {
   bin: string;
   /** Optional model override. Omitted = claude default. */
   model?: string;
   timeoutMs: number;
+  /** Expose Switchboard MCP tools (link_work_item, …) for this turn. */
+  switchboard?: SwitchboardMcp;
 }
 
 export interface ParsedClaudeOutput {
@@ -122,11 +125,13 @@ export class ClaudeDriver implements AgentDriver {
   private bin: string;
   private model?: string;
   private timeoutMs: number;
+  private switchboard?: SwitchboardMcp;
 
   constructor(options: ClaudeDriverOptions) {
     this.bin = options.bin;
     this.model = options.model;
     this.timeoutMs = options.timeoutMs;
+    this.switchboard = options.switchboard;
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -135,6 +140,14 @@ export class ClaudeDriver implements AgentDriver {
     if (sessionRef) args.push("--resume", sessionRef);
     const model = input.model ?? this.model;
     if (model) args.push("--model", model);
+    if (this.switchboard) {
+      args.push(
+        "--mcp-config",
+        claudeMcpConfig(this.switchboard.serverPath, input.threadKey, this.switchboard.adminUrl),
+        "--append-system-prompt",
+        SWITCHBOARD_HINT,
+      );
+    }
     const live = spawnLive(this.bin, args, input.workdir, this.timeoutMs);
     live.write(userMessage(input.text));
     try {

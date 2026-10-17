@@ -82,4 +82,11 @@ describe("claudeModels", () => {
       "opusplan",
     ]);
   });
+
+  it("falls back to known aliases when /model output has no list", async () => {
+    const run = fakeRun({
+      "claude -p /model --output-format text --bare --no-session-persistence": "I can't switch models from here.",
+    });
+    expect(await claudeModels("claude", run)).toContain("opus");
+  });
 });

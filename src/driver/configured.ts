@@ -1,4 +1,5 @@
 import type { SettingsStore } from "../settings.js";
+import type { SwitchboardMcp } from "../switchboard-mcp.js";
 import { ClaudeDriver } from "./claude.js";
 import { OpenCodeDriver } from "./opencode.js";
 import type { AgentDriver, AgentTurnInput, AgentTurnResult } from "./types.js";
@@ -7,6 +8,7 @@ export interface ConfiguredDriverOptions {
   opencodeBin: string;
   claudeBin: string;
   timeoutMs: number;
+  switchboard?: SwitchboardMcp;
 }
 
 /** Picks driver (thread override first) and model from the control-plane settings on every turn. */
@@ -21,12 +23,18 @@ export class ConfiguredDriver implements AgentDriver {
 
   runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
     const s = this.settings.get();
-    const { opencodeBin, claudeBin, timeoutMs } = this.options;
+    const { opencodeBin, claudeBin, timeoutMs, switchboard } = this.options;
     const kind = input.driver ?? s.agentDriver;
     const driver =
       kind === "claude"
-        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs })
-        : new OpenCodeDriver({ bin: opencodeBin, model: s.models.opencode, agent: s.agents?.opencode, timeoutMs });
+        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs, ...(switchboard && { switchboard }) })
+        : new OpenCodeDriver({
+            bin: opencodeBin,
+            model: s.models.opencode,
+            agent: s.agents?.opencode,
+            timeoutMs,
+            ...(switchboard && { switchboard }),
+          });
     return driver.runTurn(input);
   }
 }

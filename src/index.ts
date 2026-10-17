@@ -8,21 +8,21 @@ import { GoogleConnection } from "./google.js";
 import { createAdminServer } from "./admin.js";
 import { detectAdo } from "./integrations.js";
 import { claudeModels, detectAgents, opencodeAgents, opencodeModels } from "./agents.js";
-import { processMessage, type HandlerDeps } from "./handler.js";
+import type { HandlerDeps } from "./handler.js";
 import { Health } from "./health.js";
-import { Scheduler, ScheduleStore, type Job } from "./schedules.js";
+import { Scheduler, ScheduleStore } from "./schedules.js";
+import { runScheduledJob } from "./schedule-run.js";
 import { TurnQueue } from "./queue.js";
 import { SessionStore } from "./store.js";
 import { createHttpServer } from "./server.js";
 import { SettingsStore } from "./settings.js";
 import { ConfiguredDriver } from "./driver/configured.js";
 import { GoogleTokenVerifier } from "./verify.js";
-import { threadSlug, Workspaces } from "./workspace.js";
+import { Workspaces } from "./workspace.js";
 import { ensureTunnel } from "./tunnel.js";
 import { ShareToken } from "./share.js";
 import { MediaStore } from "./media.js";
 import { TranscriptStore } from "./transcripts.js";
-import { questionCards } from "./questions.js";
 
 const config = loadConfig();
 
@@ -64,12 +64,17 @@ const schedules = new ScheduleStore(join(config.dataDir, "schedules.json"));
 const workspaces = new Workspaces(join(config.dataDir, "worktrees"), settings.get().repos);
 
 const media = new MediaStore(join(config.dataDir, "media"));
+const switchboardMcp = {
+  serverPath: fileURLToPath(new URL("./switchboard-mcp.js", import.meta.url)),
+  adminUrl: `http://127.0.0.1:${config.adminPort}`,
+};
 const deps: HandlerDeps = {
   verifier: new GoogleTokenVerifier(tokenAudience),
   driver: new ConfiguredDriver(settings, {
     opencodeBin: config.opencodeBin,
     claudeBin: config.claudeBin,
     timeoutMs: config.turnTimeoutMs,
+    switchboard: switchboardMcp,
   }),
   chat: google,
   store: new SessionStore(join(config.dataDir, "sessions.json")),
@@ -90,36 +95,11 @@ const deps: HandlerDeps = {
   },
 };
 
-/** One scheduled run = one turn in the job's own thread; results post to its space. */
-async function runJob(job: Job): Promise<boolean> {
-  const threadKey = `schedule/${job.id}`;
-  if (job.repo && !deps.store.get(threadKey)?.worktree) {
-    const { worktree, branch } = await workspaces.create(job.repo, threadSlug(`schedule-${job.id}`));
-    await deps.store.update(threadKey, job.space, { repo: job.repo, worktree, branch });
-  }
-  const { ok } = await processMessage(
-    {
-      threadKey,
-      spaceName: job.space,
-      text: job.prompt,
-      sender: `Schedule "${job.name}"`,
-      // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
-      reply: async (text, meta) => {
-        if (job.space.startsWith("spaces/")) {
-          await deps.chat.postMessage(job.space, {
-            text,
-            thread: { threadKey: `schedule-${job.id}` },
-            ...(meta?.questions?.length && { cardsV2: questionCards(meta.questions) }),
-          });
-        }
-      },
-      answerQuestions: false,
-    },
-    deps,
-  );
-  return ok;
-}
-const scheduler = new Scheduler(schedules, runJob);
+const shareToken = new ShareToken(join(config.dataDir, "share-token"));
+const webDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
+const listAgents = () => detectAgents({ opencode: config.opencodeBin, claude: config.claudeBin });
+const transcripts = new TranscriptStore(join(config.dataDir, "transcripts"));
+const scheduler = new Scheduler(schedules, (job) => runScheduledJob(job, deps, transcripts));
 scheduler.start();
 // Heartbeat: proves the event loop is alive; a wedged process stops beating.
 setInterval(() => health.beat(), 15_000).unref();
@@ -130,10 +110,6 @@ settings.onChange((s) => {
   console.info(`[settings] updated: driver=${s.agentDriver}, repos=${Object.keys(s.repos).join(", ") || "none"}`);
 });
 
-const shareToken = new ShareToken(join(config.dataDir, "share-token"));
-const webDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
-const listAgents = () => detectAgents({ opencode: config.opencodeBin, claude: config.claudeBin });
-const transcripts = new TranscriptStore(join(config.dataDir, "transcripts"));
 const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents, transcripts });
 server.listen(config.port, () => {
   console.info(`gchat-agents listening on :${config.port} (workdir: ${config.workdir})`);

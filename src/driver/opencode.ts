@@ -1,6 +1,7 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
 import { continuation, formatQuestions, normalizeQuestions } from "../questions.js";
+import { opencodeMcpConfig, type SwitchboardMcp } from "../switchboard-mcp.js";
 
 /** Silence after a question event before we treat the CLI as blocked on the user. */
 const ASK_IDLE_MS = 200;
@@ -11,6 +12,8 @@ export interface OpenCodeDriverOptions {
   model?: string;
   agent?: string;
   timeoutMs: number;
+  /** Expose Switchboard MCP tools (link_work_item, …) for this turn. */
+  switchboard?: SwitchboardMcp;
 }
 
 export interface ParsedRunOutput {
@@ -98,12 +101,14 @@ export class OpenCodeDriver implements AgentDriver {
   private model?: string;
   private agent?: string;
   private timeoutMs: number;
+  private switchboard?: SwitchboardMcp;
 
   constructor(options: OpenCodeDriverOptions) {
     this.bin = options.bin;
     this.model = options.model;
     this.agent = options.agent;
     this.timeoutMs = options.timeoutMs;
+    this.switchboard = options.switchboard;
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -132,7 +137,10 @@ export class OpenCodeDriver implements AgentDriver {
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
     args.push("--", input.text);
-    return spawnLive(this.bin, args, input.workdir, this.timeoutMs);
+    const env = this.switchboard
+      ? { OPENCODE_CONFIG_CONTENT: opencodeMcpConfig(this.switchboard.serverPath, input.threadKey, this.switchboard.adminUrl) }
+      : undefined;
+    return spawnLive(this.bin, args, input.workdir, this.timeoutMs, env);
   }
 
   private async pump(live: LiveProcess, input: AgentTurnInput, preface: string): Promise<AgentTurnResult> {

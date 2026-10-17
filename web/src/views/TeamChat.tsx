@@ -760,9 +760,7 @@ function ThreadContextPanel({ state, guest }: { state?: TeamThreadState; guest: 
       ) : (
         <p className="muted small">
           {guest ? "No work item on this thread." : (
-            <>
-              None. Set one with <code>/wi &lt;id&gt;</code>.
-            </>
+            <>None yet — ask the agent to create or link a work item.</>
           )}
         </p>
       )}

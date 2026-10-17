@@ -20,9 +20,14 @@ function shebang(bin: string): boolean {
   }
 }
 
-function start(bin: string, args: string[], cwd: string): ChildProcess {
+function start(bin: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): ChildProcess {
   const resolved = resolveBin(bin);
-  const opts = { cwd, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" };
+  const opts = {
+    cwd,
+    env: env ? { ...process.env, ...env } : undefined,
+    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  };
   if (shebang(resolved)) return spawn("sh", [resolved, ...args], opts);
   return spawn(resolved, args, opts);
 }
@@ -45,10 +50,16 @@ export interface LiveProcess {
  * Spawn a CLI with stdin open so a question can be answered later.
  * Same process-group kill as `runCaptured`.
  */
-export function spawnLive(bin: string, args: string[], cwd: string, timeoutMs: number): LiveProcess {
+export function spawnLive(
+  bin: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): LiveProcess {
   let child: ChildProcess;
   try {
-    child = start(bin, args, cwd);
+    child = start(bin, args, cwd, env);
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     return closed(error);

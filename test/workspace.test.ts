@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { gitChanges, threadSlug, Workspaces } from "../src/workspace.js";
-import { workItemFromBranch } from "../src/team.js";
+import { workItemFromBranch } from "../src/work-item.js";
 
 let dir: string;
 let repo: string;

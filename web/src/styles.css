@@ -448,11 +448,17 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .alive-stats strong { font-size: 1.5rem; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--primary); }
 .alive-stats strong.warn { color: var(--warn); }
 .form { border-color: var(--secondary); box-shadow: 4px 4px 0 var(--secondary); }
-.job { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px 16px; border-top: 2px solid var(--line-2); }
+.job-block { border-top: 2px solid var(--line-2); }
+.job { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px 16px; }
 .job-main { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .job-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .job-times { flex: 0 1 190px; display: flex; flex-direction: column; color: var(--fg-2); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
 .job-actions { display: flex; align-items: center; gap: 10px; }
+.job-log { margin: 0 16px 14px; padding: 12px; max-height: 420px; overflow: auto; background: var(--logs-bg); color: var(--logs-fg); border-radius: var(--radius-sm); border: 2px solid var(--primary); }
+.job-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.job-log-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-size: 12px; }
+.job-log-text { margin: 0; white-space: pre-wrap; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.45; }
+.job-log-list .bot .job-log-text { opacity: 0.95; }
 .switch { width: 44px; height: 26px; border-radius: var(--radius-sm); border: 2px solid var(--primary); padding: 2px; background: var(--input); cursor: pointer; display: flex; }
 .switch span { width: 18px; height: 18px; border-radius: 2px; background: #fff; box-shadow: 1px 1px 0 var(--primary); transition: transform 0.15s; }
 .switch.on { background: var(--secondary); }

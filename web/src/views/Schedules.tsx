@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, duration, until, type Health, type Job } from "../api";
+import { ago, api, duration, until, type Health, type Job, type ScheduleLogMessage } from "../api";
 import type { ViewProps } from "../App";
 
 const PRESETS = [
@@ -24,6 +24,8 @@ export function Schedules({ settings, notify }: ViewProps) {
   const [suggesting, setSuggesting] = useState(false);
   const [aiDraft, setAiDraft] = useState("");
   const [form, setForm] = useState({ prompt: "", cron: PRESETS[1]!.cron, space: settings.allowedSpaces[0] ?? "", repo: "" });
+  const [logId, setLogId] = useState<string>();
+  const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
 
   useEffect(() => {
     const load = () => {
@@ -34,6 +36,17 @@ export function Schedules({ settings, notify }: ViewProps) {
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!logId) {
+      setLogMessages(undefined);
+      return;
+    }
+    const load = () => api.scheduleLog(logId).then((r) => setLogMessages(r.messages), (err: Error) => notify(err.message, true));
+    load();
+    const id = setInterval(load, 2000);
+    return () => clearInterval(id);
+  }, [logId, notify]);
 
   const act = (p: Promise<Job[]>, ok: string) =>
     p.then(
@@ -202,44 +215,79 @@ export function Schedules({ settings, notify }: ViewProps) {
         {jobs && jobs.length === 0 && <p className="empty">No jobs yet. Create one, or in any thread: /schedule 0 9 * * 1-5 Summarize the standup</p>}
         {jobs?.map((j) => {
           const s = status(j);
+          const showingLog = logId === j.id;
           return (
-            <div key={j.id} className="job">
-              <div className="job-main">
-                <div className="job-title">
-                  <span className="strong">{j.name}</span>
-                  <span className={`pill ${s.tone}`}>{s.label}</span>
+            <div key={j.id} className="job-block">
+              <div className="job">
+                <div className="job-main">
+                  <div className="job-title">
+                    <span className="strong">{j.name}</span>
+                    <span className={`pill ${s.tone}`}>{s.label}</span>
+                  </div>
+                  <div>
+                    {j.when} <code className="muted">{j.cron}</code>
+                  </div>
+                  <div className="muted small">
+                    {j.createdBy === "control plane" ? "Created here" : `Created by ${j.createdBy}`} · {j.space}
+                    {j.repo ? ` · ${j.repo}` : ""}
+                  </div>
                 </div>
-                <div>
-                  {j.when} <code className="muted">{j.cron}</code>
+                <div className="job-times small">
+                  <span>Last: {ago(j.lastRunAt)}</span>
+                  <span>Next: {j.enabled ? until(j.nextRunAt) : "paused"}</span>
                 </div>
-                <div className="muted small">
-                  {j.createdBy === "control plane" ? "Created here" : `Created by ${j.createdBy}`} · {j.space}
-                  {j.repo ? ` · ${j.repo}` : ""}
+                <div className="job-actions">
+                  <button className="btn" onClick={() => setLogId(showingLog ? undefined : j.id)} aria-pressed={showingLog}>
+                    {showingLog ? "Hide log" : "Log"}
+                  </button>
+                  <button className="btn" onClick={() => void act(api.runSchedule(j.id), "Running")} disabled={j.lastStatus === "running"}>
+                    Run now
+                  </button>
+                  <button
+                    className={`switch ${j.enabled ? "on" : ""}`}
+                    role="switch"
+                    aria-checked={j.enabled}
+                    aria-label={`Enable ${j.name}`}
+                    onClick={() => void act(api.updateSchedule(j.id, { enabled: !j.enabled }), j.enabled ? "Paused" : "Resumed")}
+                  >
+                    <span />
+                  </button>
+                  <button
+                    className="btn icon ghost"
+                    aria-label={`Delete ${j.name}`}
+                    onClick={() =>
+                      void act(api.deleteSchedule(j.id), "Job deleted").then(() => {
+                        if (logId === j.id) setLogId(undefined);
+                      })
+                    }
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
+                  </button>
                 </div>
               </div>
-              <div className="job-times small">
-                <span>Last: {ago(j.lastRunAt)}</span>
-                <span>Next: {j.enabled ? until(j.nextRunAt) : "paused"}</span>
-              </div>
-              <div className="job-actions">
-                <button className="btn" onClick={() => void act(api.runSchedule(j.id), "Running")} disabled={j.lastStatus === "running"}>
-                  Run now
-                </button>
-                <button
-                  className={`switch ${j.enabled ? "on" : ""}`}
-                  role="switch"
-                  aria-checked={j.enabled}
-                  aria-label={`Enable ${j.name}`}
-                  onClick={() => void act(api.updateSchedule(j.id, { enabled: !j.enabled }), j.enabled ? "Paused" : "Resumed")}
-                >
-                  <span />
-                </button>
-                <button className="btn icon ghost" aria-label={`Delete ${j.name}`} onClick={() => void act(api.deleteSchedule(j.id), "Job deleted")}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </button>
-              </div>
+              {showingLog && (
+                <div className="job-log" aria-live="polite">
+                  {logMessages === undefined && <p className="muted small">Loading…</p>}
+                  {logMessages && logMessages.length === 0 && (
+                    <p className="muted small">No runs recorded yet. Open Log after the next run — older runs before this feature are not kept.</p>
+                  )}
+                  {logMessages && logMessages.length > 0 && (
+                    <ol className="job-log-list">
+                      {logMessages.map((m, i) => (
+                        <li key={`${m.at ?? i}-${i}`} className={m.bot ? "bot" : ""}>
+                          <div className="job-log-meta">
+                            <span className="strong">{m.author}</span>
+                            <span className="muted">{ago(m.at)}</span>
+                          </div>
+                          <pre className="job-log-text">{m.text}</pre>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

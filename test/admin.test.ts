@@ -224,6 +224,44 @@ describe("admin server", () => {
     expect(schedules.all()).toHaveLength(0);
   });
 
+  it("serves a schedule job log and clears it on delete", async () => {
+    const { TranscriptStore } = await import("../src/transcripts.js");
+    const schedules = new ScheduleStore(join(dir, "schedules.json"));
+    const transcripts = new TranscriptStore(join(dir, "transcripts"));
+    ctx.schedules = schedules;
+    ctx.scheduler = new Scheduler(schedules, async () => true);
+    ctx.transcripts = transcripts;
+
+    const created = (await (
+      await fetch(`${base}/api/schedules`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "Summarize commits", cron: "0 9 * * 1-5", space: "spaces/AAA" }),
+      })
+    ).json()) as { id: string }[];
+    const id = created[0]!.id;
+    expect((await fetch(`${base}/api/schedules/log?id=${id}`)).status).toBe(200);
+    expect(await (await fetch(`${base}/api/schedules/log?id=${id}`)).json()).toEqual({ messages: [] });
+    expect((await fetch(`${base}/api/schedules/log?id=missing`)).status).toBe(404);
+
+    await transcripts.append(`schedule/${id}`, [
+      { author: 'Schedule "Summarize commits"', text: "Summarize commits", bot: false },
+      { author: "gchat-agents", text: "Done.", bot: true },
+    ]);
+    const log = (await (await fetch(`${base}/api/schedules/log?id=${id}`)).json()) as { messages: { text: string; bot: boolean }[] };
+    expect(log.messages).toEqual([
+      expect.objectContaining({ text: "Summarize commits", bot: false }),
+      expect.objectContaining({ text: "Done.", bot: true }),
+    ]);
+
+    await fetch(`${base}/api/schedules/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    expect(transcripts.get(`schedule/${id}`)).toEqual([]);
+  });
+
   it("suggests a schedule from plain language via the agent", async () => {
     const schedules = new ScheduleStore(join(dir, "schedules.json"));
     ctx.schedules = schedules;

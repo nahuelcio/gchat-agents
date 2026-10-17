@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useRef, useState, type FocusEvent } from "react";
+import { useEffect, useMemo, useState, type FocusEvent } from "react";
 import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type RepoConfig, type Settings } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
-const FOOTER_OPTIONS: { value: ContextFooter; label: string }[] = [
-  { value: "every", label: "Every reply" },
-  { value: "every5", label: "Every 5 replies" },
-  { value: "above60", label: "Only above 60%" },
-  { value: "never", label: "Never" },
+const FOOTER_OPTIONS: { value: ContextFooter; label: string; hint: string }[] = [
+  { value: "every", label: "Every reply", hint: "Always visible" },
+  { value: "every5", label: "Every 5 replies", hint: "Occasional reminder" },
+  { value: "above60", label: "When it's filling up", hint: "Only once the session passes 60%" },
+  { value: "never", label: "Never", hint: "Keep replies clean" },
+];
+
+const COMPACT_OPTIONS = [
+  { value: 0, label: "Off" },
+  { value: 75, label: "75%" },
+  { value: 85, label: "85%" },
+  { value: 95, label: "95%" },
 ];
 
 export function SettingsView(props: ViewProps) {
@@ -255,46 +262,21 @@ function ModelBrowser({
   onRefresh: () => void;
   onSelect: (id: string) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [custom, setCustom] = useState("");
-  const [openProviders, setOpenProviders] = useState<Set<string>>(() => new Set());
-  const listRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
 
-  const grouped = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
-    const map = new Map<string, string[]>();
-    for (const id of list) {
-      const slash = id.indexOf("/");
-      const provider = slash >= 0 ? id.slice(0, slash) : "other";
-      const bucket = map.get(provider) ?? [];
-      bucket.push(id);
-      map.set(provider, bucket);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [models, search]);
+  // One search box: every whitespace-separated word must match, so "tb sonnet" or "anthropic opus" both work.
+  const matches = useMemo(() => {
+    const words = q.split(/\s+/).filter(Boolean);
+    const list = words.length
+      ? models.filter((m) => words.every((w) => m.toLowerCase().includes(w)))
+      : [...models.filter((m) => m.startsWith("opencode-admin/")), ...models.filter((m) => !m.startsWith("opencode-admin/"))];
+    return list.slice(0, 40);
+  }, [models, q]);
 
-  const matchCount = grouped.reduce((n, [, ids]) => n + ids.length, 0);
-  const filtering = search.trim().length > 0;
-  const selectedProvider = selected.includes("/") ? selected.slice(0, selected.indexOf("/")) : "";
-
-  useEffect(() => {
-    if (!selectedProvider) return;
-    setOpenProviders((prev) => (prev.has(selectedProvider) ? prev : new Set(prev).add(selectedProvider)));
-  }, [selectedProvider]);
-
-  useEffect(() => {
-    const el = listRef.current?.querySelector(".model-row.on");
-    el?.scrollIntoView({ block: "nearest" });
-  }, [selected, models.length]);
-
-  const toggleProvider = (provider: string) => {
-    setOpenProviders((prev) => {
-      const next = new Set(prev);
-      if (next.has(provider)) next.delete(provider);
-      else next.add(provider);
-      return next;
-    });
+  const pick = (id: string) => {
+    onSelect(id);
+    setQuery("");
   };
 
   return (
@@ -318,120 +300,98 @@ function ModelBrowser({
           <span className="muted grow">OpenCode default (no override)</span>
         )}
       </div>
-      {models.length > 0 ? (
-        <>
-          <label className="field" htmlFor="model-filter">
-            <span>Find a model</span>
-            <input
-              id="model-filter"
-              className="model-filter"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Filter ${models.length} models by name or provider…`}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <p className="muted small model-browser-meta">
-            {filtering
-              ? `${matchCount} match${matchCount === 1 ? "" : "es"} — click one to set it`
-              : "Open a provider, then click a model"}
-          </p>
-          <div ref={listRef} className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
-            {grouped.map(([provider, ids]) => {
-              const open = filtering || openProviders.has(provider);
-              return (
-                <div key={provider} className="model-group">
-                  <button
-                    type="button"
-                    className="model-group-head"
-                    aria-expanded={open}
-                    disabled={filtering}
-                    onClick={() => toggleProvider(provider)}
-                  >
-                    <span className="model-group-chevron" aria-hidden="true">
-                      {open ? "▾" : "▸"}
-                    </span>
-                    <span>{provider}</span>
-                    <span className="model-group-count">{ids.length}</span>
-                  </button>
-                  {open &&
-                    ids.map((id) => {
-                      const name = id.slice(provider.length + 1);
-                      const on = id === selected;
-                      return (
-                        <button
-                          type="button"
-                          key={id}
-                          role="option"
-                          aria-selected={on}
-                          className={`model-row ${on ? "on" : ""}`}
-                          onClick={() => onSelect(id)}
-                        >
-                          <span className="model-row-check" aria-hidden="true">
-                            ✓
-                          </span>
-                          <span className="model-name">{name || id}</span>
-                        </button>
-                      );
-                    })}
-                </div>
-              );
-            })}
-            {matchCount === 0 && <p className="muted small model-picker-empty">No models match this filter.</p>}
-          </div>
-        </>
-      ) : (
-        <p className="muted small">No models yet. Run <code>opencode auth login</code>, then Refresh list.</p>
-      )}
       <form
-        className="model-custom row"
         onSubmit={(e) => {
           e.preventDefault();
-          const value = custom.trim();
-          if (!value) return;
-          onSelect(value);
-          setCustom("");
+          // Enter takes the first match, or the typed text as a raw ID (provider/model#variant).
+          const first = q ? matches[0] : undefined;
+          const value = first ?? query.trim();
+          if (value) pick(value);
         }}
       >
-        <label className="field grow">
-          <span>Or paste a model ID</span>
-          <input className="mono" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="provider/model#variant" />
-        </label>
-        <button type="submit" className="btn" disabled={!custom.trim()}>
-          Use
-        </button>
+        <input
+          className="model-filter mono"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={models.length ? `Search ${models.length} models (e.g. "sonnet", "tb opus") or paste an ID — Enter to set` : "Paste a model ID: provider/model"}
+          autoComplete="off"
+          spellCheck={false}
+        />
       </form>
+      {busy && models.length === 0 && <p className="muted small">Loading models…</p>}
+      {!busy && models.length === 0 && (
+        <p className="muted small">No models yet. Run <code>opencode auth login</code>, then Refresh list.</p>
+      )}
+      {models.length > 0 && (
+        <div className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
+          {!q && <p className="muted small model-browser-meta">Suggestions — type to search all {models.length}</p>}
+          {matches.map((id) => {
+            const slash = id.indexOf("/");
+            const on = id === selected;
+            return (
+              <button type="button" key={id} role="option" aria-selected={on} className={`model-row ${on ? "on" : ""}`} onClick={() => pick(id)}>
+                <span className="model-row-check" aria-hidden="true">✓</span>
+                <span className="model-name">{slash >= 0 ? id.slice(slash + 1) : id}</span>
+                {slash >= 0 && <span className="model-group-count">{id.slice(0, slash) === "opencode-admin" ? "TokenBank" : id.slice(0, slash)}</span>}
+              </button>
+            );
+          })}
+          {q && matches.length === 0 && <p className="muted small model-picker-empty">No match — press Enter to use “{query.trim()}” as-is.</p>}
+        </div>
+      )}
       <span className="muted small">Threads can override it with /model.</span>
     </div>
   );
 }
 
 function ContextCard({ settings, save }: ViewProps) {
+  const footer = FOOTER_OPTIONS.find((o) => o.value === settings.contextFooter);
+  const compact = settings.autoCompactAt;
   return (
     <details className="card" open>
       <summary className="card-title">
         <h2>Context in Chat</h2>
-        <p className="muted small">A footer under agent replies: model, repo and branch, and how full the session is. Claude reports exact usage; OpenCode is estimated (~).</p>
+        <p className="muted small">Agents have a limited memory per thread. Choose how often to show how full it is, and when to free it up.</p>
       </summary>
-      <fieldset className="chips">
-        <legend className="sr-only">Show the context footer</legend>
-        {FOOTER_OPTIONS.map((o) => (
-          <label key={o.value} className={`chip ${settings.contextFooter === o.value ? "on" : ""}`}>
-            <input type="radio" name="footer" checked={settings.contextFooter === o.value} onChange={() => void save({ contextFooter: o.value }, `Context footer: ${o.label.toLowerCase()}`)} />
-            {o.label}
-          </label>
-        ))}
-      </fieldset>
-      <p className="sample mono">— glm-5.3-flash · yFlow@chat/flow-export · context 62% (79k/128k)</p>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={settings.autoCompactAt > 0}
-          onChange={(e) => void save({ autoCompactAt: e.target.checked ? 85 : 0 }, e.target.checked ? "Auto-compact at 85%" : "Auto-compact off")}
-        />
-        <span>Compact automatically at 85% and say so in the thread</span>
-      </label>
+
+      <div className="field">
+        <span>Show usage under replies</span>
+        <fieldset className="chips">
+          <legend className="sr-only">Show the context footer</legend>
+          {FOOTER_OPTIONS.map((o) => (
+            <label key={o.value} className={`chip ${settings.contextFooter === o.value ? "on" : ""}`} title={o.hint}>
+              <input type="radio" name="footer" checked={settings.contextFooter === o.value} onChange={() => void save({ contextFooter: o.value }, `Context footer: ${o.label.toLowerCase()}`)} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">{footer?.hint}</span>
+      </div>
+      {settings.contextFooter !== "never" && (
+        <div className="field">
+          <span className="muted small">Preview</span>
+          <p className="sample mono">— glm-5.3-flash · yFlow@chat/flow-export · context 62% (79k/128k)</p>
+          <span className="muted small">Model · repo@branch · memory used. Claude reports exact numbers; OpenCode is an estimate (~).</span>
+        </div>
+      )}
+
+      <div className="field">
+        <span>Auto-compact</span>
+        <fieldset className="chips">
+          <legend className="sr-only">Compact automatically</legend>
+          {COMPACT_OPTIONS.map((o) => (
+            <label key={o.value} className={`chip ${compact === o.value ? "on" : ""}`}>
+              <input type="radio" name="compact" checked={compact === o.value} onChange={() => void save({ autoCompactAt: o.value }, o.value ? `Auto-compact at ${o.label}` : "Auto-compact off")} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">
+          {compact > 0
+            ? `When a thread reaches ${compact}%, the agent summarizes the conversation to free space and posts a note in the thread.`
+            : "Threads are never compacted automatically. Use /compact in a thread when needed."}
+        </span>
+      </div>
     </details>
   );
 }

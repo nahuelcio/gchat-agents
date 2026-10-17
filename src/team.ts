@@ -3,7 +3,10 @@ import { adoWorkItem, type AdoAuth, type AdoWorkItem, type FetchFn } from "./int
 import { attachmentPromptLine, toMessageAttachment, type MessageAttachment } from "./media.js";
 import { cancelQuestion } from "./question-gate.js";
 import type { TranscriptStore } from "./transcripts.js";
+import { workItemFromBranch } from "./work-item.js";
 import { threadSlug, type GitChangeSummary } from "./workspace.js";
+
+export { workItemFromBranch } from "./work-item.js";
 
 /** Team chat threads live under this key prefix (sessions, transcripts). */
 export const TEAM_PREFIX = "share/";
@@ -118,16 +121,6 @@ export interface TeamThreadContext {
 export interface TeamThreadExtras {
   ado?: AdoAuth;
   fetch?: FetchFn;
-}
-
-/** Digits in a branch name that look like an Azure work item id (e.g. 12345-fix, feature/AB#12345). */
-export function workItemFromBranch(branch?: string): number | undefined {
-  if (!branch) return undefined;
-  // No leading zeros: avoids false hits on chat/team-0001 style slugs.
-  const match = branch.match(/(?:^|[/_-])(?:AB#)?([1-9]\d{3,6})(?:[-_]|$)/i) ?? branch.match(/#([1-9]\d{3,6})\b/);
-  if (!match) return undefined;
-  const id = Number(match[1]);
-  return Number.isInteger(id) && id > 0 ? id : undefined;
 }
 
 /** History + live state of one team thread, for the chat view (incl. side panel). */

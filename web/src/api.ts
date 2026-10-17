@@ -52,6 +52,13 @@ export interface Job {
   failures: number;
 }
 
+export interface ScheduleLogMessage {
+  author: string;
+  text: string;
+  bot: boolean;
+  at?: string;
+}
+
 export interface Health {
   starts: number;
   crashes: number;
@@ -108,6 +115,7 @@ export const api = {
   updateSchedule: (id: string, patch: { enabled?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
+  scheduleLog: (id: string) => call<{ messages: ScheduleLogMessage[] }>(`/api/schedules/log?id=${encodeURIComponent(id)}`),
   google: () => call<GoogleStatus>("/api/google"),
   googleKey: (key: string) => call<GoogleStatus>("/api/google/key", { key }),
   googleClear: () => call<GoogleStatus>("/api/google/key/delete", {}),
