@@ -23,6 +23,8 @@ export interface Persona {
   driver?: "opencode" | "claude";
   model?: string;
   agent?: string;
+  listen?: "mentions" | "all";
+  respondTo?: "anyone" | "people";
 }
 
 export interface Thread {
@@ -219,7 +221,17 @@ export interface TeamThreadState {
   workItem?: TeamThreadWorkItem | null;
   changes?: TeamThreadChanges | null;
   busy: boolean;
+  /** null = legacy room: every catalog agent is available. */
+  members?: RoomMember[] | null;
+  kicked?: string[];
+  answering?: string[];
 }
+
+export type RoomMember =
+  | { kind: "human"; id: string; name: string; joinedAt: string }
+  | { kind: "agent"; id: string; persona: string; joinedAt: string };
+
+export type MemberChange = { kind: "agent"; persona: string } | { kind: "human"; name: string };
 
 export interface TeamThreadSummary {
   id: string;
@@ -238,8 +250,14 @@ export interface TeamTransport {
   thread: (id: string) => Promise<TeamThreadState>;
   send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
+  /** Agents you can @mention in chat (names without @). */
+  personas?: () => Promise<{ name: string }[]>;
   /** Absolute or same-origin URL for a saved attachment id. */
   mediaUrl: (id: string) => string;
+  /** Stops agents talking among themselves in this thread after the current turn. */
+  stopAgents: (id: string) => Promise<unknown>;
+  /** Owner only: add or remove a room member. */
+  members?: (id: string, op: "add" | "remove", member: MemberChange) => Promise<{ members: RoomMember[] }>;
 }
 
 export const ownerTransport: TeamTransport = {
@@ -250,7 +268,10 @@ export const ownerTransport: TeamTransport = {
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
   send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
+  personas: () => call<Settings>("/api/settings").then((s) => (s.personas ?? []).map((p) => ({ name: p.name }))),
   mediaUrl: (id) => `/api/media/${id}`,
+  stopAgents: (id) => call("/api/team/stop", { thread: id }),
+  members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),
 };
 
 export function guestTransport(token: string): TeamTransport {
@@ -269,6 +290,8 @@ export function guestTransport(token: string): TeamTransport {
     thread: (id) => req<TeamThreadState>(`/play/api/thread?thread=${encodeURIComponent(id)}`),
     send: (id, text, name, attachments) => req("/play/api/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
     agents: () => req("/play/api/agents"),
+    personas: () => req("/play/api/personas"),
     mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,
+    stopAgents: (id) => req("/play/api/stop", { thread: id }),
   };
 }

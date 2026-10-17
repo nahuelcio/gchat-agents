@@ -28,6 +28,25 @@ export interface SessionRecord {
   pendingQuestions?: AgentQuestion[];
   /** Session per @agent in this thread (persona name -> sessionRef). */
   personaSessions?: Record<string, string>;
+  /** Recent messages in the thread (people and agents), so each agent can catch up on what the others said. */
+  room?: RoomEntry[];
+  /** Last room entry each participant ("default" or a persona name) has seen. */
+  roomSeen?: Record<string, number>;
+  /** Who is in this room. Absent = legacy thread: every catalog agent is available. */
+  members?: RoomMember[];
+  kicked?: string[];
+  hostRoster?: string[];
+  personaRoster?: Record<string, string[]>;
+}
+
+export type RoomMember =
+  | { kind: "human"; id: string; name: string; joinedAt: string }
+  | { kind: "agent"; id: string; persona: string; joinedAt: string };
+
+export interface RoomEntry {
+  n: number;
+  author: string;
+  text: string;
 }
 
 /** threadKey -> session record, persisted as JSON with atomic writes (tmp + rename). */

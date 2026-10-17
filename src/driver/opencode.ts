@@ -125,7 +125,7 @@ export class OpenCodeDriver implements AgentDriver {
   }
 
   private spawn(input: AgentTurnInput): LiveProcess {
-    const args = ["run", "--format", "json"];
+    const args = this.switchboard ? ["run", "--standalone", "--format", "json"] : ["run", "--format", "json"];
     // opencode rejects session ids not starting with "ses"; a stale or foreign
     // ref (e.g. from another driver) means: start a fresh session.
     const sessionRef = /^ses_/.test(input.sessionRef ?? "") ? input.sessionRef : undefined;

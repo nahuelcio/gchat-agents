@@ -189,14 +189,29 @@ describe("admin server", () => {
     };
     const post = (text: string) =>
       fetch(`${base}/api/team/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread: "team-0001", text, name: "Nahuel" }) }).then((r) => r.json());
-    expect(await post("hello")).toMatchObject({ ok: true, replies: ["Echo: Nahuel: hello"] });
-    const help = (await post("/help")) as { replies: string[] };
-    expect(help.replies[0]).toContain("/repo"); // owner is not restricted
+    const loadThread = () =>
+      fetch(`${base}/api/team/thread?thread=team-0001`).then((r) => r.json() as Promise<{ messages: { text: string; bot: boolean }[]; busy: boolean }>);
+    const waitFor = async (ok: (t: Awaited<ReturnType<typeof loadThread>>) => boolean) => {
+      const deadline = Date.now() + 2000;
+      let last: Awaited<ReturnType<typeof loadThread>> | undefined;
+      while (Date.now() < deadline) {
+        last = await loadThread();
+        if (ok(last)) return last;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      throw new Error(`timeout: ${JSON.stringify(last)}`);
+    };
+
+    expect(await post("hello")).toMatchObject({ ok: true, replies: [] });
+    await waitFor((t) => !t.busy && t.messages.some((m) => m.bot && m.text === "Echo: Nahuel: hello"));
+    expect(await post("/help")).toMatchObject({ ok: true, replies: [] });
+    const afterHelp = await waitFor((t) => !t.busy && t.messages.some((m) => m.bot && m.text.includes("/repo")));
+    expect(afterHelp.messages.find((m) => m.bot && m.text.includes("/repo"))?.text).toContain("/repo"); // owner is not restricted
 
     ctx.transcripts = new TranscriptStore(join(dir, "transcripts")); // like a restart
     const threads = (await (await fetch(`${base}/api/team/threads`)).json()) as { id: string; title: string; count: number }[];
     expect(threads).toEqual([expect.objectContaining({ id: "team-0001", title: "hello", count: 4 })]);
-    const thread = (await (await fetch(`${base}/api/team/thread?thread=team-0001`)).json()) as { messages: { text: string }[] };
+    const thread = await loadThread();
     expect(thread.messages[1]?.text).toBe("Echo: Nahuel: hello");
   });
 
@@ -246,7 +261,7 @@ describe("admin server", () => {
 
     await transcripts.append(`schedule/${id}`, [
       { author: 'Schedule "Summarize commits"', text: "Summarize commits", bot: false },
-      { author: "Switchboard", text: "Done.", bot: true },
+      { author: "Switchi", text: "Done.", bot: true },
     ]);
     const log = (await (await fetch(`${base}/api/schedules/log?id=${id}`)).json()) as { messages: { text: string; bot: boolean }[] };
     expect(log.messages).toEqual([

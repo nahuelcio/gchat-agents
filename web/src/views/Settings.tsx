@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
+import { agentTint } from "../agent-color";
 import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
@@ -351,11 +352,24 @@ function PersonasCard({ settings, save }: ViewProps) {
   const personas = settings.personas ?? [];
   const [editing, setEditing] = useState<{ index: number; draft: Persona } | null>(null);
   const [ocAgents, setOcAgents] = useState<string[]>([]);
+  const [ocAgentsBusy, setOcAgentsBusy] = useState(false);
+  const loadOcAgents = (refresh = false) => {
+    setOcAgentsBusy(true);
+    return api.opencodeAgents(refresh).then(setOcAgents, () => setOcAgents([])).finally(() => setOcAgentsBusy(false));
+  };
   useEffect(() => {
-    api.opencodeAgents().then(setOcAgents, () => setOcAgents([]));
+    void loadOcAgents();
   }, []);
   const taken = new Set(personas.map((p) => p.name.toLowerCase()));
   const importable = ocAgents.filter((id) => !taken.has(id.toLowerCase()) && /^[A-Za-z0-9][\w-]{0,31}$/.test(id));
+  const setAgent = (id: string) => {
+    if (!editing) return;
+    const agent = id.trim() || undefined;
+    setEditing({
+      ...editing,
+      draft: { ...editing.draft, agent, driver: agent ? "opencode" : editing.draft.driver },
+    });
+  };
 
   const commit = (list: Persona[], msg: string) => save({ personas: list }, msg).then(() => setEditing(null));
   const submit = () => {
@@ -375,7 +389,7 @@ function PersonasCard({ settings, save }: ViewProps) {
       <summary className="card-title">
         <h2>Agents in chat</h2>
         <p className="muted small">
-          Give agents a name and a role. Write <code>@name</code> in any chat and that agent answers. If an agent mentions another one in its reply, that one answers too (up to {3} handoffs per message).
+          Give agents a name and a role. Write <code>@name</code> in a room to talk to them. Mention two or more (<code>@a @b discutan…</code>) and they dialogue, passing the floor until they agree or you hit Stop.
         </p>
       </summary>
       {personas.length === 0 && !editing && <p className="empty">No agents yet. Add one like <code>@ventas</code> or <code>@soporte</code>.</p>}
@@ -383,10 +397,14 @@ function PersonasCard({ settings, save }: ViewProps) {
         editing?.index === i ? null : (
           <div key={p.name} className="repo">
             <div className="repo-name grow">
-              <span className="strong">@{p.name}</span>
+              <span className="strong agent-tint author" style={agentTint(p.name)}>
+                @{p.name}
+              </span>
               <span className="muted small">{p.prompt ? p.prompt.slice(0, 120) + (p.prompt.length > 120 ? "…" : "") : "No role yet"}</span>
             </div>
-            <span className="muted small">{[p.agent ? `OpenCode · ${p.agent}` : (p.driver ?? "default agent"), p.model].filter(Boolean).join(" · ")}</span>
+            <span className="muted small">
+              {[p.agent ? `OpenCode · ${p.agent}` : (p.driver ?? "default agent"), p.model, p.listen === "all" && "listens to all", p.respondTo === "people" && "people only"].filter(Boolean).join(" · ")}
+            </span>
             <button className="btn small" onClick={() => setEditing({ index: i, draft: { ...p } })}>
               Edit
             </button>
@@ -424,27 +442,49 @@ function PersonasCard({ settings, save }: ViewProps) {
               <span>Runs on</span>
               <select
                 value={editing.draft.driver ?? ""}
-                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, driver: (e.target.value || undefined) as Persona["driver"] } })}
+                onChange={(e) => {
+                  const driver = (e.target.value || undefined) as Persona["driver"];
+                  setEditing({
+                    ...editing,
+                    draft: { ...editing.draft, driver, ...(driver === "claude" ? { agent: undefined } : {}) },
+                  });
+                }}
               >
                 <option value="">Default agent</option>
                 <option value="claude">Claude Code</option>
                 <option value="opencode">OpenCode</option>
               </select>
             </label>
-            {editing.draft.driver !== "claude" && ocAgents.length > 0 && (
+            {editing.draft.driver !== "claude" && (
               <label className="field narrow">
-                <span>OpenCode agent</span>
-                <select
-                  value={editing.draft.agent ?? ""}
-                  onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, agent: e.target.value || undefined, driver: e.target.value ? "opencode" : editing.draft.driver } })}
-                >
-                  <option value="">None (plain)</option>
-                  {ocAgents.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-                </select>
+                <div className="field-head">
+                  <span>OpenCode agent</span>
+                  <button type="button" className="btn linkish" disabled={ocAgentsBusy} onClick={() => void loadOcAgents(true)}>
+                    {ocAgentsBusy ? "Loading…" : "Refresh list"}
+                  </button>
+                </div>
+                {ocAgents.length > 0 ? (
+                  <select value={editing.draft.agent ?? ""} onChange={(e) => setAgent(e.target.value)}>
+                    <option value="">None (plain)</option>
+                    {editing.draft.agent && !ocAgents.includes(editing.draft.agent) && (
+                      <option value={editing.draft.agent}>{editing.draft.agent}</option>
+                    )}
+                    {ocAgents.map((id) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="mono"
+                    value={editing.draft.agent ?? ""}
+                    onChange={(e) => setAgent(e.target.value)}
+                    placeholder={ocAgentsBusy ? "Loading…" : "e.g. build, plan — or Refresh"}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                )}
               </label>
             )}
             <label className="field grow">
@@ -455,6 +495,28 @@ function PersonasCard({ settings, save }: ViewProps) {
                 onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, model: e.target.value } })}
                 placeholder="empty = default"
               />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field grow">
+              <span>Listens to</span>
+              <select
+                value={editing.draft.listen ?? "mentions"}
+                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, listen: e.target.value === "all" ? "all" : undefined } })}
+              >
+                <option value="mentions">Only when @mentioned</option>
+                <option value="all">Every message — can jump into others' chats when useful</option>
+              </select>
+            </label>
+            <label className="field grow">
+              <span>Answers</span>
+              <select
+                value={editing.draft.respondTo ?? "anyone"}
+                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, respondTo: e.target.value === "people" ? "people" : undefined } })}
+              >
+                <option value="anyone">People and other agents</option>
+                <option value="people">Only people</option>
+              </select>
             </label>
           </div>
           <label className="field">
@@ -478,9 +540,14 @@ function PersonasCard({ settings, save }: ViewProps) {
           <button className="btn" onClick={() => setEditing({ index: -1, draft: { ...EMPTY_PERSONA } })}>
             + Add agent
           </button>
-          {importable.length > 0 && (
-            <div className="field">
+          <div className="field">
+            <div className="field-head">
               <span className="muted small">Or bring an OpenCode agent you already have — it keeps its own instructions and tools:</span>
+              <button type="button" className="btn linkish" disabled={ocAgentsBusy} onClick={() => void loadOcAgents(true)}>
+                {ocAgentsBusy ? "Loading…" : "Refresh list"}
+              </button>
+            </div>
+            {importable.length > 0 ? (
               <div className="model-chips">
                 {importable.map((id) => (
                   <button
@@ -493,8 +560,12 @@ function PersonasCard({ settings, save }: ViewProps) {
                   </button>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <span className="muted small">
+                {ocAgentsBusy ? "Loading OpenCode agents…" : "No OpenCode agents listed — try Refresh, or add one above and pick the agent id."}
+              </span>
+            )}
+          </div>
         </>
       )}
     </details>

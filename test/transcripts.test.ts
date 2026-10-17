@@ -9,7 +9,7 @@ describe("TranscriptStore", () => {
     const dir = await mkdtemp(join(tmpdir(), "gchat-tx-"));
     const store = new TranscriptStore(dir);
     await store.append("share/abc12345", [{ author: "Ana", text: "hi", bot: false }]);
-    await store.append("share/abc12345", [{ author: "Switchboard", text: "hello", bot: true }]);
+    await store.append("share/abc12345", [{ author: "Switchi", text: "hello", bot: true }]);
     const again = new TranscriptStore(dir);
     expect(again.get("share/abc12345").map((m) => m.text)).toEqual(["hi", "hello"]);
     expect(again.get("share/other123")).toEqual([]);

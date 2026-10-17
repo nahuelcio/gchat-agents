@@ -1,4 +1,5 @@
 import type { HandlerDeps } from "./handler.js";
+import { BOT_NAME } from "./personas.js";
 import { processMessage } from "./handler.js";
 import { questionCards } from "./questions.js";
 import type { Job } from "./schedules.js";
@@ -30,14 +31,12 @@ export async function runScheduledJob(job: Job, deps: HandlerDeps, transcripts: 
       threadKey,
       spaceName: job.space,
       // The prompt often reads like "run X weekly"; without this the agent tries to schedule it instead of doing it.
-      text: `${SCHEDULED_PREAMBLE}
-
-${job.prompt}`,
+      text: `${SCHEDULED_PREAMBLE}\n\n${job.prompt}`,
       sender: `Schedule "${job.name}"`,
       // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
       reply: async (text, meta) => {
         await transcripts.append(threadKey, [
-          { author: meta?.author ? `@${meta.author}` : "Switchboard", text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
+          { author: meta?.author ? `@${meta.author}` : BOT_NAME, text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
         ]);
         if (job.space.startsWith("spaces/")) {
           await deps.chat.postMessage(job.space, {

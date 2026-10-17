@@ -1,4 +1,6 @@
 import { contextLine, processMessage, type HandlerDeps } from "./handler.js";
+import { answering, BOT_NAME, humanAskedFor, withAgent, withHuman } from "./personas.js";
+import type { RoomMember } from "./store.js";
 import { adoWorkItem, type AdoAuth, type AdoWorkItem, type FetchFn } from "./integrations.js";
 import { attachmentPromptLine, toMessageAttachment, type MessageAttachment } from "./media.js";
 import { cancelQuestion } from "./question-gate.js";
@@ -52,7 +54,8 @@ export async function saveTeamAttachments(
 
 /**
  * One team-chat message: recorded first (teammates polling see it right away),
- * then run through the same path as a Google Chat message, replies recorded too.
+ * then the agent turn runs in the background on the thread queue — same pattern
+ * as Google Chat, so the sender can keep chatting while Switchboard works.
  */
 export async function teamSend(
   deps: HandlerDeps,
@@ -78,22 +81,29 @@ export async function teamSend(
       ...(stored.length && { attachments: stored }),
     },
   ]);
-  const replies: string[] = [];
-  const { ok } = await processMessage(
+  // Whoever writes joins the room; a brand-new room starts with no agents (the owner adds them).
+  const record = deps.store.get(threadKey);
+  if (!record || record.members) {
+    await deps.store.update(threadKey, "team-chat", { members: withHuman(record?.members ?? [], req.name) });
+  }
+  // Kick off the turn without awaiting: HTTP returns once the message is stored.
+  // processMessage registers on the queue synchronously, so busy() is true immediately.
+  void processMessage(
     {
       threadKey,
       spaceName: "team-chat",
       text: prompt,
       sender: req.name,
       reply: async (r, meta) => {
-        replies.push(r);
-        await transcripts.append(threadKey, [{ author: meta?.author ? `@${meta.author}` : "Switchboard", text: r, bot: true, ...(meta?.questions && { questions: meta.questions }) }]);
+        await transcripts.append(threadKey, [{ author: meta?.author ? `@${meta.author}` : BOT_NAME, text: r, bot: true, ...(meta?.questions && { questions: meta.questions }) }]);
       },
       ...(req.allowCommands && { allowCommands: req.allowCommands }),
     },
     deps,
-  );
-  return { ok, replies };
+  ).catch((err: unknown) => {
+    console.error(`[team ${threadKey}] background turn failed:`, err);
+  });
+  return { ok: true, replies: [] };
 }
 
 export interface TeamThreadWorkItem {
@@ -116,6 +126,10 @@ export interface TeamThreadContext {
   workItem?: TeamThreadWorkItem | null;
   changes?: GitChangeSummary | null;
   busy: boolean;
+  /** Room members; null = legacy room where every catalog agent is available. */
+  members: RoomMember[] | null;
+  kicked: string[];
+  answering: string[];
 }
 
 export interface TeamThreadExtras {
@@ -158,7 +172,37 @@ export async function teamThread(
     workItem,
     changes,
     busy: deps.queue.busy(threadKey),
+    members: record?.members ?? null,
+    kicked: record?.kicked ?? [],
+    answering: answering(threadKey),
   };
+}
+
+/** Owner: adds or removes a catalog agent (or removes a human) from a room. */
+export async function teamMembers(
+  deps: HandlerDeps,
+  thread: string,
+  op: "add" | "remove",
+  member: { kind: "agent"; persona: string } | { kind: "human"; name: string },
+): Promise<RoomMember[]> {
+  const threadKey = `${TEAM_PREFIX}${thread}`;
+  const catalog = deps.options?.().personas ?? [];
+  const record = deps.store.get(threadKey);
+  // A legacy room gets an explicit list on first edit: its current humans are unknown, agents start from the whole catalog.
+  let members = record?.members ?? (record ? catalog.reduce((m, p) => withAgent(m, p.name), [] as RoomMember[]) : []);
+  if (member.kind === "agent") {
+    const persona = catalog.find((p) => p.name.toLowerCase() === member.persona.replace(/^@/, "").toLowerCase());
+    if (!persona) throw new Error(`no agent @${member.persona} in Settings › Agents in chat`);
+    const id = `agent:${persona.name.toLowerCase()}`;
+    members = op === "add" ? withAgent(members, persona.name) : members.filter((m) => m.id !== id);
+    const kicked = (record?.kicked ?? []).filter((n) => n.toLowerCase() !== persona.name.toLowerCase());
+    await deps.store.update(threadKey, record?.space ?? "team-chat", { kicked: op === "remove" ? [...kicked, persona.name] : kicked });
+  } else {
+    const id = `human:${member.name.trim().toLowerCase()}`;
+    members = op === "add" ? withHuman(members, member.name) : members.filter((m) => m.id !== id);
+  }
+  await deps.store.update(threadKey, record?.space ?? "team-chat", { members });
+  return members;
 }
 
 /**
@@ -181,4 +225,14 @@ export function teamDelete(deps: HandlerDeps, transcripts: TranscriptStore, thre
     await transcripts.remove(threadKey);
     return record?.branch ? { branchKept: record.branch } : {};
   });
+}
+
+export async function teamInvite(deps: HandlerDeps, threadKey: string, name: string): Promise<RoomMember[]> {
+  const room = threadKey.split("#")[0]!;
+  const record = deps.store.get(room);
+  const persona = name.replace(/^@/, "");
+  if (!record?.members) throw new Error("this chat has no member list: every agent is already available");
+  if (!humanAskedFor(record.room, persona)) throw new Error(`only a person can bring @${persona} into the room: ask them to request it`);
+  if (!room.startsWith(TEAM_PREFIX)) throw new Error("agents can only be invited to team chat rooms");
+  return teamMembers(deps, room.slice(TEAM_PREFIX.length), "add", { kind: "agent", persona });
 }

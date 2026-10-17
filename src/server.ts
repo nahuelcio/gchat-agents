@@ -4,7 +4,8 @@ import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
 import { GUEST_COMMANDS, type ShareToken } from "./share.js";
 import { serveStatic } from "./static.js";
 import { serveMedia } from "./media.js";
-import { teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
+import { requestStop } from "./personas.js";
+import { TEAM_PREFIX, teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
 import type { TranscriptStore } from "./transcripts.js";
 
 /** Team chat for guests: a token-gated slice of the bridge on the public port. */
@@ -12,6 +13,8 @@ export interface ShareOptions {
   token: ShareToken;
   webDir?: string;
   agents: () => Promise<DetectedAgent[]>;
+  /** Mention handles guests can @ in the composer (names only). */
+  personas?: () => { name: string }[];
   transcripts: TranscriptStore;
 }
 
@@ -64,6 +67,10 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     send(res, 200, agents.filter((a) => a.supported && a.installed).map(({ id, name, ready }) => ({ id, name, ready })));
     return;
   }
+  if (req.method === "GET" && url === "/play/api/personas") {
+    send(res, 200, (share.personas?.() ?? []).map(({ name }) => ({ name })));
+    return;
+  }
   if (req.method === "GET" && url === "/play/api/thread") {
     const thread = parsed.searchParams.get("thread") ?? "";
     if (!THREAD_ID.test(thread)) {
@@ -71,6 +78,21 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
       return;
     }
     send(res, 200, await teamThread(deps, share.transcripts, thread));
+    return;
+  }
+  if (req.method === "POST" && url === "/play/api/stop") {
+    let thread = "";
+    try {
+      thread = (JSON.parse(await readBody(req)) as { thread?: string }).thread ?? "";
+    } catch {
+      // fall through to the 400
+    }
+    if (!THREAD_ID.test(thread)) {
+      send(res, 400, { error: "bad thread id" });
+      return;
+    }
+    requestStop(`${TEAM_PREFIX}${thread}`);
+    send(res, 200, { ok: true });
     return;
   }
   if (req.method === "POST" && url === "/play/api/send") {

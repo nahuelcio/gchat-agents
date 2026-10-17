@@ -42,7 +42,7 @@ describe("runScheduledJob", () => {
     expect(await runScheduledJob(job, deps, transcripts)).toBe(true);
     expect(transcripts.get(scheduleThreadKey(job.id))).toEqual([
       expect.objectContaining({ author: 'Schedule "Weekly retro"', text: "Run the weekly retro", bot: false }),
-      expect.objectContaining({ author: "Switchboard", text: expect.stringMatching(/^Echo: Schedule "Weekly retro": \[Scheduled run[^]*Run the weekly retro$/), bot: true }),
+      expect.objectContaining({ author: "Switchi", text: expect.stringMatching(/^Echo: Schedule "Weekly retro": \[Scheduled run[^]*Run the weekly retro$/), bot: true }),
     ]);
     expect(posted).toEqual([
       { space: "spaces/AAA", text: expect.stringMatching(/^Echo: Schedule "Weekly retro": \[Scheduled run[^]*Run the weekly retro$/) },

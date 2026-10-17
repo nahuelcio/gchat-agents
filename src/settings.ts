@@ -53,6 +53,8 @@ function validate(s: Settings): void {
     if (typeof p.prompt !== "string") throw new Error(`agent @${p.name}: prompt must be text`);
     if (p.driver !== undefined && p.driver !== "opencode" && p.driver !== "claude") throw new Error(`agent @${p.name}: driver must be opencode or claude`);
     if (p.model !== undefined && typeof p.model !== "string") throw new Error(`agent @${p.name}: model must be text`);
+    if (p.listen !== undefined && p.listen !== "mentions" && p.listen !== "all") throw new Error(`agent @${p.name}: listen must be mentions or all`);
+    if (p.respondTo !== undefined && p.respondTo !== "anyone" && p.respondTo !== "people") throw new Error(`agent @${p.name}: respondTo must be anyone or people`);
     if (p.agent !== undefined && (typeof p.agent !== "string" || !/^[\w.-]+$/.test(p.agent))) throw new Error(`agent @${p.name}: OpenCode agent must be a simple id`);
   }
   for (const space of s.allowedSpaces) {

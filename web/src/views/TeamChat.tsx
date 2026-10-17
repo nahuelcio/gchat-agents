@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { agentTint, BOT_NAME } from "../agent-color";
 import {
   ago,
   api,
   type AgentQuestion,
   type MessageAttachment,
+  type MemberChange,
+  type Persona,
   type TeamAttachmentInput,
   type TeamThreadState,
   type TeamThreadSummary,
@@ -14,6 +17,15 @@ import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type Live
 
 const IMAGE_PART =
   /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
+
+/** @handle being typed at the caret, if any. */
+function activeMention(text: string, caret: number): { start: number; query: string } | null {
+  const before = text.slice(0, caret);
+  const m = /(?:^|[^\w@])@([A-Za-z0-9_-]*)$/.exec(before);
+  if (!m) return null;
+  const query = m[1] ?? "";
+  return { start: before.length - query.length - 1, query };
+}
 
 /** Per-browser memory (names, a guest's own threads). Storage may be unavailable: then it just isn't remembered. */
 function remember<T>(key: string, fallback: T): T {
@@ -161,9 +173,11 @@ interface Props {
   shareSlot?: React.ReactNode;
   /** Owner only: repos a new thread can start in. */
   repos?: { name: string; base?: string }[];
+  /** Owner: live list from settings. Guests load via transport. */
+  personas?: Persona[];
 }
 
-export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos }: Props) {
+export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos, personas: personasProp }: Props) {
   const [picking, setPicking] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
@@ -172,19 +186,39 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [activeId, setActiveId] = useState<string | undefined>(initialThread);
   const [state, setState] = useState<TeamThreadState>();
   const [draft, setDraft] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [mentionHi, setMentionHi] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
+  const [guestPersonas, setGuestPersonas] = useState<{ name: string }[]>([]);
   const [speechIn] = useState(canListen);
   const [speechOut] = useState(canSpeak);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const composerInput = useRef<HTMLInputElement>(null);
   const dictation = useRef<LiveDictation | undefined>(undefined);
   const draftBase = useRef("");
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
+  const catalog = personasProp ?? guestPersonas;
+  // In a room with a member list, only its agents can be @mentioned.
+  const personas = useMemo(() => {
+    const members = state?.members;
+    if (!members) return catalog;
+    const inRoom = new Set(members.flatMap((m) => (m.kind === "agent" ? [m.persona.toLowerCase()] : [])));
+    return catalog.filter((p) => inRoom.has(p.name.toLowerCase()));
+  }, [catalog, state?.members]);
+  const mention = useMemo(() => activeMention(draft, caret), [draft, caret]);
+  const mentionMatches = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.toLowerCase();
+    return personas.filter((p) => p.name.toLowerCase().startsWith(q));
+  }, [mention, personas]);
+  const mentionOpen = Boolean(mention) && !mentionDismissed;
   useEffect(
     () => () => {
       for (const p of pendingRef.current) URL.revokeObjectURL(p.url);
@@ -271,7 +305,58 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   useEffect(() => {
     loadThreads();
     transport.agents().then(setAgents, () => {});
-  }, [transport, loadThreads]);
+    if (!personasProp) transport.personas?.().then(setGuestPersonas, () => setGuestPersonas([]));
+  }, [transport, loadThreads, personasProp]);
+
+  useEffect(() => {
+    setMentionHi(0);
+    setMentionDismissed(false);
+  }, [mention?.start, mention?.query]);
+
+  function syncCaret(el: HTMLInputElement | null = composerInput.current) {
+    if (el) setCaret(el.selectionStart ?? el.value.length);
+  }
+
+  function insertMention(name: string) {
+    if (!mention) return;
+    const next = `${draft.slice(0, mention.start)}@${name} ${draft.slice(caret)}`;
+    const pos = mention.start + name.length + 2;
+    setDraft(next);
+    setCaret(pos);
+    setMentionHi(0);
+    setMentionDismissed(true);
+    requestAnimationFrame(() => {
+      const el = composerInput.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
+  function onComposerKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (!mentionOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMentionDismissed(true);
+      return;
+    }
+    if (mentionMatches.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setMentionHi((i) => (i + 1) % mentionMatches.length);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setMentionHi((i) => (i - 1 + mentionMatches.length) % mentionMatches.length);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      const pick = mentionMatches[mentionHi] ?? mentionMatches[0];
+      if (pick) insertMention(pick.name);
+    }
+  }
 
   useEffect(() => {
     if (!activeId && threads[0]) setActiveId(threads[0].id);
@@ -308,7 +393,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
-    if ((!value && !files.length) || sending || !threadId) return;
+    // Allow another message while a turn is still running — the server queues per thread.
+    if ((!value && !files.length) || !threadId) return;
     setDraft("");
     clearPending();
     setSending(true);
@@ -519,10 +605,13 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           {state?.messages.map((m, i, all) => {
             const body = m.bot ? splitFooter(m.text) : { text: m.text };
             const mine = !m.bot && m.author === name;
+            const agent = m.bot && m.author.startsWith("@") ? m.author : undefined;
             return (
-              <div key={i} className="message">
+              <div key={i} className={`message ${agent ? "agent-tint" : ""}`} style={agent ? agentTint(agent) : undefined}>
                 <span className={`avatar ${m.bot ? "bot" : ""}`} aria-hidden="true">
-                  {m.bot ? (
+                  {agent ? (
+                    agent.slice(1, 3).toUpperCase()
+                  ) : m.bot ? (
                     <Icon>
                       <rect x="5" y="8" width="14" height="11" rx="3" />
                       <path d="M12 4v4" />
@@ -533,7 +622,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 </span>
                 <div className="message-body">
                   <div>
-                    <span className="strong">{m.bot ? (m.author.startsWith("@") ? m.author : "Switchboard") : mine ? `${m.author} (you)` : m.author}</span>{" "}
+                    <span className="strong author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
                     {m.at && <span className="muted small">{new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>}
                   </div>
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
@@ -565,7 +654,18 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               </div>
             );
           })}
-          {working && <p className="muted small working">Switchboard is working…</p>}
+          {working && (
+            <p className="muted small working">
+              {state?.answering?.length
+                ? `${state.answering.map((n) => `@${n}`).join(", ")} ${state.answering.length > 1 ? "are" : "is"} answering…`
+                : `${BOT_NAME} is working…`}{" "}
+              {activeId && (
+                <button className="btn linkish" onClick={() => void transport.stopAgents(activeId).catch(() => {})} title="Agents stop handing off to each other after the current reply">
+                  Stop
+                </button>
+              )}
+            </p>
+          )}
           <div ref={bottom} />
         </div>
 
@@ -595,10 +695,34 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 ))}
               </div>
             )}
+            {mentionOpen && (
+              <div className="suggestions" role="listbox" aria-label="Mention an agent">
+                {mentionMatches.length > 0 ? (
+                  mentionMatches.map((p, i) => (
+                    <button
+                      key={p.name}
+                      type="button"
+                      role="option"
+                      aria-selected={i === mentionHi}
+                      className={`chip ${i === mentionHi ? "on" : ""}`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertMention(p.name)}
+                    >
+                      @{p.name}
+                    </button>
+                  ))
+                ) : personas.length === 0 ? (
+                  <span className="muted small">No agents yet — add them in Settings → Agents in chat</span>
+                ) : (
+                  <span className="muted small">No agent matches @{mention?.query}</span>
+                )}
+              </div>
+            )}
             <form
               className="composer"
               onSubmit={(e) => {
                 e.preventDefault();
+                if (mentionOpen && mentionMatches.length) return;
                 void send();
               }}
               onPaste={(e) => {
@@ -645,11 +769,21 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 </button>
               )}
               <input
+                ref={composerInput}
                 id="composer"
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={listening ? "Listening…" : "Message, paste an image, or use the mic"}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setCaret(e.target.selectionStart ?? e.target.value.length);
+                }}
+                onClick={(e) => syncCaret(e.currentTarget)}
+                onKeyUp={(e) => syncCaret(e.currentTarget)}
+                onSelect={(e) => syncCaret(e.currentTarget)}
+                onKeyDown={onComposerKeyDown}
+                placeholder={listening ? "Listening…" : "Message @agent, paste an image, or use the mic"}
                 autoComplete="off"
+                aria-autocomplete="list"
+                aria-expanded={mentionOpen}
               />
               <button className="send" aria-label="Send" disabled={sending || (!draft.trim() && !pending.length)}>
                 <Icon size={18}>
@@ -661,7 +795,22 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         )}
         </div>
 
-        {activeId && <ThreadContextPanel state={state} guest={transport.guest} />}
+        {activeId && (
+          <ThreadContextPanel
+            state={state}
+            guest={transport.guest}
+            catalog={catalog}
+            onMember={
+              transport.members
+                ? (op, member) =>
+                    transport.members!(activeId, op, member).then(
+                      async () => setState(await transport.thread(activeId)),
+                      (err: unknown) => notify(err instanceof Error ? err.message : String(err), true),
+                    )
+                : undefined
+            }
+          />
+        )}
         </div>
       </section>
     </div>
@@ -677,11 +826,88 @@ function changeSummary(changes: NonNullable<TeamThreadState["changes"]>): string
   return parts.join(" · ") || `${changes.files.length} changes`;
 }
 
-function ThreadContextPanel({ state, guest }: { state?: TeamThreadState; guest: boolean }) {
+function MembersSection({
+  state,
+  catalog,
+  onMember,
+}: {
+  state?: TeamThreadState;
+  catalog: { name: string }[];
+  onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
+}) {
+  const members = state?.members;
+  const [adding, setAdding] = useState(false);
+  const agentNames = new Set((members ?? []).flatMap((m) => (m.kind === "agent" ? [m.persona.toLowerCase()] : [])));
+  const addable = members ? catalog.filter((p) => !agentNames.has(p.name.toLowerCase())) : [];
+  return (
+    <section className="room-members" aria-label="Members">
+      <h2>Members</h2>
+      {!members ? (
+        <p className="muted small">
+          {state?.messages.length ? "Older room: every agent from Settings can be @mentioned here." : "New room: no agents yet."}
+          {onMember ? (state?.messages.length ? " Add one below to start a member list." : " Add the ones you want below.") : ""}
+        </p>
+      ) : (
+        <ul className="member-list">
+          {members.map((m) => (
+            <li key={m.id} className={`member ${m.kind === "agent" ? "agent-tint" : ""}`} style={m.kind === "agent" ? agentTint(m.persona) : undefined}>
+              <span className={`member-avatar ${m.kind}`} aria-hidden="true">
+                {(m.kind === "agent" ? m.persona : m.name).slice(0, 2).toUpperCase()}
+              </span>
+              <span className="grow">{m.kind === "agent" ? `@${m.persona}` : m.name}</span>
+              <span className={`badge ${m.kind === "agent" ? "agent" : ""}`}>{m.kind === "agent" ? "Agent" : "Person"}</span>
+              {onMember && m.kind === "agent" && (
+                <button className="x" aria-label={`Remove @${m.persona}`} onClick={() => void onMember("remove", { kind: "agent", persona: m.persona })}>
+                  ×
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!!state?.kicked?.length && (
+        <p className="muted small">
+          Removed: {state.kicked.map((n) => `@${n}`).join(", ")}. They can only come back if someone adds them again.
+        </p>
+      )}
+      {members && !members.some((m) => m.kind === "agent") && <p className="empty small">No agents in this room yet.{onMember ? " Add one to bring it in." : ""}</p>}
+      {onMember &&
+        (catalog.length === 0 ? (
+          <p className="muted small">Create agents in Settings › Agents in chat.</p>
+        ) : adding || !members ? (
+          <div className="model-chips">
+            {(members ? addable : catalog).map((p) => (
+              <button key={p.name} type="button" className="chip" onClick={() => void onMember("add", { kind: "agent", persona: p.name }).then(() => setAdding(false))}>
+                + @{p.name}
+              </button>
+            ))}
+            {members && addable.length === 0 && <span className="muted small">Every agent is already here.</span>}
+          </div>
+        ) : (
+          <button className="btn small" onClick={() => setAdding(true)}>
+            + Add agent
+          </button>
+        ))}
+    </section>
+  );
+}
+
+function ThreadContextPanel({
+  state,
+  guest,
+  catalog,
+  onMember,
+}: {
+  state?: TeamThreadState;
+  guest: boolean;
+  catalog: { name: string }[];
+  onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
+}) {
   const wi = state?.workItem;
   const changes = state?.changes;
   return (
     <aside className="play-context" aria-label="Thread context">
+      <MembersSection state={state} catalog={catalog} onMember={onMember} />
       <h2>Context</h2>
       <dl>
         <div>

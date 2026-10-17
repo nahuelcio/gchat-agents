@@ -9,6 +9,16 @@ import { pathToFileURL } from "node:url";
 
 const TOOLS = [
   {
+    name: "invite_agent",
+    description:
+      "Add an agent (from Switchboard's catalog) to the current chat room when a person in the chat asked for it, e.g. 'agregá a @qa'. Fails if no person asked for that agent.",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "Agent name, with or without @" } },
+      required: ["name"],
+    },
+  },
+  {
     name: "link_work_item",
     description:
       "Attach an Azure DevOps work item to the current Switchboard chat thread so it appears in the context panel. Call this right after you create or choose a work item for this thread.",
@@ -208,6 +218,12 @@ export async function runTool(
   env: NodeJS.ProcessEnv = process.env,
   fetchFn: typeof fetch = fetch,
 ): Promise<string> {
+  if (name === "invite_agent") {
+    const agent = String(args.name ?? "").replace(/^@/, "").trim();
+    if (!agent) throw new Error("name is required");
+    await callAdmin("/api/thread/invite", { method: "POST", body: { name: agent } }, env, fetchFn);
+    return `@${agent} joined the room.`;
+  }
   if (name === "link_work_item") {
     const id = Number(args.id);
     if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
@@ -335,8 +351,11 @@ function fail(id: string | number | null | undefined, message: string): string {
   return frame({ jsonrpc: "2.0", id: id ?? null, error: { code: -32000, message } });
 }
 
+let lineMode = false;
+
 function frame(msg: unknown): string {
   const body = JSON.stringify(msg);
+  if (lineMode) return `${body}\n`;
   return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
 }
 
@@ -376,6 +395,23 @@ async function serveStdio(): Promise<void> {
   for await (const chunk of process.stdin) {
     buf = Buffer.concat([buf, chunk as Buffer]);
     for (;;) {
+      if (buf.toString("utf8", 0, Math.min(buf.length, 16)).trimStart().startsWith("{")) {
+        lineMode = true;
+        const nl = buf.indexOf("\n");
+        if (nl < 0) break;
+        const line = buf.slice(0, nl).toString("utf8").trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let msg: JsonRpc;
+        try {
+          msg = JSON.parse(line) as JsonRpc;
+        } catch {
+          continue;
+        }
+        const out = await handleRpc(msg);
+        if (out) process.stdout.write(out);
+        continue;
+      }
       const headerEnd = buf.indexOf("\r\n\r\n");
       if (headerEnd < 0) break;
       const headers = buf.slice(0, headerEnd).toString("utf8");

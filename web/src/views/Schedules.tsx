@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { agentTint, BOT_NAME } from "../agent-color";
 import { ago, api, duration, until, type Health, type Job, type ScheduleLogMessage } from "../api";
 import type { ViewProps } from "../App";
 
@@ -283,7 +284,9 @@ export function Schedules({ settings, notify }: ViewProps) {
                       {logMessages.map((m, i) => (
                         <li key={`${m.at ?? i}-${i}`} className={m.bot ? "bot" : ""}>
                           <div className="job-log-meta">
-                            <span className="strong">{m.bot && !m.author.startsWith("@") ? "Switchboard" : m.author}</span>
+                            <span className={`strong ${m.bot && m.author.startsWith("@") ? "agent-tint author" : ""}`} style={m.bot && m.author.startsWith("@") ? agentTint(m.author) : undefined}>
+                              {m.bot && !m.author.startsWith("@") ? BOT_NAME : m.author}
+                            </span>
                             <span className="muted">{ago(m.at)}</span>
                           </div>
                           <pre className="job-log-text">{m.text}</pre>

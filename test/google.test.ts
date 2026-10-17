@@ -32,7 +32,7 @@ describe("GoogleConnection", () => {
     const { conn, dir, posted } = await setup();
     const info = await conn.setKey(KEY);
     expect(info).toEqual({ configured: true, source: "ui", clientEmail: "bridge@acme-chat.iam.gserviceaccount.com", projectId: "acme-chat" });
-    expect(statSync(join(dir, "google-sa.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(join(dir, "google-sa.json")).mode & 0o777).toBe(0o600);
     await conn.postMessage("spaces/A", { text: "hi" });
     expect(posted).toEqual([{ space: "spaces/A", text: "hi" }]);
   });

@@ -112,7 +112,13 @@ settings.onChange((s) => {
   console.info(`[settings] updated: driver=${s.agentDriver}, repos=${Object.keys(s.repos).join(", ") || "none"}`);
 });
 
-const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents, transcripts });
+const server = createHttpServer(deps, {
+  token: shareToken,
+  webDir,
+  agents: listAgents,
+  personas: () => (deps.options?.().personas ?? []).map((p) => ({ name: p.name })),
+  transcripts,
+});
 server.listen(config.port, () => {
   console.info(`Switchboard listening on :${config.port} (workdir: ${config.workdir})`);
   console.info(`allowlist: ${deps.config.allowedSpaces.join(", ") || "EMPTY — set spaces in the control plane"}`);

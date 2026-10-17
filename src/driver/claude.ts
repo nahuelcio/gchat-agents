@@ -151,6 +151,8 @@ export class ClaudeDriver implements AgentDriver {
         claudeMcpConfig(this.switchboard.serverPath, input.threadKey, this.switchboard.adminUrl),
         "--append-system-prompt",
         SWITCHBOARD_HINT,
+        "--allowedTools",
+        "mcp__switchboard",
       );
     }
     const live = spawnLive(this.bin, args, input.workdir, this.timeoutMs);

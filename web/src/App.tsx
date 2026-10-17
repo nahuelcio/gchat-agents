@@ -142,6 +142,7 @@ function OwnerApp() {
             notify={notify}
             shareSlot={<SharePanel link={shareLink} setLink={setShareLink} notify={notify} />}
             repos={Object.entries(settings.repos).map(([name, r]) => ({ name, ...(r.base && { base: r.base }) }))}
+            personas={settings.personas}
           />
         )}
         {props && view === "schedules" && <Schedules {...props} />}

@@ -95,7 +95,8 @@ describe("Workspaces", () => {
     expect(worktree).toBe(join(dir, "wt", "app-rel1"));
     expect(existsSync(join(worktree, "README.md"))).toBe(true);
     const listed = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" });
-    expect(listed).toContain(`worktree ${join(dir, "wt", "app-rel1")}\n`);
+    const slash = (p: string) => p.replace(/\\/g, "/");
+    expect(slash(listed)).toContain(`worktree ${slash(join(dir, "wt", "app-rel1"))}\n`);
   });
 
   it("rejects unknown repos", async () => {

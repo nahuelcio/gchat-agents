@@ -8,7 +8,33 @@ import type { TokenVerifier } from "./verify.js";
 import { threadSlug, type Workspaces } from "./workspace.js";
 import { questionCards, continuation } from "./questions.js";
 import { cancelQuestion, hasQuestion, holdQuestion, takeQuestion } from "./question-gate.js";
-import { MAX_HOPS, mentionedPersonas, personaPreamble, stripSelfPrefix, type Persona } from "./personas.js";
+import {
+  BOT_NAME,
+  MAX_DIALOGUE_HOPS,
+  MAX_HOPS,
+  MAX_INTERJECTIONS,
+  ADD_HINT,
+  hostPreamble,
+  rosterUpdate,
+  setAnswering,
+  PASS,
+  activePersonas,
+  addressedPersonas,
+  askedPersonas,
+  consultOpen,
+  dialogueOpen,
+  dialoguePass,
+  mentionedPersonas,
+  mentionsBot,
+  consultTopics,
+  personaPreamble,
+  roomAppend,
+  roomCatchUp,
+  roomPrompt,
+  stripSelfPrefix,
+  takeStop,
+  type Persona,
+} from "./personas.js";
 import { attachmentPromptLine, type MediaStore, type StoredMedia } from "./media.js";
 
 /** Google Chat app event, reduced to the fields this service reads. */
@@ -93,6 +119,8 @@ export interface TurnRequest {
   allowCommands?: ReadonlySet<string>;
   /** False for scheduled jobs: a question there has nobody to click it. Default true. */
   answerQuestions?: boolean;
+  /** Room log number of this message (set when the thread has @agents), so catch-up stops before it. */
+  roomN?: number;
 }
 
 const REPLY_LIMIT = 3800;
@@ -271,18 +299,45 @@ export function processMessage(req: TurnRequest, deps: HandlerDeps): Promise<{ o
         return { ok: false };
       }
     }
-    return agentTurn(req, deps);
+    const personas = activePersonas(deps.options?.().personas ?? [], deps.store.get(req.threadKey)?.members);
+    if (personas.length) {
+      // Shared room log: every agent catches up on what people and the other agents said.
+      const roomN = await roomLog(deps, req.threadKey, req.spaceName, req.sender ?? "someone", req.text);
+      const reply = req.reply;
+      req = { ...req, roomN, reply: async (text, meta) => {
+        await roomLog(deps, req.threadKey, req.spaceName, meta?.author ? `@${meta.author}` : BOT_NAME, text);
+        await reply(text, meta);
+      } };
+    }
+    const addressed = addressedPersonas(req.text, personas);
+    const consulted = consultTopics(req.text, personas);
+    const result = await agentTurn(req, deps);
+    // listen:all members may jump in after any turn (even if someone else was @mentioned).
+    const spoken = new Set([...addressed, ...consulted].map((p) => p.name.toLowerCase()));
+    const jumpIn = personas.filter((p) => p.listen === "all" && !spoken.has(p.name.toLowerCase()));
+    if (jumpIn.length) {
+      await personaRound(req, deps, jumpIn, personas, { optional: true });
+    }
+    return result;
   });
 }
 
 async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boolean }> {
   const { threadKey, spaceName } = req;
   const record = deps.store.get(threadKey);
-  // @agent mentions go to those agents; an answer to the default agent's open question still goes to it.
-  const personas = deps.options?.().personas ?? [];
-  const mentioned = mentionedPersonas(req.text, personas);
-  if (mentioned.length && !hasQuestion(threadKey) && !record?.pendingQuestions?.length) {
-    return personaRound(req, deps, mentioned, personas);
+  // @agent (or bare name in the room) goes to those agents; an open question for the default agent still goes to it.
+  const personas = activePersonas(deps.options?.().personas ?? [], record?.members);
+  const addressed = addressedPersonas(req.text, personas);
+  if (record?.members && !ADD_HINT.test(req.text)) {
+    const outside = mentionedPersonas(req.text, deps.options?.().personas ?? []).filter((p) => !personas.includes(p));
+    if (outside.length) {
+      const names = outside.map((p) => `@${p.name}`).join(", ");
+      await req.reply(`${names} ${outside.length > 1 ? "aren't" : "isn't"} in this room. Ask to add ${outside.length > 1 ? "them" : "it"} (e.g. "agregá a ${names}") or add ${outside.length > 1 ? "them" : "it"} from Members.`);
+      if (!addressed.length) return { ok: true };
+    }
+  }
+  if (addressed.length && !hasQuestion(threadKey) && !record?.pendingQuestions?.length) {
+    return personaRound(req, deps, addressed, personas);
   }
   const parked = takeQuestion(threadKey);
   let text = req.text;
@@ -296,10 +351,22 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
       } else {
         // Shared threads: the agent must know which teammate is talking.
         text = req.sender ? `${req.sender}: ${req.text}` : req.text;
+        const topics = consultTopics(req.text, personas);
+        if (topics.length) {
+          text += `\n\n[Room] Agents you can bring into this discussion: ${topics.map((p) => `@${p.name}`).join(", ")}. Write @name to ask them now.`;
+        }
+        if (req.roomN) text = roomCatchUp(record?.room, BOT_NAME, record?.roomSeen?.[BOT_NAME], req.roomN) + text;
+        if (personas.length || record?.hostRoster?.length) {
+          const names = personas.map((p) => p.name);
+          if (!record?.sessionRef) text = `${hostPreamble(personas)}\n\n---\n\n${text}`;
+          else text += record.hostRoster ? rosterUpdate(record.hostRoster, names) : `\n\n${hostPreamble(personas)}`;
+          await deps.store.update(threadKey, spaceName, { hostRoster: names }).catch(() => {});
+        }
         if (record?.summary && !record.sessionRef) {
           text = `Context from earlier in this thread (compacted):\n${record.summary}\n\n---\n\n${text}`;
         }
       }
+      if (req.roomN) await markSeen(deps, threadKey, spaceName, BOT_NAME);
       result = await deps.driver.runTurn({
         threadKey,
         sessionRef: record?.sessionRef,
@@ -356,6 +423,20 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
   const footer = updated && shouldShowFooter(options.contextFooter, updated) ? `\n\n${contextLine(updated, options)}` : "";
   await req.reply(result.reply + footer);
 
+  // Host @asked someone, or the human asked about room agents ("qué opinas de architect") → keep talking with them.
+  const asked = askedPersonas(result.reply, personas);
+  const topics = consultTopics(req.text, personas);
+  const invite = asked.length ? asked : topics;
+  if (invite.length) {
+    await personaRound(
+      { ...req, text: asked.length ? result.reply : req.text, sender: asked.length ? BOT_NAME : req.sender },
+      deps,
+      invite,
+      personas,
+      asked.length ? { ask: true } : { hostReply: result.reply },
+    );
+  }
+
   const pct = updated ? contextPercent(updated) : undefined;
   if (options.autoCompactAt > 0 && pct !== undefined && pct >= options.autoCompactAt) {
     await req.reply(`Context at ${pct}% — compacting automatically.\n${await compact(threadKey, spaceName, deps)}`);
@@ -363,29 +444,60 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
   return { ok: true };
 }
 
+type RoundOpts = { optional?: boolean; /** Host already spoke; invite these agents to consult / discuss. */ hostReply?: string; ask?: boolean };
+
 /**
- * Runs the mentioned @agents in order. When an agent's reply mentions another agent,
- * that one answers next (it sees who asked); an answer that mentions nobody goes back
- * to the agent that asked, so it can finish. Up to MAX_HOPS handoffs per human message.
+ * Runs the addressed @agents. One agent: ask/@mention handoffs (MAX_HOPS).
+ * Two or more (or a host consultation): discussion — floor passes, @BOT_NAME brings the host back.
  */
-async function personaRound(req: TurnRequest, deps: HandlerDeps, first: Persona[], all: Persona[]): Promise<{ ok: boolean }> {
+async function personaRound(
+  req: TurnRequest,
+  deps: HandlerDeps,
+  first: Persona[],
+  all: Persona[],
+  opts: boolean | RoundOpts | undefined = false,
+): Promise<{ ok: boolean }> {
+  const optional = opts === true || (typeof opts === "object" && !!opts.optional);
+  const hostReply = typeof opts === "object" && opts ? opts.hostReply : undefined;
   const { threadKey, spaceName } = req;
-  const queue: { persona: Persona; text: string; hop: number; askedBy?: Persona }[] = first.map((persona) => ({
-    persona,
-    text: req.sender ? `${req.sender}: ${req.text}` : req.text,
-    hop: 0,
-  }));
+  const said = req.sender ? `${req.sender}: ${req.text}` : req.text;
+  const consult = Boolean(hostReply) && !optional;
+  const ask = typeof opts === "object" && !!opts?.ask;
+  const dialogue = !optional && !ask && (first.length >= 2 || consult);
+  const hopLimit = dialogue ? MAX_DIALOGUE_HOPS : MAX_HOPS;
+  const peers = dialogue ? first.filter((p) => p.respondTo !== "people") : [];
+  const queue: { persona: Persona; text: string; hop: number; askedBy?: Persona; optional?: boolean }[] = consult
+    ? [{ persona: first[0]!, text: consultOpen(said, hostReply!), hop: 0 }]
+    : dialogue
+      ? [{ persona: first[0]!, text: dialogueOpen(said, first), hop: 0 }]
+      : first.map((persona) => ({
+          persona,
+          text: optional ? roomPrompt(said) : said,
+          hop: 0,
+          optional,
+        }));
+  takeStop(threadKey); // a Stop pressed while nothing ran must not cancel this new round
   let ok = true;
-  while (queue.length) {
-    const { persona, text, hop, askedBy } = queue.shift()!;
+  let peerIdx = 0;
+  let interjections = 0;
+  type Item = (typeof queue)[number];
+
+  const runOne = async (item: Item): Promise<string | undefined> => {
+    const { persona, text } = item;
     const record = deps.store.get(threadKey);
     const sessionRef = record?.personaSessions?.[persona.name];
+    const who = `@${persona.name}`;
+    const catchUp = req.roomN ? roomCatchUp(record?.room, who, record?.roomSeen?.[who], req.roomN) : "";
+    if (req.roomN) await markSeen(deps, threadKey, spaceName, who);
+    const names = all.map((p) => p.name);
+    const update = sessionRef ? rosterUpdate(record?.personaRoster?.[persona.name], names) : "";
     let reply: string;
+    setAnswering(threadKey, persona.name, true);
     try {
       const result = await deps.driver.runTurn({
         threadKey: `${threadKey}#${persona.name}`,
         sessionRef,
-        text: sessionRef ? text : `${personaPreamble(persona, all)}\n\n---\n\n${text}`,
+        text: (sessionRef ? "" : `${personaPreamble(persona, all)}\n\n---\n\n`) + catchUp + text + update,
         workdir: record?.worktree ?? deps.config.workdir,
         model: persona.model ?? (persona.driver ? undefined : record?.model),
         driver: persona.driver ?? record?.driver,
@@ -393,26 +505,128 @@ async function personaRound(req: TurnRequest, deps: HandlerDeps, first: Persona[
         answerQuestions: false,
       });
       reply = stripSelfPrefix(result.reply, persona);
-      if (result.sessionRef) {
-        await deps.store
-          .update(threadKey, spaceName, { personaSessions: { ...deps.store.get(threadKey)?.personaSessions, [persona.name]: result.sessionRef } })
-          .catch((err: unknown) => console.error(`[store ${threadKey}] persist failed:`, errorMessage(err)));
-      }
+      const r = deps.store.get(threadKey);
+      await deps.store
+        .update(threadKey, spaceName, {
+          ...(result.sessionRef && { personaSessions: { ...r?.personaSessions, [persona.name]: result.sessionRef } }),
+          personaRoster: { ...r?.personaRoster, [persona.name]: names },
+        })
+        .catch((err: unknown) => console.error(`[store ${threadKey}] persist failed:`, errorMessage(err)));
     } catch (err) {
       console.error(`[turn ${threadKey} @${persona.name}] failed:`, err);
       await req.reply(`@${persona.name} failed: ${errorMessage(err)}`, { author: persona.name });
       ok = false;
-      continue;
+      return undefined;
+    } finally {
+      setAnswering(threadKey, persona.name, false);
     }
+    // PASS = nothing to add; ends this speaker's turn (discussion continues only if someone else is queued).
+    if (reply.trim().replace(/[.*`]/g, "") === PASS) return undefined;
+    if (item.optional && interjections++ >= MAX_INTERJECTIONS) return undefined;
     await req.reply(reply, { author: persona.name });
-    if (hop >= MAX_HOPS) continue;
-    const asked = mentionedPersonas(reply, all).filter((n) => n.name !== persona.name && !queue.some((q) => q.persona.name === n.name));
-    for (const next of asked) queue.push({ persona: next, text: `@${persona.name}: ${reply}`, hop: hop + 1, askedBy: persona });
-    if (!asked.length && askedBy && !queue.some((q) => q.persona.name === askedBy.name)) {
-      queue.push({ persona: askedBy, text: `@${persona.name}: ${reply}`, hop: hop + 1 });
+    return reply;
+  };
+
+  while (queue.length) {
+    if (takeStop(threadKey)) {
+      await req.reply(`Stopped. ${queue.map((q) => `@${q.persona.name}`).join(", ")} did not answer.`);
+      break;
     }
+    const wave = (dialogue ? [queue.shift()!] : queue.splice(0)).filter(
+      (q) => !(q.askedBy && q.persona.respondTo === "people" && q.hop > 0),
+    );
+    const replies = await Promise.all(wave.map(runOne));
+    const forHost = ask ? wave.flatMap((item, i) => (item.hop === 0 && !item.askedBy && replies[i] !== undefined ? [`@${item.persona.name}: ${replies[i]}`] : [])) : [];
+    for (const [i, item] of wave.entries()) {
+      const reply = replies[i];
+      if (reply === undefined) continue;
+      const { persona, text, hop, askedBy } = item;
+      if (hop >= hopLimit) continue;
+      // Discussion / consult: any @peer counts. Solo ask: only real questions (askedPersonas).
+      const asked = (dialogue ? mentionedPersonas(reply, all) : askedPersonas(reply, all)).filter(
+        (n) => n.name !== persona.name && n.name !== askedBy?.name,
+      );
+      for (const next of asked) {
+        const waiting = queue.find((q) => q.persona.name === next.name);
+        if (waiting) Object.assign(waiting, { text: `${waiting.text}\n\n@${persona.name}: ${reply}`, askedBy: waiting.askedBy ?? persona });
+        else queue.push({ persona: next, text: `@${persona.name}: ${reply}`, hop: hop + 1, askedBy: persona });
+      }
+      // @Switchi / host — main agent re-enters, then may pass the floor back.
+      if (!optional && !(ask && hop === 0) && !asked.length && (mentionsBot(reply) || (consult && hop === 0))) {
+        if (takeStop(threadKey)) {
+          await req.reply(`Stopped.`);
+          return { ok };
+        }
+        const hostText = await hostContinue(req, deps, `@${persona.name}: ${reply}`);
+        if (hostText && hop + 1 < hopLimit) {
+          const next = (dialogue ? peers.find((p) => p.name !== persona.name) : undefined) ?? persona;
+          queue.push({ persona: next, text: dialoguePass({ name: BOT_NAME }, hostText), hop: hop + 1 });
+        }
+        continue;
+      }
+      if (!asked.length && askedBy) {
+        const waiting = queue.find((q) => q.persona.name === askedBy.name);
+        if (waiting) waiting.text = `${waiting.text}\n\n@${persona.name}: ${reply}`;
+        else queue.push({ persona: askedBy, text: `@${persona.name}: ${reply}`, hop: hop + 1 });
+        continue;
+      }
+      // Discussion with no @ask: pass the floor after the opening take or a previous floor pass.
+      const isFloor = text.startsWith("[Discussion] @") || text.startsWith("[Consultation]");
+      if (dialogue && !asked.length && peers.length > 1 && (hop === 0 || isFloor)) {
+        peerIdx = (peerIdx + 1) % peers.length;
+        let next = peers[peerIdx]!;
+        if (next.name === persona.name) next = peers[(peerIdx + 1) % peers.length]!;
+        if (next.name !== persona.name && !queue.some((q) => q.persona.name === next.name)) {
+          queue.push({ persona: next, text: dialoguePass(persona, reply), hop: hop + 1 });
+        }
+      }
+    }
+    if (forHost.length && !takeStop(threadKey)) await hostContinue(req, deps, forHost.join("\n\n"));
   }
   return { ok };
+}
+
+/** One more turn of the default (host) agent mid-discussion; posts as BOT_NAME. */
+async function hostContinue(req: TurnRequest, deps: HandlerDeps, text: string): Promise<string | undefined> {
+  const { threadKey, spaceName } = req;
+  const record = deps.store.get(threadKey);
+  try {
+    const catchUp = req.roomN ? roomCatchUp(record?.room, BOT_NAME, record?.roomSeen?.[BOT_NAME], req.roomN) : "";
+    if (req.roomN) await markSeen(deps, threadKey, spaceName, BOT_NAME);
+    const result = await deps.driver.runTurn({
+      threadKey,
+      sessionRef: record?.sessionRef,
+      text: catchUp + text,
+      workdir: record?.worktree ?? deps.config.workdir,
+      model: record?.model,
+      driver: record?.driver,
+      answerQuestions: false,
+    });
+    if (result.sessionRef) {
+      await deps.store.update(threadKey, spaceName, { sessionRef: result.sessionRef }).catch(() => {});
+    }
+    await req.reply(result.reply);
+    return result.reply;
+  } catch (err) {
+    console.error(`[turn ${threadKey} host] failed:`, err);
+    await req.reply(`Agent failed: ${errorMessage(err)}`);
+    return undefined;
+  }
+}
+
+/** Appends to the thread's room log; returns the new entry's number. */
+async function roomLog(deps: HandlerDeps, threadKey: string, spaceName: string, author: string, text: string): Promise<number> {
+  const room = roomAppend(deps.store.get(threadKey)?.room, author, text);
+  await deps.store.update(threadKey, spaceName, { room }).catch((err: unknown) => console.error(`[store ${threadKey}] room log failed:`, errorMessage(err)));
+  return room.at(-1)!.n;
+}
+
+/** Everything logged so far counts as seen by `who` (its own turn is about to include it). */
+async function markSeen(deps: HandlerDeps, threadKey: string, spaceName: string, who: string): Promise<void> {
+  const r = deps.store.get(threadKey);
+  const n = r?.room?.at(-1)?.n;
+  if (!n) return;
+  await deps.store.update(threadKey, spaceName, { roomSeen: { ...r.roomSeen, [who]: n } }).catch(() => {});
 }
 
 function contextPercent(r: SessionRecord): number | undefined {

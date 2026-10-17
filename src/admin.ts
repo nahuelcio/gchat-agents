@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { requestStop } from "./personas.js";
 import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
 import { contextLine, type HandlerDeps } from "./handler.js";
 import { serveMedia } from "./media.js";
-import { TEAM_PREFIX, teamDelete, teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
+import { TEAM_PREFIX, teamDelete, teamInvite, teamMembers, teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
 import type { TranscriptStore } from "./transcripts.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
@@ -158,6 +159,14 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       const space = record?.space ?? "team-chat";
       const slug = threadSlug(threadKey);
 
+      if (url === "/api/thread/invite") {
+        try {
+          return send(res, 200, { members: await teamInvite(ctx.handler ?? (() => { throw new HttpError(409, "chat is not running"); })(), threadKey, String(body.name ?? "")) });
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
       if (url === "/api/work-item") {
         if (body.id === null || body.id === undefined) {
           await store.update(threadKey, space, { workItemId: undefined });
@@ -279,6 +288,26 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
         } catch (err) {
           throw new HttpError(400, err instanceof Error ? err.message : String(err));
         }
+      }
+      if (url === "/api/team/members" && method === "POST") {
+        const body = await jsonBody<{ thread?: string; op?: string; member?: { kind?: string; persona?: string; name?: string } }>(req);
+        if (!THREAD_ID.test(body.thread ?? "")) throw new HttpError(400, "bad thread id");
+        if (body.op !== "add" && body.op !== "remove") throw new HttpError(400, 'op must be "add" or "remove"');
+        const m = body.member;
+        const member =
+          m?.kind === "agent" && m.persona ? { kind: "agent" as const, persona: m.persona } : m?.kind === "human" && m.name?.trim() ? { kind: "human" as const, name: m.name } : undefined;
+        if (!member) throw new HttpError(400, "member must be { kind: agent, persona } or { kind: human, name }");
+        try {
+          return send(res, 200, { members: await teamMembers(deps, body.thread!, body.op, member) });
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+      if (url === "/api/team/stop" && method === "POST") {
+        const body = await jsonBody<{ thread?: string }>(req);
+        if (!THREAD_ID.test(body.thread ?? "")) throw new HttpError(400, "bad thread id");
+        requestStop(`${TEAM_PREFIX}${body.thread}`);
+        return send(res, 200, { ok: true });
       }
       if ((url === "/api/team/archive" || url === "/api/team/delete") && method === "POST") {
         const body = await jsonBody<{ thread?: string; archived?: boolean }>(req);

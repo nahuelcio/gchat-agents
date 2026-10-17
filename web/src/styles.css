@@ -534,8 +534,9 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .ask .chip { min-height: 30px; padding: 0 12px; }
 .working { margin: 0 0 0 46px; }
 .composer-wrap { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 10px; }
-.suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .suggestions .chip { min-height: 30px; padding: 0 12px; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
+.suggestions .muted { padding: 2px 0; }
 .composer { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border-radius: var(--radius-md); background: var(--surface); border: 2px solid var(--primary); box-shadow: 3px 3px 0 var(--secondary); }
 .composer:focus-within { border-color: var(--secondary); }
 .composer input { flex: 1; border: 0; background: transparent; padding: 6px 0; outline: none; box-shadow: none; }
@@ -659,3 +660,21 @@ details.card > summary:is(.card-title, .card-head) { cursor: pointer; list-style
 details.card > summary:is(.card-title, .card-head)::-webkit-details-marker { display: none; }
 details.card > summary:is(.card-title, .card-head)::after { content: "▾"; position: absolute; right: 0; top: 2px; color: var(--muted); transition: transform .15s; }
 details.card:not([open]) > summary:is(.card-title, .card-head)::after { transform: rotate(-90deg); }
+
+/* Room members: people and agents listed the same way. */
+.room-members { margin-bottom: 16px; }
+.member-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.member { display: flex; align-items: center; gap: 8px; }
+.member .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-avatar { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 600; background: var(--soft); }
+.member-avatar.agent { border-radius: var(--radius-sm); color: var(--primary); }
+.member .badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; opacity: .7; }
+.member .badge.agent { opacity: 1; color: var(--primary); }
+.member .x { background: none; border: 0; cursor: pointer; color: inherit; opacity: .6; font-size: 16px; line-height: 1; }
+.member .x:hover { opacity: 1; }
+
+/* One color per @agent: the hue comes from its name (agent-color.ts). */
+.agent-tint { --agent-fg: hsl(var(--agent-hue) 60% 38%); --agent-bg: hsl(var(--agent-hue) 70% 92%); }
+.agent-tint .author, .agent-tint.author { color: var(--agent-fg); }
+.message.agent-tint .avatar, .member.agent-tint .member-avatar { background: var(--agent-bg); color: var(--agent-fg); font-size: 11px; font-weight: 600; }
+.member.agent-tint .badge { color: var(--agent-fg); }
