@@ -121,6 +121,7 @@ async fn get_claude_models(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
+    let personas = state.settings.get().personas;
     let mut threads: Vec<Value> = state
         .handler
         .store
@@ -137,6 +138,15 @@ async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
                 "worktree": r.worktree,
                 "updatedAt": r.updated_at,
                 "hasSession": r.session_ref.is_some(),
+                "members": crate::team::effective_members(Some(&r), &personas)
+                    .iter()
+                    .map(|m| match m {
+                        crate::session::RoomMember::Agent { persona, .. } => format!("@{persona}"),
+                        crate::session::RoomMember::Human { name, .. } => name.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+                "driver": r.driver,
+                "model": r.model,
                 "app": {
                     "running": state.workspaces.is_up(&slug),
                     "port": state.workspaces.port(&slug),

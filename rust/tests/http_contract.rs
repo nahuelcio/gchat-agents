@@ -237,4 +237,7 @@ async fn activity_records_turns_and_members() {
     assert_eq!(only.len(), 1);
     assert_eq!(only[0]["href"], "#team/act1");
     assert_eq!(only[0]["title"], "@qa");
+    let (_, threads) = get_json(admin, "/api/threads").await;
+    let room = threads.as_array().unwrap().iter().find(|t| t["key"] == "share/act1").unwrap();
+    assert_eq!(room["members"], json!(["@qa", "Ana"]));
 }
