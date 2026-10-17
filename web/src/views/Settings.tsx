@@ -31,7 +31,7 @@ export function SettingsView(props: ViewProps) {
       <header className="page-head">
         <div>
           <h1>Settings</h1>
-          <p className="sub">Changes apply to the next turn. Nothing here needs a restart.</p>
+          <p className="sub">Changes apply to the next turn. Only the public tunnel needs a restart.</p>
         </div>
       </header>
       <GoogleChatCard {...props} />

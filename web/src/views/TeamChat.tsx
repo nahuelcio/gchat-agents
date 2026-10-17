@@ -387,9 +387,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     };
   }, [activeId, transport]);
 
-  // Block body: scrollIntoView returns a Promise in recent Chrome; an effect must not return it.
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
+    const list = bottom.current?.parentElement;
+    if (list) list.scrollTop = list.scrollHeight;
   }, [state?.messages.length, sending]);
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
@@ -467,7 +467,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
   function copyLink() {
     const link = activeId && linkFor?.(activeId);
-    if (!link) return notify("Sharing needs the tunnel (start with TUNNEL on).", true);
+    if (!link) return notify("Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.", true);
     navigator.clipboard.writeText(link).then(() => notify("Link to this thread copied"), () => notify("Copy failed", true));
   }
 
@@ -613,9 +613,10 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             </p>
           )}
           {state?.messages.map((m, i, all) => {
-            const body = m.bot ? splitFooter(m.text) : { text: m.text };
+            const tagged = m.bot ? m.text.match(/^\*(@[\w.-]+)\*\s*/) : null;
+            const body = m.bot ? splitFooter(tagged ? m.text.slice(tagged[0].length) : m.text) : { text: m.text };
             const mine = !m.bot && m.author === name;
-            const agent = m.bot && m.author.startsWith("@") ? m.author : undefined;
+            const agent = tagged?.[1] ?? (m.bot && m.author.startsWith("@") ? m.author : undefined);
             return (
               <div key={i} className={`message ${agent ? "agent-tint" : ""}`} style={agent ? agentTint(agent) : undefined}>
                 <span className={`avatar ${m.bot ? "bot" : ""}`} aria-hidden="true">
@@ -632,7 +633,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 </span>
                 <div className="message-body">
                   <div>
-                    <span className="strong author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
+                    <span className="strong author" data-testid="message-author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
                     {m.at && <span className="muted small">{new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>}
                   </div>
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
@@ -947,7 +948,7 @@ function ThreadContextPanel({
         {state?.context && (
           <div>
             <dt>Session</dt>
-            <dd className="mono muted small">{state.context}</dd>
+            <dd className="mono muted small">{state.context.replace(/^_|_$/g, "").replace(/^context \? · /, "no usage yet · ")}</dd>
           </div>
         )}
         {state?.repo && (
@@ -1017,7 +1018,7 @@ function ThreadContextPanel({
 
 /** Owner's share panel: the team link, copy, open, rotate. */
 export function SharePanel({ link, setLink, notify }: { link?: string; setLink: (l: string) => void; notify: (t: string, e?: boolean) => void }) {
-  if (!link) return <p className="muted small pad">Sharing needs the tunnel (start with TUNNEL on).</p>;
+  if (!link) return <p className="muted small pad">Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.</p>;
   return (
     <div className="share-panel">
       <span className="small strong">Share team chat</span>

@@ -9,6 +9,12 @@ use crate::questions::{continuation, format_questions};
 
 pub struct EchoDriver;
 
+fn last_message(text: &str) -> &str {
+    text.rsplit("
+---
+").next().unwrap_or(text).trim()
+}
+
 #[async_trait]
 impl AgentDriver for EchoDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
@@ -16,7 +22,7 @@ impl AgentDriver for EchoDriver {
             let me = input.thread_key.rsplit_once('#').map(|(_, p)| format!("@{p}"));
             let body = input.text.split("[Room message").last().and_then(|t| t.split_once('\n')).map(|(_, b)| b).unwrap_or("");
             let reply = match me {
-                Some(me) if body.contains(&me) => format!("Echo: {}", body.trim()),
+                Some(me) if body.contains(&me) => format!("Echo: {}", last_message(body)),
                 _ => PASS.into(),
             };
             return Ok(AgentTurnResult {
@@ -81,7 +87,7 @@ impl AgentDriver for EchoDriver {
             });
         }
         Ok(AgentTurnResult {
-            reply: format!("Echo: {}", input.text),
+            reply: format!("Echo: {}", last_message(&input.text)),
             session_ref: Some(format!("echo-{}", input.thread_key)),
             usage: None,
             pending: None,
@@ -110,6 +116,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.reply, "Echo: hi");
+        assert_eq!(last_message("You are @qa.
+
+---
+
+Ana: hola"), "Ana: hola");
         assert!(out.pending.is_none());
     }
 

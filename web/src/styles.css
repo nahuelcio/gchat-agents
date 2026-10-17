@@ -269,6 +269,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+.field > span.muted { font-family: inherit; font-size: 13px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
 .field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .btn.linkish { background: transparent; border: 0; color: var(--accent-ink); padding: 0; min-height: 0; font-size: 12px; font-family: var(--font-mono); letter-spacing: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; box-shadow: none; }
 .btn.linkish:hover:not(:disabled) { transform: none; box-shadow: none; background: transparent; }
@@ -576,8 +577,8 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 }
 @media (max-width: 820px) {
   .playground { margin: -16px -12px -40px; }
-  .play-threads { max-width: none; flex-basis: 100%; border-right: 0; border-bottom: 3px solid var(--primary); }
-  .play-chat { height: 80vh; }
+  .play-threads { max-width: none; flex-basis: 100%; border-right: 0; border-bottom: 3px solid var(--primary); max-height: 34dvh; overflow-y: auto; }
+  .play-chat { height: 88dvh; }
   .play-main { flex-direction: column; }
   .play-context { flex: none; max-width: none; border-left: 0; border-top: 3px solid var(--primary); max-height: 40vh; }
 }

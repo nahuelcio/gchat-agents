@@ -36,3 +36,5 @@ export async function room(personas: string[], humans: string[] = []) {
 }
 
 export const say = (thread: string, name: string, text: string) => call("POST", "/api/team/send", { thread, name, text });
+
+export const authoredBy = (screen: any, persona: string) => screen.getByTestId("message-author").filter({ hasText: `@${persona}` }).first();

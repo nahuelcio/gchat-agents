@@ -26,7 +26,9 @@ export function Overview({ notify }: ViewProps) {
 
   // Google Chat threads only: team chat and schedules have their own views.
   const real = threads?.filter((t) => t.key.startsWith("spaces/")) ?? [];
-  const running = real.filter((t) => t.app.running).length;
+  const chats = threads?.filter((t) => !t.key.startsWith("schedule/")) ?? [];
+  const team = chats.length - real.length;
+  const running = chats.filter((t) => t.app.running).length;
   const next = jobs.filter((j) => j.enabled && j.nextRunAt).sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))[0];
 
   return (
@@ -71,7 +73,8 @@ export function Overview({ notify }: ViewProps) {
       <div className="stats">
         <div className="stat">
           <span>Active threads</span>
-          <strong>{threads ? real.length : "–"}</strong>
+          <strong>{threads ? chats.length : "–"}</strong>
+          {threads && <small className="muted">{real.length} in Google Chat · {team} in team chat</small>}
         </div>
         <div className="stat">
           <span>Apps running</span>
