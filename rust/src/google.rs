@@ -33,7 +33,7 @@ pub struct PostMessageBody {
     pub cards_v2: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PostThread {
     #[serde(skip_serializing_if = "Option::is_none")]

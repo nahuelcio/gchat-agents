@@ -25,6 +25,7 @@ pub mod static_files;
 pub mod team;
 pub mod text;
 pub mod transcripts;
+pub mod turn_ledger;
 pub mod tunnel;
 pub mod verify;
 pub mod workspace;
@@ -150,6 +151,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         workspaces: Some(workspaces.clone()),
         activity: Some(activity.clone()),
         scheduler: std::sync::OnceLock::new(),
+        ledger: Some(Arc::new(crate::turn_ledger::TurnLedger::open(config.data_dir.join("turns.json")))),
         options: Arc::new(move || settings_to_options(&settings_for_opts.get())),
         media: Some(media.clone()),
     });
@@ -262,6 +264,12 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     }
     let runtime = build_runtime(config, echo)?;
     let state = runtime.state.clone();
+    if let Some(ledger) = &state.handler.ledger {
+        let cut = crate::turn_ledger::recover(&state.handler, ledger, &state.transcripts).await;
+        if cut > 0 {
+            tracing::warn!("{cut} turn(s) were cut by the last restart; their threads were told");
+        }
+    }
     let (port, data_dir) = (runtime.config.port, runtime.config.data_dir.clone());
     tokio::spawn(async move {
         match crate::tunnel::open_tunnel(mode, port, &data_dir).await {

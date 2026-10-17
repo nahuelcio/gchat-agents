@@ -168,9 +168,14 @@ pub async fn team_send(
     let thread_key2 = thread_key;
     let prompt = prompt_text;
     let sender = name.to_string();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    if let Some(ledger) = &deps.ledger {
+        ledger.begin(&request_id, &thread_key2, "team-chat", None).await;
+    }
     tokio::spawn(async move {
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let result = process_message(
+        let deps3 = deps2.clone();
+        let result = crate::handler::tracked(&deps3, Some(&request_id), process_message(
             TurnRequest {
                 thread_key: thread_key2.clone(),
                 space_name: "team-chat".into(),
@@ -182,7 +187,7 @@ pub async fn team_send(
                 captured_replies: Some(captured.clone()),
             },
             deps2,
-        )
+        ))
         .await;
         match result {
             Ok(_) => {

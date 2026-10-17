@@ -60,6 +60,7 @@ pub struct ChatSpace {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatMessage {
+    pub name: Option<String>,
     pub text: Option<String>,
     #[serde(rename = "argumentText")]
     pub argument_text: Option<String>,
@@ -123,6 +124,7 @@ pub struct HandlerDeps {
     pub workspaces: Option<Arc<Workspaces>>,
     pub activity: Option<Arc<crate::activity::ActivityLog>>,
     pub scheduler: std::sync::OnceLock<Arc<crate::schedules::Scheduler>>,
+    pub ledger: Option<Arc<crate::turn_ledger::TurnLedger>>,
     pub options: Arc<dyn Fn() -> TurnOptions + Send + Sync>,
     pub media: Option<Arc<crate::media::MediaStore>>,
 }
@@ -222,6 +224,12 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
         name: t.name.clone(),
         thread_key: t.thread_key.clone(),
     });
+    let request_id = message.name.clone().map(|n| if clicked_answer { format!("{n}#{text}") } else { n });
+    if let (Some(ledger), Some(id)) = (&deps.ledger, &request_id) {
+        if !ledger.begin(id, &thread_key, &space_name, thread.clone()).await {
+            return HandleResult { status: 200, body: json!({ "ok": true, "duplicate": true }) };
+        }
+    }
     let sender = message
         .sender
         .as_ref()
@@ -245,7 +253,7 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
             tracing::info!("message dropped: attachments could not be downloaded");
             return;
         }
-        let _ = process_message(
+        let _ = tracked(&deps2.clone(), request_id.as_deref(), process_message(
             TurnRequest {
                 thread_key: thread2,
                 space_name: space2,
@@ -257,13 +265,24 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
                 captured_replies: None,
             },
             deps2,
-        )
+        ))
         .await;
     });
     HandleResult {
         status: 200,
         body: json!({ "ok": true }),
     }
+}
+
+pub async fn tracked<F: std::future::Future<Output = Result<bool, String>>>(deps: &HandlerDeps, request_id: Option<&str>, turn: F) -> Result<bool, String> {
+    let (Some(ledger), Some(id)) = (&deps.ledger, request_id) else {
+        return turn.await;
+    };
+    ledger.set(id, crate::turn_ledger::TurnState::Running).await;
+    let result = turn.await;
+    let state = if result.is_ok() { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
+    ledger.set(id, state).await;
+    result
 }
 
 async fn ingest_chat_attachments(
@@ -1509,6 +1528,7 @@ mod tests {
             workspaces: None,
             activity: None,
             scheduler: std::sync::OnceLock::new(),
+            ledger: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1564,6 +1584,7 @@ mod tests {
             workspaces: None,
             activity: None,
             scheduler: std::sync::OnceLock::new(),
+            ledger: None,
             options: Arc::new(move || TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1610,6 +1631,7 @@ mod tests {
             workspaces: None,
             activity: None,
             scheduler: std::sync::OnceLock::new(),
+            ledger: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1659,6 +1681,7 @@ mod tests {
             workspaces: None,
             activity: None,
             scheduler: std::sync::OnceLock::new(),
+            ledger: None,
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1865,6 +1888,7 @@ mod tests {
             workspaces: Some(Arc::new(Workspaces::new(dir.path().join("worktrees"), repos))),
             activity: None,
             scheduler: std::sync::OnceLock::new(),
+            ledger: None,
             options: base.options.clone(),
             media: None,
         };
@@ -1932,6 +1956,92 @@ mod tests {
         assert!(calls[1].text.contains(COMPACTED_HEADER) && calls[1].text.contains("SAML"));
         assert!(!calls[2].text.contains(COMPACTED_HEADER));
         assert!(d.store.get("team/t1").unwrap().summary.is_none());
+    }
+
+    fn ledger_deps(dir: &std::path::Path, driver: Arc<dyn AgentDriver>, chat: Arc<crate::google::RecordingChat>) -> Arc<HandlerDeps> {
+        Arc::new(HandlerDeps {
+            verifier: Arc::new(AcceptAllVerifier),
+            driver,
+            chat,
+            store: Arc::new(SessionStore::open(dir.join("sessions.json"))),
+            queue: Arc::new(TurnQueue::new()),
+            config: std::sync::Mutex::new(HandlerConfig { allowed_spaces: vec!["spaces/a".into()], workdir: dir.to_string_lossy().to_string() }),
+            workspaces: None,
+            activity: None,
+            scheduler: std::sync::OnceLock::new(),
+            ledger: Some(Arc::new(crate::turn_ledger::TurnLedger::open(dir.join("turns.json")))),
+            options: Arc::new(|| TurnOptions {
+                context_footer: ContextFooter::Never,
+                auto_compact_at: 0,
+                default_model: None,
+                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_models: Default::default(),
+                personas: vec![],
+            }),
+            media: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn the_same_chat_message_runs_once() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|_, _| "hecho".into()));
+        let chat = Arc::new(crate::google::RecordingChat::new());
+        let deps = ledger_deps(dir.path(), driver.clone(), chat.clone());
+        let event = || -> ChatEvent {
+            serde_json::from_value(json!({
+                "type": "MESSAGE",
+                "space": { "name": "spaces/a" },
+                "message": { "name": "spaces/a/messages/m1", "text": "hola", "thread": { "name": "spaces/a/threads/t1" } }
+            }))
+            .unwrap()
+        };
+        let first = handle_event(None, event(), deps.clone()).await;
+        let second = handle_event(None, event(), deps.clone()).await;
+        assert_eq!(first.status, 200);
+        assert_eq!(second.body["duplicate"], true);
+        for _ in 0..50 {
+            if deps.ledger.as_ref().unwrap().state("spaces/a/messages/m1") == Some(crate::turn_ledger::TurnState::Posted) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(driver.calls.lock().unwrap().len(), 1);
+        assert_eq!(chat.posts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_restart_announces_cut_turns_and_open_questions_once() {
+        let dir = tempdir().unwrap();
+        let chat = Arc::new(crate::google::RecordingChat::new());
+        let driver = Arc::new(ScriptedDriver::new(|_, _| "x".into()));
+        let deps = ledger_deps(dir.path(), driver.clone(), chat.clone());
+        let ledger = deps.ledger.clone().unwrap();
+        let thread = Some(crate::google::PostThread { name: Some("spaces/a/threads/t1".into()), thread_key: None });
+        ledger.begin("m1", "spaces/a/threads/t1", "spaces/a", thread).await;
+        ledger.set("m1", crate::turn_ledger::TurnState::Running).await;
+        deps.store
+            .update(
+                "spaces/a/threads/t2",
+                "spaces/a",
+                SessionPatch {
+                    pending_questions: Some(Some(vec![AgentQuestion { header: "h".into(), question: "Ship?".into(), options: vec![], multiple: None }])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let transcripts = crate::transcripts::TranscriptStore::open(dir.path().join("t"), 50);
+        let reopened = crate::turn_ledger::TurnLedger::open(dir.path().join("turns.json"));
+        assert_eq!(crate::turn_ledger::recover(&deps, &reopened, &transcripts).await, 1);
+        assert_eq!(crate::turn_ledger::recover(&deps, &reopened, &transcripts).await, 0);
+        let posts = chat.posts.lock().unwrap().clone();
+        assert_eq!(posts.len(), 2);
+        assert!(posts.iter().any(|(_, b)| b.text == crate::turn_ledger::CUT_NOTICE));
+        assert!(posts.iter().any(|(_, b)| b.text == crate::turn_ledger::EXPIRED_NOTICE));
+        assert!(deps.store.get("spaces/a/threads/t2").unwrap().pending_questions.is_none());
+        assert_eq!(reopened.state("m1"), Some(crate::turn_ledger::TurnState::Failed));
+        assert!(driver.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
