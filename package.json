@@ -23,7 +23,8 @@
     "smoke": "cargo run --manifest-path rust/Cargo.toml -- --driver echo"
   },
   "dependencies": {
-    "google-auth-library": "^11.2.0"
+    "google-auth-library": "^11.2.0",
+    "pele": "^1.6.0"
   },
   "devDependencies": {
     "@e2e-dev/web": "^0.15.2",

@@ -13,10 +13,13 @@ import {
   type TeamTransport,
 } from "../api";
 import { Icon } from "../App";
+import { MermaidDiagram } from "../MermaidDiagram";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
 const IMAGE_PART =
   /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
+
+const MERMAID_FENCE = /```mermaid[ \t]*\r?\n([\s\S]*?)```/gi;
 
 /** @handle being typed at the caret, if any. */
 function activeMention(text: string, caret: number): { start: number; query: string } | null {
@@ -116,8 +119,7 @@ function isImageType(contentType: string): boolean {
   return contentType.startsWith("image/");
 }
 
-/** Renders plain text plus markdown / bare image URLs as actual images. */
-function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
+function textWithImages(text: string, keyPrefix: string): ReactNode[] {
   const parts: ReactNode[] = [];
   let last = 0;
   const re = new RegExp(IMAGE_PART.source, "gi");
@@ -126,10 +128,32 @@ function MessageContent({ text, attachments, mediaUrl }: { text: string; attachm
     if (m.index > last) parts.push(text.slice(last, m.index));
     const url = m[3] || m[4] || m[1];
     const alt = m[2] || "image";
-    parts.push(<img key={`img-${m.index}`} className="message-image" src={url} alt={alt} loading="lazy" />);
+    parts.push(<img key={`${keyPrefix}-img-${m.index}`} className="message-image" src={url} alt={alt} loading="lazy" />);
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  const re = new RegExp(MERMAID_FENCE.source, "gi");
+  let m: RegExpExecArray | null;
+  let chunk = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) {
+      const chunkParts = textWithImages(text.slice(last, m.index), `t${chunk}`);
+      if (chunkParts.length) parts.push(<div key={`t-${chunk}`} className="message-text">{chunkParts}</div>);
+      chunk++;
+    }
+    parts.push(<MermaidDiagram key={`m-${m.index}`} source={m[1]!.replace(/\s+$/, "")} />);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    const chunkParts = textWithImages(text.slice(last), `t${chunk}`);
+    if (chunkParts.length) parts.push(<div key={`t-${chunk}`} className="message-text">{chunkParts}</div>);
+  }
   const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
   const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
   const hidePlaceholder = Boolean(images.length) && text.trim() === "(image)";
@@ -144,7 +168,7 @@ function MessageContent({ text, attachments, mediaUrl }: { text: string; attachm
           ))}
         </div>
       )}
-      {!hidePlaceholder && parts.length > 0 && <div className="message-text">{parts}</div>}
+      {!hidePlaceholder && parts}
       {files.map((a) => (
         <a key={a.id} className="message-file" href={mediaUrl(a.id)} target="_blank" rel="noreferrer">
           {a.name ?? a.contentType}
