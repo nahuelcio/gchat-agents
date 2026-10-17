@@ -14,6 +14,15 @@ export interface Settings {
   allowedSpaces: string[];
   contextFooter: ContextFooter;
   autoCompactAt: number;
+  personas: Persona[];
+}
+
+export interface Persona {
+  name: string;
+  prompt: string;
+  driver?: "opencode" | "claude";
+  model?: string;
+  agent?: string;
 }
 
 export interface Thread {

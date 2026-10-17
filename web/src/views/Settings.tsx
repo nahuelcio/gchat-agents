@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type RepoConfig, type Settings } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -28,6 +28,7 @@ export function SettingsView(props: ViewProps) {
       </header>
       <GoogleChatCard {...props} />
       <AgentCard {...props} />
+      <PersonasCard {...props} />
       <ContextCard {...props} />
       <ReposCard {...props} />
       <SpacesCard {...props} />
@@ -341,6 +342,162 @@ function ModelBrowser({
       )}
       <span className="muted small">Threads can override it with /model.</span>
     </div>
+  );
+}
+
+const EMPTY_PERSONA: Persona = { name: "", prompt: "" };
+
+function PersonasCard({ settings, save }: ViewProps) {
+  const personas = settings.personas ?? [];
+  const [editing, setEditing] = useState<{ index: number; draft: Persona } | null>(null);
+  const [ocAgents, setOcAgents] = useState<string[]>([]);
+  useEffect(() => {
+    api.opencodeAgents().then(setOcAgents, () => setOcAgents([]));
+  }, []);
+  const taken = new Set(personas.map((p) => p.name.toLowerCase()));
+  const importable = ocAgents.filter((id) => !taken.has(id.toLowerCase()) && /^[A-Za-z0-9][\w-]{0,31}$/.test(id));
+
+  const commit = (list: Persona[], msg: string) => save({ personas: list }, msg).then(() => setEditing(null));
+  const submit = () => {
+    if (!editing) return;
+    const draft = { ...editing.draft, name: editing.draft.name.trim().replace(/^@/, ""), prompt: editing.draft.prompt.trim() };
+    if (!draft.model?.trim()) delete draft.model;
+    if (!draft.driver) delete draft.driver;
+    if (!draft.agent || draft.driver === "claude") delete draft.agent;
+    const list = [...personas];
+    if (editing.index < 0) list.push(draft);
+    else list[editing.index] = draft;
+    void commit(list, `@${draft.name} saved`);
+  };
+
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Agents in chat</h2>
+        <p className="muted small">
+          Give agents a name and a role. Write <code>@name</code> in any chat and that agent answers. If an agent mentions another one in its reply, that one answers too (up to {3} handoffs per message).
+        </p>
+      </summary>
+      {personas.length === 0 && !editing && <p className="empty">No agents yet. Add one like <code>@ventas</code> or <code>@soporte</code>.</p>}
+      {personas.map((p, i) =>
+        editing?.index === i ? null : (
+          <div key={p.name} className="repo">
+            <div className="repo-name grow">
+              <span className="strong">@{p.name}</span>
+              <span className="muted small">{p.prompt ? p.prompt.slice(0, 120) + (p.prompt.length > 120 ? "…" : "") : "No role yet"}</span>
+            </div>
+            <span className="muted small">{[p.agent ? `OpenCode · ${p.agent}` : (p.driver ?? "default agent"), p.model].filter(Boolean).join(" · ")}</span>
+            <button className="btn small" onClick={() => setEditing({ index: i, draft: { ...p } })}>
+              Edit
+            </button>
+            <button className="btn icon ghost" aria-label={`Remove @${p.name}`} onClick={() => void commit(personas.filter((_, j) => j !== i), `@${p.name} removed`)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </div>
+        ),
+      )}
+      {editing ? (
+        <form
+          className="persona-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <div className="row">
+            <label className="field narrow">
+              <span>Name</span>
+              <input
+                className="mono"
+                value={editing.draft.name}
+                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, name: e.target.value } })}
+                placeholder="ventas"
+                pattern="@?[A-Za-z0-9][A-Za-z0-9_\-]{0,31}"
+                title="Letters, digits, - or _ (no spaces)"
+                required
+                autoFocus
+              />
+            </label>
+            <label className="field narrow">
+              <span>Runs on</span>
+              <select
+                value={editing.draft.driver ?? ""}
+                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, driver: (e.target.value || undefined) as Persona["driver"] } })}
+              >
+                <option value="">Default agent</option>
+                <option value="claude">Claude Code</option>
+                <option value="opencode">OpenCode</option>
+              </select>
+            </label>
+            {editing.draft.driver !== "claude" && ocAgents.length > 0 && (
+              <label className="field narrow">
+                <span>OpenCode agent</span>
+                <select
+                  value={editing.draft.agent ?? ""}
+                  onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, agent: e.target.value || undefined, driver: e.target.value ? "opencode" : editing.draft.driver } })}
+                >
+                  <option value="">None (plain)</option>
+                  {ocAgents.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="field grow">
+              <span>Model (optional)</span>
+              <input
+                className="mono"
+                value={editing.draft.model ?? ""}
+                onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, model: e.target.value } })}
+                placeholder="empty = default"
+              />
+            </label>
+          </div>
+          <label className="field">
+            <span>Role and knowledge</span>
+            <textarea
+              rows={4}
+              value={editing.draft.prompt}
+              onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, prompt: e.target.value } })}
+              placeholder="You are the sales agent. You know our plans and prices, answer briefly and in Spanish…"
+            />
+          </label>
+          <div className="row">
+            <button className="btn primary">Save</button>
+            <button type="button" className="btn" onClick={() => setEditing(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <button className="btn" onClick={() => setEditing({ index: -1, draft: { ...EMPTY_PERSONA } })}>
+            + Add agent
+          </button>
+          {importable.length > 0 && (
+            <div className="field">
+              <span className="muted small">Or bring an OpenCode agent you already have — it keeps its own instructions and tools:</span>
+              <div className="model-chips">
+                {importable.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className="chip"
+                    onClick={() => void commit([...personas, { name: id, prompt: "", driver: "opencode", agent: id }], `@${id} added`)}
+                  >
+                    + @{id}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </details>
   );
 }
 

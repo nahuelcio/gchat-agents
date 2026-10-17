@@ -26,6 +26,8 @@ export interface SessionRecord {
   turns?: number;
   /** Clarifying questions the agent is waiting on. Cleared once the thread answers. */
   pendingQuestions?: AgentQuestion[];
+  /** Session per @agent in this thread (persona name -> sessionRef). */
+  personaSessions?: Record<string, string>;
 }
 
 /** threadKey -> session record, persisted as JSON with atomic writes (tmp + rename). */

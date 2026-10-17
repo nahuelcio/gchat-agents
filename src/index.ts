@@ -92,6 +92,7 @@ const deps: HandlerDeps = {
       defaultModel: s.models[s.agentDriver],
       defaultDriver: s.agentDriver,
       defaultModels: s.models,
+      personas: s.personas,
     };
   },
 };

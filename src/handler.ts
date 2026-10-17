@@ -7,7 +7,8 @@ import type { AgentDriver, AgentQuestion, AgentTurnResult } from "./driver/types
 import type { TokenVerifier } from "./verify.js";
 import { threadSlug, type Workspaces } from "./workspace.js";
 import { questionCards, continuation } from "./questions.js";
-import { cancelQuestion, holdQuestion, takeQuestion } from "./question-gate.js";
+import { cancelQuestion, hasQuestion, holdQuestion, takeQuestion } from "./question-gate.js";
+import { MAX_HOPS, mentionedPersonas, personaPreamble, stripSelfPrefix, type Persona } from "./personas.js";
 import { attachmentPromptLine, type MediaStore, type StoredMedia } from "./media.js";
 
 /** Google Chat app event, reduced to the fields this service reads. */
@@ -34,6 +35,8 @@ export interface ChatEvent {
 
 export interface ReplyMeta {
   questions?: AgentQuestion[];
+  /** Set when an @agent wrote the reply; omitted = the thread's default agent. */
+  author?: string;
 }
 
 export interface HandlerConfig {
@@ -53,6 +56,7 @@ export interface TurnOptions {
   /** Configured agent and per-agent default models, to label threads that switched with /agent. */
   defaultDriver?: "opencode" | "claude";
   defaultModels?: { opencode?: string; claude?: string };
+  personas?: Persona[];
 }
 
 export interface HandlerDeps {
@@ -242,7 +246,7 @@ export async function handleEvent(
         spaceName,
         text: prompt,
         sender: event.message!.sender?.displayName ?? event.user?.displayName,
-        reply: (msg, meta) => postReply(deps.chat, spaceName, thread, msg, meta?.questions),
+        reply: (msg, meta) => postReply(deps.chat, spaceName, thread, meta?.author ? `*@${meta.author}*\n${msg}` : msg, meta?.questions),
       },
       deps,
     );
@@ -274,6 +278,12 @@ export function processMessage(req: TurnRequest, deps: HandlerDeps): Promise<{ o
 async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boolean }> {
   const { threadKey, spaceName } = req;
   const record = deps.store.get(threadKey);
+  // @agent mentions go to those agents; an answer to the default agent's open question still goes to it.
+  const personas = deps.options?.().personas ?? [];
+  const mentioned = mentionedPersonas(req.text, personas);
+  if (mentioned.length && !hasQuestion(threadKey) && !record?.pendingQuestions?.length) {
+    return personaRound(req, deps, mentioned, personas);
+  }
   const parked = takeQuestion(threadKey);
   let text = req.text;
   let result: AgentTurnResult;
@@ -351,6 +361,58 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
     await req.reply(`Context at ${pct}% — compacting automatically.\n${await compact(threadKey, spaceName, deps)}`);
   }
   return { ok: true };
+}
+
+/**
+ * Runs the mentioned @agents in order. When an agent's reply mentions another agent,
+ * that one answers next (it sees who asked); an answer that mentions nobody goes back
+ * to the agent that asked, so it can finish. Up to MAX_HOPS handoffs per human message.
+ */
+async function personaRound(req: TurnRequest, deps: HandlerDeps, first: Persona[], all: Persona[]): Promise<{ ok: boolean }> {
+  const { threadKey, spaceName } = req;
+  const queue: { persona: Persona; text: string; hop: number; askedBy?: Persona }[] = first.map((persona) => ({
+    persona,
+    text: req.sender ? `${req.sender}: ${req.text}` : req.text,
+    hop: 0,
+  }));
+  let ok = true;
+  while (queue.length) {
+    const { persona, text, hop, askedBy } = queue.shift()!;
+    const record = deps.store.get(threadKey);
+    const sessionRef = record?.personaSessions?.[persona.name];
+    let reply: string;
+    try {
+      const result = await deps.driver.runTurn({
+        threadKey: `${threadKey}#${persona.name}`,
+        sessionRef,
+        text: sessionRef ? text : `${personaPreamble(persona, all)}\n\n---\n\n${text}`,
+        workdir: record?.worktree ?? deps.config.workdir,
+        model: persona.model ?? (persona.driver ? undefined : record?.model),
+        driver: persona.driver ?? record?.driver,
+        ...(persona.agent && { agent: persona.agent }),
+        answerQuestions: false,
+      });
+      reply = stripSelfPrefix(result.reply, persona);
+      if (result.sessionRef) {
+        await deps.store
+          .update(threadKey, spaceName, { personaSessions: { ...deps.store.get(threadKey)?.personaSessions, [persona.name]: result.sessionRef } })
+          .catch((err: unknown) => console.error(`[store ${threadKey}] persist failed:`, errorMessage(err)));
+      }
+    } catch (err) {
+      console.error(`[turn ${threadKey} @${persona.name}] failed:`, err);
+      await req.reply(`@${persona.name} failed: ${errorMessage(err)}`, { author: persona.name });
+      ok = false;
+      continue;
+    }
+    await req.reply(reply, { author: persona.name });
+    if (hop >= MAX_HOPS) continue;
+    const asked = mentionedPersonas(reply, all).filter((n) => n.name !== persona.name && !queue.some((q) => q.persona.name === n.name));
+    for (const next of asked) queue.push({ persona: next, text: `@${persona.name}: ${reply}`, hop: hop + 1, askedBy: persona });
+    if (!asked.length && askedBy && !queue.some((q) => q.persona.name === askedBy.name)) {
+      queue.push({ persona: askedBy, text: `@${persona.name}: ${reply}`, hop: hop + 1 });
+    }
+  }
+  return { ok };
 }
 
 function contextPercent(r: SessionRecord): number | undefined {

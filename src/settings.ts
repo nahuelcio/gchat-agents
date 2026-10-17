@@ -3,6 +3,7 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AgentDriverKind } from "./config.js";
 import type { ContextFooter } from "./handler.js";
+import { PERSONA_NAME, type Persona } from "./personas.js";
 import type { RepoConfig } from "./workspace.js";
 
 /** Everything the control plane can change at runtime. Persisted in DATA_DIR/config.json. */
@@ -16,9 +17,11 @@ export interface Settings {
   contextFooter: ContextFooter;
   /** Compact a thread automatically at this context percent; 0 = never. */
   autoCompactAt: number;
+  /** Named agents people can @mention inside a thread. */
+  personas: Persona[];
 }
 
-const DEFAULTS = { contextFooter: "every5" as ContextFooter, autoCompactAt: 85 };
+const DEFAULTS = { contextFooter: "every5" as ContextFooter, autoCompactAt: 85, personas: [] as Persona[] };
 
 const REPO_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -42,6 +45,16 @@ function validate(s: Settings): void {
   }
   if (!["every", "every5", "above60", "never"].includes(s.contextFooter)) throw new Error(`contextFooter: "${s.contextFooter}" is not valid`);
   if (!Number.isInteger(s.autoCompactAt) || s.autoCompactAt < 0 || s.autoCompactAt > 100) throw new Error("autoCompactAt must be 0-100");
+  const names = new Set<string>();
+  for (const p of s.personas) {
+    if (typeof p?.name !== "string" || !PERSONA_NAME.test(p.name)) throw new Error(`agent "${p?.name}": use letters, digits, - or _ (no spaces, max 32)`);
+    if (names.has(p.name.toLowerCase())) throw new Error(`agent @${p.name} is defined twice`);
+    names.add(p.name.toLowerCase());
+    if (typeof p.prompt !== "string") throw new Error(`agent @${p.name}: prompt must be text`);
+    if (p.driver !== undefined && p.driver !== "opencode" && p.driver !== "claude") throw new Error(`agent @${p.name}: driver must be opencode or claude`);
+    if (p.model !== undefined && typeof p.model !== "string") throw new Error(`agent @${p.name}: model must be text`);
+    if (p.agent !== undefined && (typeof p.agent !== "string" || !/^[\w.-]+$/.test(p.agent))) throw new Error(`agent @${p.name}: OpenCode agent must be a simple id`);
+  }
   for (const space of s.allowedSpaces) {
     if (!/^spaces\/[^/\s]+$/.test(space)) throw new Error(`"${space}" is not a space name (spaces/XXXX)`);
   }
@@ -63,9 +76,9 @@ export class SettingsStore {
     }
     // Only known fields: files from older versions may carry removed ones.
     const merged = { ...DEFAULTS, ...defaults, ...saved };
-    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt } = merged;
+    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt, personas } = merged;
     const agents = { ...(defaults.agents ?? {}), ...(saved.agents ?? {}) };
-    this.current = { agentDriver, models, agents, repos, allowedSpaces, contextFooter, autoCompactAt };
+    this.current = { agentDriver, models, agents, repos, allowedSpaces, contextFooter, autoCompactAt, personas };
   }
 
   get(): Settings {

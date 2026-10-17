@@ -12,6 +12,7 @@ const defaults: Settings = {
   allowedSpaces: ["spaces/ENV"],
   contextFooter: "every5",
   autoCompactAt: 85,
+  personas: [],
 };
 
 let dir: string;
@@ -36,6 +37,7 @@ describe("SettingsStore", () => {
     expect(new SettingsStore(file, defaults).get()).toEqual({
       contextFooter: "every",
       autoCompactAt: 85,
+      personas: [],
       agentDriver: "claude",
       models: { claude: "claude-opus-5-5" },
       agents: {},

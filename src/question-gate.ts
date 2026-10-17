@@ -14,6 +14,10 @@ export function takeQuestion(threadKey: string): PendingAgent | undefined {
   return pending;
 }
 
+export function hasQuestion(threadKey: string): boolean {
+  return parked.has(threadKey);
+}
+
 export function cancelQuestion(threadKey: string): void {
   parked.get(threadKey)?.cancel();
   parked.delete(threadKey);

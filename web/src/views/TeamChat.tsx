@@ -12,8 +12,6 @@ import {
 import { Icon } from "../App";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
-const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/wi ", "/context", "/compact", "/model ", "/schedules"];
-const GUEST_SUGGESTIONS = ["/help", "/context", "/compact", "/clear", "/model "];
 const IMAGE_PART =
   /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
 
@@ -411,7 +409,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   const active = threads.find((t) => t.id === activeId);
-  const suggestions = transport.guest ? GUEST_SUGGESTIONS : OWNER_SUGGESTIONS;
   const working = sending || state?.busy;
 
   return (
@@ -536,7 +533,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 </span>
                 <div className="message-body">
                   <div>
-                    <span className="strong">{m.bot ? "Switchboard" : mine ? `${m.author} (you)` : m.author}</span>{" "}
+                    <span className="strong">{m.bot ? (m.author.startsWith("@") ? m.author : "Switchboard") : mine ? `${m.author} (you)` : m.author}</span>{" "}
                     {m.at && <span className="muted small">{new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>}
                   </div>
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
@@ -574,13 +571,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
         {activeId && (
           <div className="composer-wrap">
-            <div className="suggestions">
-              {suggestions.map((s) => (
-                <button key={s} className="chip" onClick={() => (s.endsWith(" ") ? setDraft(s) : void send(s))} disabled={sending}>
-                  {s.trim()}
-                </button>
-              ))}
-            </div>
             {pending.length > 0 && (
               <div className="composer-previews">
                 {pending.map((p, i) => (

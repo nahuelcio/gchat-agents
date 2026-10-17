@@ -37,11 +37,11 @@ ${job.prompt}`,
       // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
       reply: async (text, meta) => {
         await transcripts.append(threadKey, [
-          { author: "Switchboard", text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
+          { author: meta?.author ? `@${meta.author}` : "Switchboard", text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
         ]);
         if (job.space.startsWith("spaces/")) {
           await deps.chat.postMessage(job.space, {
-            text,
+            text: meta?.author ? `*@${meta.author}*\n${text}` : text,
             thread: { threadKey: `schedule-${job.id}` },
             ...(meta?.questions?.length && { cardsV2: questionCards(meta.questions) }),
           });
