@@ -1,4 +1,5 @@
 import { processMessage, type HandlerDeps } from "./handler.js";
+import { attachmentPromptLine, toMessageAttachment, type MessageAttachment } from "./media.js";
 import { cancelQuestion } from "./question-gate.js";
 import type { TranscriptStore } from "./transcripts.js";
 import { threadSlug } from "./workspace.js";
@@ -7,6 +8,44 @@ import { threadSlug } from "./workspace.js";
 export const TEAM_PREFIX = "share/";
 export const THREAD_ID = /^[\w-]{8,40}$/;
 
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_BYTES = 3_500_000;
+
+export interface TeamAttachmentInput {
+  contentType: string;
+  data: string;
+  name?: string;
+}
+
+/** Decodes base64 team-chat uploads into the media store (images only). */
+export async function saveTeamAttachments(
+  deps: HandlerDeps,
+  inputs: TeamAttachmentInput[] | undefined,
+): Promise<{ stored: MessageAttachment[]; promptLines: string[] }> {
+  if (!inputs?.length) return { stored: [], promptLines: [] };
+  if (!deps.media) throw new Error("media store unavailable");
+  if (inputs.length > MAX_ATTACHMENTS) throw new Error(`at most ${MAX_ATTACHMENTS} attachments`);
+  const stored: MessageAttachment[] = [];
+  const promptLines: string[] = [];
+  for (const raw of inputs) {
+    const contentType = raw.contentType?.trim() || "";
+    if (!contentType.startsWith("image/")) throw new Error("only image attachments are supported");
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(raw.data, "base64");
+    } catch {
+      throw new Error("invalid attachment data");
+    }
+    if (!bytes.length || bytes.length > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`each image must be between 1 byte and ${MAX_ATTACHMENT_BYTES} bytes`);
+    }
+    const saved = await deps.media.save(bytes, contentType, raw.name?.trim() || undefined);
+    stored.push(toMessageAttachment(saved));
+    promptLines.push(attachmentPromptLine(saved));
+  }
+  return { stored, promptLines };
+}
+
 /**
  * One team-chat message: recorded first (teammates polling see it right away),
  * then run through the same path as a Google Chat message, replies recorded too.
@@ -14,16 +53,33 @@ export const THREAD_ID = /^[\w-]{8,40}$/;
 export async function teamSend(
   deps: HandlerDeps,
   transcripts: TranscriptStore,
-  req: { thread: string; text: string; name: string; allowCommands?: ReadonlySet<string> },
+  req: {
+    thread: string;
+    text: string;
+    name: string;
+    allowCommands?: ReadonlySet<string>;
+    attachments?: TeamAttachmentInput[];
+  },
 ): Promise<{ ok: boolean; replies: string[] }> {
   const threadKey = `${TEAM_PREFIX}${req.thread}`;
-  await transcripts.append(threadKey, [{ author: req.name, text: req.text, bot: false }]);
+  const { stored, promptLines } = await saveTeamAttachments(deps, req.attachments);
+  const text = req.text.trim();
+  const prompt = [text, ...promptLines].filter(Boolean).join("\n\n");
+  if (!prompt) throw new Error("text or an image is required");
+  await transcripts.append(threadKey, [
+    {
+      author: req.name,
+      text: text || (stored.length ? "(image)" : ""),
+      bot: false,
+      ...(stored.length && { attachments: stored }),
+    },
+  ]);
   const replies: string[] = [];
   const { ok } = await processMessage(
     {
       threadKey,
       spaceName: "team-chat",
-      text: req.text,
+      text: prompt,
       sender: req.name,
       reply: async (r, meta) => {
         replies.push(r);

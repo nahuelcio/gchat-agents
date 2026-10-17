@@ -20,6 +20,7 @@ import { GoogleTokenVerifier } from "./verify.js";
 import { threadSlug, Workspaces } from "./workspace.js";
 import { ensureTunnel } from "./tunnel.js";
 import { ShareToken } from "./share.js";
+import { MediaStore } from "./media.js";
 import { TranscriptStore } from "./transcripts.js";
 import { questionCards } from "./questions.js";
 
@@ -61,6 +62,7 @@ const health = new Health(join(config.dataDir, "health.json"), process.env);
 const schedules = new ScheduleStore(join(config.dataDir, "schedules.json"));
 const workspaces = new Workspaces(join(config.dataDir, "worktrees"), settings.get().repos);
 
+const media = new MediaStore(join(config.dataDir, "media"));
 const deps: HandlerDeps = {
   verifier: new GoogleTokenVerifier(tokenAudience),
   driver: new ConfiguredDriver(settings, {
@@ -74,6 +76,7 @@ const deps: HandlerDeps = {
   config: { allowedSpaces: settings.get().allowedSpaces, workdir: config.workdir },
   workspaces,
   schedules,
+  media,
   options: () => {
     const s = settings.get();
     return {

@@ -3,7 +3,8 @@ import type { DetectedAgent } from "./agents.js";
 import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
 import { GUEST_COMMANDS, type ShareToken } from "./share.js";
 import { serveStatic } from "./static.js";
-import { teamSend, teamThread, THREAD_ID } from "./team.js";
+import { serveMedia } from "./media.js";
+import { teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
 import type { TranscriptStore } from "./transcripts.js";
 
 /** Team chat for guests: a token-gated slice of the bridge on the public port. */
@@ -14,7 +15,8 @@ export interface ShareOptions {
   transcripts: TranscriptStore;
 }
 
-const MAX_BODY_BYTES = 1_000_000;
+/** Team chat may send a couple of base64 images; keep Google Chat event bodies small in practice. */
+const MAX_BODY_BYTES = 8_000_000;
 
 export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -46,9 +48,15 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     send(res, 404, { error: "not found" });
     return;
   }
-  const auth = req.headers.authorization?.replace(/^Bearer /, "");
+  const parsed = new URL(req.url ?? "/", "http://x");
+  const auth = req.headers.authorization?.replace(/^Bearer /, "") ?? parsed.searchParams.get("access") ?? undefined;
   if (!share.token.check(auth)) {
     send(res, 401, { error: "invalid or expired share link" });
+    return;
+  }
+  if (req.method === "GET" && url.startsWith("/play/api/media/")) {
+    const id = url.slice("/play/api/media/".length);
+    if (!(deps.media && (await serveMedia(res, deps.media, id)))) send(res, 404, { error: "not found" });
     return;
   }
   if (req.method === "GET" && url === "/play/api/agents") {
@@ -57,7 +65,7 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     return;
   }
   if (req.method === "GET" && url === "/play/api/thread") {
-    const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
+    const thread = parsed.searchParams.get("thread") ?? "";
     if (!THREAD_ID.test(thread)) {
       send(res, 400, { error: "bad thread id" });
       return;
@@ -66,7 +74,7 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     return;
   }
   if (req.method === "POST" && url === "/play/api/send") {
-    let body: { thread?: string; text?: string; name?: string };
+    let body: { thread?: string; text?: string; name?: string; attachments?: TeamAttachmentInput[] };
     try {
       body = JSON.parse(await readBody(req)) as typeof body;
     } catch {
@@ -75,12 +83,17 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     }
     const thread = body.thread ?? "";
     const text = body.text?.trim() ?? "";
+    const attachments = body.attachments ?? [];
     const name = (body.name?.trim() || "Guest").slice(0, 40);
-    if (!THREAD_ID.test(thread) || !text) {
-      send(res, 400, { error: "thread and text are required" });
+    if (!THREAD_ID.test(thread) || (!text && !attachments.length)) {
+      send(res, 400, { error: "thread and text or an image are required" });
       return;
     }
-    send(res, 200, await teamSend(deps, share.transcripts, { thread, text, name, allowCommands: GUEST_COMMANDS }));
+    try {
+      send(res, 200, await teamSend(deps, share.transcripts, { thread, text, name, allowCommands: GUEST_COMMANDS, ...(attachments.length && { attachments }) }));
+    } catch (err) {
+      send(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
     return;
   }
   send(res, 404, { error: "not found" });

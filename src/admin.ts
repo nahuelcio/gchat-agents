@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
 import { contextLine, type HandlerDeps } from "./handler.js";
-import { TEAM_PREFIX, teamDelete, teamSend, teamThread, THREAD_ID } from "./team.js";
+import { serveMedia } from "./media.js";
+import { TEAM_PREFIX, teamDelete, teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
 import type { TranscriptStore } from "./transcripts.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
@@ -133,6 +134,12 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return send(res, 200, threads);
     }
+    if (url.startsWith("/api/media/") && method === "GET") {
+      const deps = ctx.handler;
+      const id = url.slice("/api/media/".length);
+      if (!(deps?.media && (await serveMedia(res, deps.media, id)))) throw new HttpError(404, "not found");
+      return;
+    }
     if (url.startsWith("/api/team/")) {
       const deps = ctx.handler;
       const transcripts = ctx.transcripts;
@@ -147,10 +154,27 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
         return send(res, 200, teamThread(deps, transcripts, thread));
       }
       if (url === "/api/team/send" && method === "POST") {
-        const body = await jsonBody<{ thread?: string; text?: string; name?: string }>(req);
-        if (!THREAD_ID.test(body.thread ?? "") || !body.text?.trim()) throw new HttpError(400, "thread and text are required");
-        // The owner (loopback) gets every command; guests on the public port are restricted.
-        return send(res, 200, await teamSend(deps, transcripts, { thread: body.thread!, text: body.text.trim(), name: (body.name?.trim() || "Owner").slice(0, 40) }));
+        const body = await jsonBody<{ thread?: string; text?: string; name?: string; attachments?: TeamAttachmentInput[] }>(req);
+        const text = body.text?.trim() ?? "";
+        const attachments = body.attachments ?? [];
+        if (!THREAD_ID.test(body.thread ?? "") || (!text && !attachments.length)) {
+          throw new HttpError(400, "thread and text or an image are required");
+        }
+        try {
+          // The owner (loopback) gets every command; guests on the public port are restricted.
+          return send(
+            res,
+            200,
+            await teamSend(deps, transcripts, {
+              thread: body.thread!,
+              text,
+              name: (body.name?.trim() || "Owner").slice(0, 40),
+              ...(attachments.length && { attachments }),
+            }),
+          );
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
       }
       if ((url === "/api/team/archive" || url === "/api/team/delete") && method === "POST") {
         const body = await jsonBody<{ thread?: string; archived?: boolean }>(req);

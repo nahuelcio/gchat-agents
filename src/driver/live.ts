@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
+import { resolveBin } from "../resolve-bin.js";
 
 const MAX_STDOUT = 16 * 1024 * 1024;
 
@@ -20,9 +21,10 @@ function shebang(bin: string): boolean {
 }
 
 function start(bin: string, args: string[], cwd: string): ChildProcess {
+  const resolved = resolveBin(bin);
   const opts = { cwd, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" };
-  if (shebang(bin)) return spawn("sh", [bin, ...args], opts);
-  return spawn(bin, args, opts);
+  if (shebang(resolved)) return spawn("sh", [resolved, ...args], opts);
+  return spawn(resolved, args, opts);
 }
 
 export interface LiveProcess {

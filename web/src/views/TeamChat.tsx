@@ -1,9 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ago, api, type AgentQuestion, type TeamThreadState, type TeamThreadSummary, type TeamTransport } from "../api";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ago,
+  api,
+  type AgentQuestion,
+  type MessageAttachment,
+  type TeamAttachmentInput,
+  type TeamThreadState,
+  type TeamThreadSummary,
+  type TeamTransport,
+} from "../api";
 import { Icon } from "../App";
 
 const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/context", "/compact", "/model ", "/schedules"];
 const GUEST_SUGGESTIONS = ["/help", "/context", "/compact", "/clear", "/model "];
+const IMAGE_PART =
+  /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
 
 /** Per-browser memory (names, a guest's own threads). Storage may be unavailable: then it just isn't remembered. */
 function remember<T>(key: string, fallback: T): T {
@@ -90,6 +101,56 @@ function splitFooter(text: string): { text: string; footer?: string } {
   return m ? { text: text.slice(0, m.index), footer: m[1] } : { text };
 }
 
+function isImageType(contentType: string): boolean {
+  return contentType.startsWith("image/");
+}
+
+/** Renders plain text plus markdown / bare image URLs as actual images. */
+function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  const re = new RegExp(IMAGE_PART.source, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const url = m[3] || m[4] || m[1];
+    const alt = m[2] || "image";
+    parts.push(<img key={`img-${m.index}`} className="message-image" src={url} alt={alt} loading="lazy" />);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
+  const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
+  const hidePlaceholder = Boolean(images.length) && text.trim() === "(image)";
+  return (
+    <>
+      {images.length > 0 && (
+        <div className="message-images">
+          {images.map((a) => (
+            <a key={a.id} href={mediaUrl(a.id)} target="_blank" rel="noreferrer">
+              <img className="message-image" src={mediaUrl(a.id)} alt={a.name ?? "attachment"} loading="lazy" />
+            </a>
+          ))}
+        </div>
+      )}
+      {!hidePlaceholder && parts.length > 0 && <div className="message-text">{parts}</div>}
+      {files.map((a) => (
+        <a key={a.id} className="message-file" href={mediaUrl(a.id)} target="_blank" rel="noreferrer">
+          {a.name ?? a.contentType}
+        </a>
+      ))}
+    </>
+  );
+}
+
+async function fileToAttachment(file: File): Promise<TeamAttachmentInput> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return { contentType: file.type || "application/octet-stream", data: btoa(binary), name: file.name };
+}
+
 interface Props {
   transport: TeamTransport;
   /** Thread to open first (deeplink). */
@@ -112,9 +173,35 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [activeId, setActiveId] = useState<string | undefined>(initialThread);
   const [state, setState] = useState<TeamThreadState>();
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [sending, setSending] = useState(false);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
   const bottom = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  useEffect(
+    () => () => {
+      for (const p of pendingRef.current) URL.revokeObjectURL(p.url);
+    },
+    [],
+  );
+
+  function queueImages(files: FileList | File[]) {
+    const images = [...files].filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    setPending((prev) => {
+      const room = Math.max(0, 5 - prev.length);
+      return [...prev, ...images.slice(0, room).map((file) => ({ file, url: URL.createObjectURL(file) }))];
+    });
+  }
+
+  function clearPending() {
+    setPending((prev) => {
+      for (const p of prev) URL.revokeObjectURL(p.url);
+      return [];
+    });
+  }
 
   // Guests keep their own thread list; a deeplinked thread joins it.
   useEffect(() => {
@@ -167,14 +254,24 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     bottom.current?.scrollIntoView({ block: "end" });
   }, [state?.messages.length, sending]);
 
-  async function send(text = draft, threadId = activeId) {
+  async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
-    if (!value || sending || !threadId) return;
+    if ((!value && !files.length) || sending || !threadId) return;
     setDraft("");
+    clearPending();
     setSending(true);
-    setState((s) => (s ? { ...s, messages: [...s.messages, { author: name, text: value, bot: false }], busy: true } : s));
+    setState((s) =>
+      s
+        ? {
+            ...s,
+            messages: [...s.messages, { author: name, text: value || "(image)", bot: false }],
+            busy: true,
+          }
+        : s,
+    );
     try {
-      await transport.send(threadId, value, name);
+      const attachments = files.length ? await Promise.all(files.map(fileToAttachment)) : undefined;
+      await transport.send(threadId, value, name, attachments);
       setState(await transport.thread(threadId));
       loadThreads();
     } catch (err) {
@@ -386,7 +483,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                     <span className="strong">{mine ? `${m.author} (you)` : m.author}</span>{" "}
                     {m.at && <span className="muted small">{new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>}
                   </div>
-                  <div className="message-text">{body.text}</div>
+                  <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
                   {body.footer && <div className="message-footer">{body.footer}</div>}
                   {m.questions && m.questions.length > 0 && !all.slice(i + 1).some((later) => !later.bot) && (
                     <AgentQuestions questions={m.questions} disabled={sending} onAnswer={(text) => void send(text)} />
@@ -408,18 +505,67 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 </button>
               ))}
             </div>
+            {pending.length > 0 && (
+              <div className="composer-previews">
+                {pending.map((p, i) => (
+                  <div key={p.url} className="composer-preview">
+                    <img src={p.url} alt={p.file.name} />
+                    <button
+                      type="button"
+                      className="x"
+                      aria-label={`Remove ${p.file.name}`}
+                      onClick={() =>
+                        setPending((prev) => {
+                          const next = [...prev];
+                          const [removed] = next.splice(i, 1);
+                          if (removed) URL.revokeObjectURL(removed.url);
+                          return next;
+                        })
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <form
               className="composer"
               onSubmit={(e) => {
                 e.preventDefault();
                 void send();
               }}
+              onPaste={(e) => {
+                const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+                if (files.length) {
+                  e.preventDefault();
+                  queueImages(files);
+                }
+              }}
             >
               <label htmlFor="composer" className="sr-only">
                 Message the agent
               </label>
-              <input id="composer" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message the agent, or /help" autoComplete="off" />
-              <button className="send" aria-label="Send" disabled={sending || !draft.trim()}>
+              <input
+                ref={fileInput}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  if (e.target.files) queueImages(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <button type="button" className="attach" aria-label="Attach image" disabled={sending} onClick={() => fileInput.current?.click()}>
+                <Icon size={18}>
+                  <rect x="4" y="5" width="16" height="14" rx="2" />
+                  <circle cx="9" cy="10" r="1.5" />
+                  <path d="M4 16l4-4 3 3 3-4 6 5" />
+                </Icon>
+              </button>
+              <input id="composer" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message the agent, or paste an image" autoComplete="off" />
+              <button className="send" aria-label="Send" disabled={sending || (!draft.trim() && !pending.length)}>
                 <Icon size={18}>
                   <path d="M5 12h14M13 6l6 6-6 6" />
                 </Icon>

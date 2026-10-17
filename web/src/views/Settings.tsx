@@ -196,41 +196,41 @@ function ModelBrowser({
     <div className="model-browser">
       <div className="field-head">
         <span>Default model</span>
-        <button type="button" className="btn linkish small" disabled={busy} onClick={onRefresh}>
+        <button type="button" className="btn linkish" disabled={busy} onClick={onRefresh}>
           {busy ? "Loading…" : "Refresh list"}
         </button>
       </div>
       <div className="model-current">
+        <span className="model-current-label">Selected</span>
         {selected ? (
           <>
             <code className="grow">{selected}</code>
             <button type="button" className="btn small" onClick={() => onSelect("")}>
-              Agent default
+              Clear
             </button>
           </>
         ) : (
-          <span className="muted">Using OpenCode&apos;s default model</span>
+          <span className="muted grow">OpenCode default (no override)</span>
         )}
       </div>
       {models.length > 0 ? (
         <>
-          <label className="field model-filter-field" htmlFor="model-filter">
-            <span>Search</span>
+          <label className="field" htmlFor="model-filter">
+            <span>Find a model</span>
             <input
               id="model-filter"
               className="model-filter"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Type to filter ${models.length} models…`}
+              placeholder={`Filter ${models.length} models by name or provider…`}
               autoComplete="off"
               spellCheck={false}
-              autoFocus
             />
           </label>
           <p className="muted small model-browser-meta">
             {filtering
-              ? `${matchCount} match${matchCount === 1 ? "" : "es"}`
-              : `${models.length} models · expand a provider or search`}
+              ? `${matchCount} match${matchCount === 1 ? "" : "es"} — click one to set it`
+              : "Open a provider, then click a model"}
           </p>
           <div ref={listRef} className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
             {grouped.map(([provider, ids]) => {
@@ -253,15 +253,19 @@ function ModelBrowser({
                   {open &&
                     ids.map((id) => {
                       const name = id.slice(provider.length + 1);
+                      const on = id === selected;
                       return (
                         <button
                           type="button"
                           key={id}
                           role="option"
-                          aria-selected={id === selected}
-                          className={`model-row ${id === selected ? "on" : ""}`}
+                          aria-selected={on}
+                          className={`model-row ${on ? "on" : ""}`}
                           onClick={() => onSelect(id)}
                         >
+                          <span className="model-row-check" aria-hidden="true">
+                            ✓
+                          </span>
                           <span className="model-name">{name || id}</span>
                         </button>
                       );
@@ -286,7 +290,7 @@ function ModelBrowser({
         }}
       >
         <label className="field grow">
-          <span className="muted small">Custom model ID</span>
+          <span>Or paste a model ID</span>
           <input className="mono" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="provider/model#variant" />
         </label>
         <button type="submit" className="btn" disabled={!custom.trim()}>

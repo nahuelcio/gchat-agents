@@ -19,6 +19,8 @@ export interface PostMessageBody {
 
 export interface ChatClient {
   postMessage(spaceName: string, body: PostMessageBody): Promise<void>;
+  /** Bytes of an uploaded Chat attachment (not Drive). Omitted on fakes that never ingest media. */
+  downloadMedia?(resourceName: string): Promise<Buffer>;
 }
 
 const CHAT_BOT_SCOPE = "https://www.googleapis.com/auth/chat.bot";
@@ -64,5 +66,20 @@ export class HttpChatClient implements ChatClient {
     if (!res.ok) {
       throw new Error(`Chat API ${res.status}: ${(await res.text()).slice(0, 500)}`);
     }
+  }
+
+  async downloadMedia(resourceName: string): Promise<Buffer> {
+    const client = await this.auth.getClient();
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error("could not obtain Google access token");
+    // resourceName is already the media path segment from attachmentDataRef.
+    const res = await fetch(`https://chat.googleapis.com/v1/media/${resourceName}?alt=media`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) {
+      throw new Error(`Chat media ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
   }
 }

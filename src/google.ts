@@ -100,4 +100,11 @@ export class GoogleConnection implements ChatClient {
     if (!this.client) throw new Error("Google Chat is not connected: add a service account key in the control plane (Settings › Google Chat).");
     await this.client.postMessage(spaceName, body);
   }
+
+  async downloadMedia(resourceName: string): Promise<Buffer> {
+    if (!this.client?.downloadMedia) {
+      throw new Error("Google Chat is not connected: add a service account key in the control plane (Settings › Google Chat).");
+    }
+    return this.client.downloadMedia(resourceName);
+  }
 }

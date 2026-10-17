@@ -11,6 +11,7 @@ import { clearQuestions } from "../src/question-gate.js";
 import { TurnQueue } from "../src/queue.js";
 import { SessionStore } from "../src/store.js";
 import type { PostMessageBody } from "../src/chat-client.js";
+import { MediaStore } from "../src/media.js";
 import type { TokenVerifier } from "../src/verify.js";
 import { Workspaces } from "../src/workspace.js";
 import { ScheduleStore } from "../src/schedules.js";
@@ -75,13 +76,19 @@ class FakeDriver implements AgentDriver {
 
 class FakeChat {
   posts: { spaceName: string; body: PostMessageBody }[] = [];
+  media = new Map<string, Buffer>();
   async postMessage(spaceName: string, body: PostMessageBody): Promise<void> {
     this.posts.push({ spaceName, body });
+  }
+  async downloadMedia(resourceName: string): Promise<Buffer> {
+    const bytes = this.media.get(resourceName);
+    if (!bytes) throw new Error(`missing media ${resourceName}`);
+    return bytes;
   }
 }
 
 function makeDeps(
-  options: { verifierOk?: boolean; driver?: AgentDriver; allowed?: string[]; workspaces?: Workspaces } = {},
+  options: { verifierOk?: boolean; driver?: AgentDriver; allowed?: string[]; workspaces?: Workspaces; media?: boolean } = {},
 ) {
   const chat = new FakeChat();
   const driver = options.driver ?? new FakeDriver();
@@ -93,6 +100,7 @@ function makeDeps(
     queue: new TurnQueue(),
     config: { allowedSpaces: options.allowed ?? ["spaces/OK"], workdir: "/tmp/agent-wd" },
     workspaces: options.workspaces,
+    ...(options.media && { media: new MediaStore(join(globalDir, "media")) }),
   };
   return { deps, chat, driver: driver as FakeDriver, store: deps.store };
 }
@@ -195,6 +203,31 @@ describe("handleEvent", () => {
     expect(driver.calls).toHaveLength(0);
     expect(chat.posts).toHaveLength(0);
     await result.done;
+  });
+
+  it("accepts an image-only MESSAGE, downloads it, and passes the saved path to the agent", async () => {
+    const { deps, chat, driver } = makeDeps({ media: true });
+    chat.media.set("spaces/OK/attachments/a1/data", Buffer.from("fakepng"));
+    const result = await handleEvent(
+      "Bearer t",
+      messageEvent({
+        message: {
+          argumentText: "  ",
+          thread: { threadKey: "img-thread" },
+          attachment: [
+            {
+              contentName: "shot.png",
+              contentType: "image/png",
+              attachmentDataRef: { resourceName: "spaces/OK/attachments/a1/data" },
+            },
+          ],
+        },
+      }),
+      deps,
+    );
+    await result.done;
+    expect(driver.calls).toHaveLength(1);
+    expect(driver.calls[0]?.text).toMatch(/Attached image\/png "shot\.png": .+/);
   });
 
   it("persists the sessionRef and passes it to the next turn of the same thread", async () => {

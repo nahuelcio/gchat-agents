@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveBin } from "./resolve-bin.js";
 
 const exec = promisify(execFile);
 
@@ -7,7 +8,7 @@ const exec = promisify(execFile);
 export type RunFn = (bin: string, args: string[], timeoutMs: number) => Promise<string>;
 
 const defaultRun: RunFn = async (bin, args, timeoutMs) =>
-  (await exec(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 })).stdout;
+  (await exec(resolveBin(bin), args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 })).stdout;
 
 export interface DetectedAgent {
   id: string;

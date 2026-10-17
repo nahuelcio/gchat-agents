@@ -149,12 +149,25 @@ export interface AgentQuestion {
   multiple?: boolean;
 }
 
+export interface MessageAttachment {
+  id: string;
+  contentType: string;
+  name?: string;
+}
+
 export interface TeamMessage {
   author: string;
   text: string;
   bot: boolean;
   at?: string;
   questions?: AgentQuestion[];
+  attachments?: MessageAttachment[];
+}
+
+export interface TeamAttachmentInput {
+  contentType: string;
+  data: string;
+  name?: string;
 }
 
 export interface TeamThreadState {
@@ -180,8 +193,10 @@ export interface TeamTransport {
   archive?: (id: string, archived: boolean) => Promise<unknown>;
   remove?: (id: string) => Promise<{ branchKept?: string }>;
   thread: (id: string) => Promise<TeamThreadState>;
-  send: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
+  send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
+  /** Absolute or same-origin URL for a saved attachment id. */
+  mediaUrl: (id: string) => string;
 }
 
 export const ownerTransport: TeamTransport = {
@@ -190,8 +205,9 @@ export const ownerTransport: TeamTransport = {
   archive: (id, archived) => call("/api/team/archive", { thread: id, archived }),
   remove: (id) => call<{ branchKept?: string }>("/api/team/delete", { thread: id }),
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
-  send: (id, text, name) => call("/api/team/send", { thread: id, text, name }),
+  send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
+  mediaUrl: (id) => `/api/media/${id}`,
 };
 
 export function guestTransport(token: string): TeamTransport {
@@ -208,7 +224,8 @@ export function guestTransport(token: string): TeamTransport {
   return {
     guest: true,
     thread: (id) => req<TeamThreadState>(`/play/api/thread?thread=${encodeURIComponent(id)}`),
-    send: (id, text, name) => req("/play/api/send", { thread: id, text, name }),
+    send: (id, text, name, attachments) => req("/play/api/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
     agents: () => req("/play/api/agents"),
+    mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,
   };
 }

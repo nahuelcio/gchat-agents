@@ -8,6 +8,7 @@ import type { TokenVerifier } from "./verify.js";
 import { threadSlug, type Workspaces } from "./workspace.js";
 import { questionCards, continuation } from "./questions.js";
 import { cancelQuestion, holdQuestion, takeQuestion } from "./question-gate.js";
+import { attachmentPromptLine, type MediaStore, type StoredMedia } from "./media.js";
 
 /** Google Chat app event, reduced to the fields this service reads. */
 export interface ChatEvent {
@@ -19,6 +20,12 @@ export interface ChatEvent {
     text?: string;
     thread?: { name?: string; threadKey?: string };
     sender?: { displayName?: string };
+    /** Uploaded files (not Drive). Present when the user attaches something to the message. */
+    attachment?: {
+      contentName?: string;
+      contentType?: string;
+      attachmentDataRef?: { resourceName?: string };
+    }[];
   };
   user?: { displayName?: string };
   /** Set on CARD_CLICKED when someone taps an option on a question card. */
@@ -60,6 +67,8 @@ export interface HandlerDeps {
   /** Recurring jobs; omitted = /schedule disabled. */
   schedules?: ScheduleStore;
   options?: () => TurnOptions;
+  /** Saved Chat / team-chat images; omitted = attachments are ignored. */
+  media?: MediaStore;
 }
 
 export interface HandleResult {
@@ -143,6 +152,24 @@ function cardAnswer(event: ChatEvent): string | undefined {
   return event.action?.parameters?.find((p) => p.key === "answer")?.value?.trim();
 }
 
+/** Downloads Chat uploads into the media store so the agent can open them by path. */
+async function ingestChatAttachments(event: ChatEvent, deps: HandlerDeps): Promise<StoredMedia[]> {
+  const list = event.message?.attachment ?? [];
+  if (!list.length || !deps.media || !deps.chat.downloadMedia) return [];
+  const saved: StoredMedia[] = [];
+  for (const a of list) {
+    const resource = a.attachmentDataRef?.resourceName;
+    if (!resource) continue;
+    try {
+      const bytes = await deps.chat.downloadMedia(resource);
+      saved.push(await deps.media.save(bytes, a.contentType ?? "application/octet-stream", a.contentName));
+    } catch (err) {
+      console.error("[media] Chat attachment download failed:", errorMessage(err));
+    }
+  }
+  return saved;
+}
+
 /**
  * Handles one Chat event. Returns 200 fast; the agent turn and the reply posts
  * happen in the background (Google Chat requires a quick response and retries
@@ -182,12 +209,17 @@ export async function handleEvent(
     return { status: 200, body: { ok: true }, done: settled };
   }
 
-  const text = clicked ?? extractPrompt(event.message);
   // Only real thread identities: falling back to message.name would give every
   // malformed event a fresh session and an unthreaded reply.
   const threadKey = event.message.thread?.name ?? event.message.thread?.threadKey;
-  if (!text || !threadKey) {
-    console.info("[message] dropped: no usable text or thread key");
+  if (!threadKey) {
+    console.info("[message] dropped: no usable thread key");
+    return { status: 200, body: { ok: true, dropped: true }, done: settled };
+  }
+  const text = clicked ?? extractPrompt(event.message);
+  const hasAttachments = Boolean(event.message.attachment?.some((a) => a.attachmentDataRef?.resourceName));
+  if (!text && !hasAttachments) {
+    console.info("[message] dropped: no usable text or attachments");
     return { status: 200, body: { ok: true, dropped: true }, done: settled };
   }
   const thread = event.message.thread?.name
@@ -196,16 +228,24 @@ export async function handleEvent(
       ? { threadKey: event.message.thread.threadKey }
       : undefined;
 
-  const done = processMessage(
-    {
-      threadKey,
-      spaceName,
-      text,
-      sender: event.message.sender?.displayName ?? event.user?.displayName,
-      reply: (msg, meta) => postReply(deps.chat, spaceName, thread, msg, meta?.questions),
-    },
-    deps,
-  ).then(() => undefined);
+  const done = (async () => {
+    const saved = clicked || !hasAttachments ? [] : await ingestChatAttachments(event, deps);
+    const prompt = [text, ...saved.map(attachmentPromptLine)].filter(Boolean).join("\n\n");
+    if (!prompt) {
+      console.info("[message] dropped: attachments could not be downloaded");
+      return;
+    }
+    await processMessage(
+      {
+        threadKey,
+        spaceName,
+        text: prompt,
+        sender: event.message!.sender?.displayName ?? event.user?.displayName,
+        reply: (msg, meta) => postReply(deps.chat, spaceName, thread, msg, meta?.questions),
+      },
+      deps,
+    );
+  })();
 
   return { status: 200, body: { ok: true }, done };
 }

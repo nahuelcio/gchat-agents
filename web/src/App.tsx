@@ -100,11 +100,11 @@ function OwnerApp() {
     <div className="shell">
       <nav className="sidebar" aria-label="Control plane">
         <div className="brand">
-          <span className="brand-mark">
-            <Icon size={18}>
-              <path d="M4 6h16v10H8l-4 4z" />
-              <path d="M9 11h6" />
-            </Icon>
+          <span className="brand-mark" aria-hidden="true">
+            <span className="b b1" />
+            <span className="b b2" />
+            <span className="b b3" />
+            <span className="b b4" />
           </span>
           <span className="brand-text">
             <strong>gchat-agents</strong>

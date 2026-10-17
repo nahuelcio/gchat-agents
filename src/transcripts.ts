@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentQuestion } from "./driver/types.js";
+import type { MessageAttachment } from "./media.js";
 
 export interface TranscriptMessage {
   author: string;
@@ -10,6 +11,8 @@ export interface TranscriptMessage {
   at?: string;
   /** Set on the bot message that is waiting for the thread to pick an option. */
   questions?: AgentQuestion[];
+  /** Images (and other files) saved under the media store; UI loads them by id. */
+  attachments?: MessageAttachment[];
 }
 
 /**

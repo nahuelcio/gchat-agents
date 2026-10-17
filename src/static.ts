@@ -11,7 +11,8 @@ const TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
-const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com";
+const CSP =
+  "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com";
 
 /**
  * Serves the built UI (web/dist): the file under `webDir`, else index.html for

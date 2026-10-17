@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolveBin } from "../resolve-bin.js";
 
 export interface CapturedRun {
   code: number | null;
@@ -21,7 +22,7 @@ export function runCaptured(
   timeoutMs: number,
 ): Promise<CapturedRun> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(resolveBin(bin), args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "";
     let timedOut = false;
     const timer = setTimeout(() => {
