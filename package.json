@@ -19,16 +19,19 @@
     "test": "cargo test --manifest-path rust/Cargo.toml",
     "test:web": "vitest run",
     "e2e": "cargo build --manifest-path rust/Cargo.toml && node scripts/e2e-rust.mjs",
+    "test:browser": "npm run -s build:web && cargo build --manifest-path rust/Cargo.toml && e2e run",
     "smoke": "cargo run --manifest-path rust/Cargo.toml -- --driver echo"
   },
   "dependencies": {
     "google-auth-library": "^11.2.0"
   },
   "devDependencies": {
+    "@e2e-dev/web": "^0.15.2",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "e2e": "^0.21.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^7.0.2",

@@ -115,6 +115,7 @@ npm run e2e            # build debug binary + healthz /api contract
 npm run dev            # echo driver on :8080 / :8081
 npm run build:web      # control plane UI (vite)
 npm run dev:web        # UI only (needs bridge already on :8081)
+npm run test:browser   # browser e2e (tester-army/e2e) against the real binary, echo driver
 ```
 
 ## Layout
