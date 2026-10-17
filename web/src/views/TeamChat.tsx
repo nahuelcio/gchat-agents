@@ -643,6 +643,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                       type="button"
                       className={`speak-btn ${speakingId === i ? "on" : ""}`}
                       aria-label={speakingId === i ? "Stop speaking" : "Speak message"}
+                      title={speakingId === i ? "Stop" : "Listen"}
                       onClick={() => toggleSpeak(i, body.text)}
                     >
                       <Icon size={14}>
@@ -655,7 +656,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                           </>
                         )}
                       </Icon>
-                      {speakingId === i ? "Stop" : "Listen"}
                     </button>
                   )}
                   {m.questions && m.questions.length > 0 && !all.slice(i + 1).some((later) => !later.bot) && (
@@ -968,8 +968,8 @@ function ThreadContextPanel({
         )}
       </dl>
 
-      <h2>Work item</h2>
-      {wi ? (
+      {(wi || state?.worktree) && <h2>Work item</h2>}
+      {!wi && !state?.worktree ? null : wi ? (
         <div className="play-wi">
           <div className="strong">
             {wi.url ? (
@@ -992,10 +992,8 @@ function ThreadContextPanel({
         </p>
       )}
 
-      <h2>Changes</h2>
-      {!state?.worktree ? (
-        <p className="muted small">No worktree yet.</p>
-      ) : !changes ? (
+      {state?.worktree && <h2>Changes</h2>}
+      {!state?.worktree ? null : !changes ? (
         <p className="muted small">Could not read git status.</p>
       ) : (
         <>

@@ -299,6 +299,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .model-current code { font-size: 13px; word-break: break-all; color: var(--primary); font-weight: 500; }
 .model-filter { width: 100%; font-size: 14px; }
 .model-browser-meta { margin: 0; }
+.model-show-all { align-self: flex-start; margin: 6px 10px; }
 .model-browser-scroll {
   max-height: min(320px, 42vh);
   overflow: auto;
@@ -547,6 +548,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .attach:disabled { opacity: 0.45; cursor: default; }
 .attach.mic.on { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); box-shadow: 2px 2px 0 var(--bad); }
 .speak-btn {
+  align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 6px;

@@ -283,6 +283,8 @@ function ModelBrowser({
       : [...models.filter((m) => m.startsWith("opencode-admin/")), ...models.filter((m) => !m.startsWith("opencode-admin/"))];
     return list.slice(0, 40);
   }, [models, q]);
+  const [showAll, setShowAll] = useState(false);
+  const shown = q || showAll ? matches : matches.slice(0, 6);
 
   const pick = (id: string) => {
     onSelect(id);
@@ -335,7 +337,7 @@ function ModelBrowser({
       {models.length > 0 && (
         <div className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
           {!q && <p className="muted small model-browser-meta">Suggestions — type to search all {models.length}</p>}
-          {matches.map((id) => {
+          {shown.map((id) => {
             const slash = id.indexOf("/");
             const on = id === selected;
             return (
@@ -346,6 +348,11 @@ function ModelBrowser({
               </button>
             );
           })}
+          {!q && !showAll && matches.length > shown.length && (
+            <button type="button" className="btn linkish model-show-all" onClick={() => setShowAll(true)}>
+              Show more ({matches.length - shown.length})
+            </button>
+          )}
           {q && matches.length === 0 && <p className="muted small model-picker-empty">No match — press Enter to use “{query.trim()}” as-is.</p>}
         </div>
       )}
