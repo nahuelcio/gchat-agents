@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, guestTransport, ownerTransport, type Settings } from "./api";
+import { SearchBox } from "./SearchBox";
 import { Overview } from "./views/Overview";
 import { SharePanel, TeamChat } from "./views/TeamChat";
 import { Schedules } from "./views/Schedules";
@@ -64,6 +65,7 @@ export function App() {
 
 function OwnerApp() {
   const [view, setView] = useState<ViewId>(current);
+  const [hash, setHash] = useState(location.hash);
   const [shareLink, setShareLink] = useState<string>();
   const [settings, setSettings] = useState<Settings>();
   const [toast, setToast] = useState<{ text: string; error?: boolean }>();
@@ -74,7 +76,10 @@ function OwnerApp() {
   }, []);
 
   useEffect(() => {
-    const onHash = () => setView(current());
+    const onHash = () => {
+      setView(current());
+      setHash(location.hash);
+    };
     addEventListener("hashchange", onHash);
     api.settings().then(setSettings, (e: Error) => notify(e.message, true));
     api.share().then((r) => setShareLink(r.link), () => {});
@@ -115,6 +120,7 @@ function OwnerApp() {
             <small>this machine</small>
           </span>
         </div>
+        <SearchBox />
         <div className="nav">
           {VIEWS.map((v) => (
             <a key={v.id} href={`#${v.id}`} className={view === v.id ? "active" : ""} aria-current={view === v.id ? "page" : undefined}>
@@ -136,6 +142,7 @@ function OwnerApp() {
         {props && view === "overview" && <Overview {...props} />}
         {props && view === "team" && (
           <TeamChat
+            key={hash.startsWith("#team/") ? hash : "team"}
             transport={ownerTransport}
             initialThread={hashThread()}
             linkFor={shareLink ? (id) => `${shareLink}&thread=${id}` : undefined}

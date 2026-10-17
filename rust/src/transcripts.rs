@@ -40,6 +40,27 @@ pub struct TranscriptSummary {
     pub count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub thread_key: String,
+    pub title: String,
+    pub author: String,
+    pub at: Option<String>,
+    pub snippet: String,
+    pub href: String,
+}
+
+fn snippet(text: &str, needle: &[char]) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let at = lower.windows(needle.len()).position(|w| w == needle)?;
+    let start = at.saturating_sub(40);
+    let end = (at + needle.len() + 40).min(chars.len());
+    let body: String = chars[start..end].iter().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(format!("{}{body}{}", if start > 0 { "…" } else { "" }, if end < chars.len() { "…" } else { "" }))
+}
+
 pub struct TranscriptStore {
     dir: PathBuf,
     max: usize,
@@ -117,6 +138,33 @@ impl TranscriptStore {
         }
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         out
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        let needle: Vec<char> = query.to_lowercase().chars().collect();
+        let mut hits = Vec::new();
+        let threads = ["share/", "schedule/"]
+            .iter()
+            .flat_map(|p| [self.list(p, false), self.list(p, true)])
+            .flatten()
+            .take(200);
+        for t in threads {
+            for m in self.get(&t.key).iter().rev() {
+                let Some(snippet) = snippet(&format!("{}: {}", m.author, m.text), &needle) else { continue };
+                hits.push(SearchHit {
+                    href: crate::activity::href_for(&t.key),
+                    thread_key: t.key.clone(),
+                    title: t.title.clone(),
+                    author: m.author.clone(),
+                    at: m.at.clone(),
+                    snippet,
+                });
+                if hits.len() >= limit {
+                    return hits;
+                }
+            }
+        }
+        hits
     }
 
     pub async fn append(&self, thread_key: &str, messages: Vec<TranscriptMessage>) -> Result<(), String> {
@@ -205,5 +253,36 @@ mod tests {
         let list = store.list("share/", false);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].count, 1);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn msg(author: &str, text: &str) -> TranscriptMessage {
+        TranscriptMessage { author: author.into(), text: text.into(), bot: false, at: None, questions: None, attachments: None }
+    }
+
+    #[tokio::test]
+    async fn finds_the_right_thread_with_a_snippet() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TranscriptStore::open(dir.path(), 100);
+        store.append("share/uno", vec![msg("Ana", "el token de Meta vence hoy"), msg("Beto", "ok")]).await.unwrap();
+        store.append("share/dos", vec![msg("Lucia", "revisemos el webhook de WhatsApp")]).await.unwrap();
+        let hits = store.search("TOKEN de meta", 30);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].thread_key, "share/uno");
+        assert_eq!(hits[0].href, "#team/uno");
+        assert!(hits[0].snippet.contains("token de Meta"));
+        assert!(store.search("inexistente", 30).is_empty());
+    }
+
+    #[test]
+    fn snippet_trims_long_text() {
+        let long = format!("{}aguja{}", "a".repeat(100), "b".repeat(100));
+        let s = snippet(&long, &"aguja".chars().collect::<Vec<_>>()).unwrap();
+        assert!(s.starts_with('…') && s.ends_with('…') && s.contains("aguja"));
+        assert!(s.chars().count() < 100);
     }
 }

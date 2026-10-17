@@ -22,6 +22,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/health", get(get_health))
         .route("/api/activity", get(get_activity))
+        .route("/api/search", get(get_search))
         .route("/api/agents", get(get_agents))
         .route("/api/agents/opencode/models", get(get_opencode_models))
         .route("/api/agents/opencode/agents", get(get_opencode_agents))
@@ -323,6 +324,20 @@ struct ActivityQuery {
 async fn get_activity(State(state): State<Arc<AppState>>, Query(q): Query<ActivityQuery>) -> Response {
     let kinds: Vec<&str> = q.kind.as_deref().map(|k| k.split(',').filter(|x| !x.is_empty()).collect()).unwrap_or_default();
     Json(state.activity.recent(q.limit.unwrap_or(50).min(500), &kinds)).into_response()
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn get_search(State(state): State<Arc<AppState>>, Query(q): Query<SearchQuery>) -> Response {
+    let query = q.q.unwrap_or_default();
+    if query.trim().chars().count() < 2 {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "q needs at least 2 characters" }))).into_response();
+    }
+    Json(state.transcripts.search(query.trim(), q.limit.unwrap_or(30).min(30))).into_response()
 }
 
 async fn get_share(State(state): State<Arc<AppState>>) -> Response {

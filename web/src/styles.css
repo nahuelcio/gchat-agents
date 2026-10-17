@@ -696,3 +696,9 @@ details.card:not([open]) > summary:is(.card-title, .card-head)::after { transfor
 .activity-row.bad .badge { color: var(--bad); border-color: var(--bad); }
 .activity-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
 .activity-detail { grid-column: 3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search { position: relative; }
+.search input { width: 100%; }
+.search-results { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: min(420px, 80vw); max-height: 60vh; overflow-y: auto; margin: 0; padding: 6px; list-style: none; background: var(--panel); border: 2px solid var(--primary); border-radius: var(--radius-md); box-shadow: 3px 3px 0 var(--secondary); }
+.search-results button { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 8px; border: 0; border-radius: var(--radius-sm); background: transparent; font: inherit; color: inherit; cursor: pointer; }
+.search-results button:hover { background: var(--accent-soft); }
+.search-results li.muted { padding: 8px; }

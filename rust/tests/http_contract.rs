@@ -241,3 +241,18 @@ async fn activity_records_turns_and_members() {
     let room = threads.as_array().unwrap().iter().find(|t| t["key"] == "share/act1").unwrap();
     assert_eq!(room["members"], json!(["@qa", "Ana"]));
 }
+
+#[tokio::test]
+async fn search_requires_two_characters_and_finds_messages() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    post_json(admin, "/api/team/send", json!({ "thread": "s1", "name": "Ana", "text": "el token de Meta vence" })).await;
+    post_json(admin, "/api/team/send", json!({ "thread": "s2", "name": "Beto", "text": "otra cosa" })).await;
+    let (status, _) = get_json(admin, "/api/search?q=a").await;
+    assert_eq!(status, 400);
+    let (status, hits) = get_json(admin, "/api/search?q=token%20de%20meta").await;
+    assert_eq!(status, 200);
+    let hits = hits.as_array().unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h["threadKey"] == "share/s1"));
+}
