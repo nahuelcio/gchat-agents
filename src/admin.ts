@@ -9,7 +9,7 @@ import type { TranscriptStore } from "./transcripts.js";
 import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
 import type { ShareToken } from "./share.js";
-import { describeCron, type NewJob, type Scheduler, type ScheduleStore } from "./schedules.js";
+import { describeCron, jobName, type NewJob, type Scheduler, type ScheduleStore } from "./schedules.js";
 import { suggestSchedule } from "./schedule-suggest.js";
 import { readBody } from "./server.js";
 import { serveStatic } from "./static.js";
@@ -119,21 +119,96 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       return send(res, 200, settings.get());
     }
 
-    if (url === "/api/work-item" && method === "PUT") {
+    // Switchboard MCP (and the control plane) mutate one thread via these routes.
+    if (url.startsWith("/api/thread/") || url === "/api/work-item") {
       const store = ctx.store;
       if (!store) throw new HttpError(500, "session store unavailable");
-      const body = await jsonBody<{ threadKey?: string; id?: number | null }>(req);
-      const threadKey = body.threadKey?.trim() ?? "";
-      if (!threadKey) throw new HttpError(400, "threadKey is required");
-      const space = store.get(threadKey)?.space ?? "team-chat";
-      if (body.id === null || body.id === undefined) {
-        await store.update(threadKey, space, { workItemId: undefined });
-        return send(res, 200, { ok: true, workItemId: null });
+      const ws = ctx.workspaces;
+
+      if (url === "/api/thread/repos" && method === "GET") {
+        return send(res, 200, { repos: Object.keys(settings.get().repos) });
       }
-      const id = Number(body.id);
-      if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "id must be a positive integer");
-      await store.update(threadKey, space, { workItemId: id });
-      return send(res, 200, { ok: true, workItemId: id });
+
+      if (url === "/api/thread/status" && method === "GET") {
+        const threadKey = (parsed.searchParams.get("threadKey") ?? "").trim();
+        if (!threadKey) throw new HttpError(400, "threadKey is required");
+        const record = store.get(threadKey);
+        const slug = threadSlug(threadKey);
+        const options = ctx.handler?.options?.();
+        return send(res, 200, {
+          threadKey,
+          space: record?.space ?? "team-chat",
+          repo: record?.repo ?? null,
+          branch: record?.branch ?? null,
+          worktree: record?.worktree ?? null,
+          workItemId: record?.workItemId ?? null,
+          agent: record?.driver ?? settings.get().agentDriver,
+          model: record?.model ?? settings.get().models[settings.get().agentDriver] ?? null,
+          app: { running: ws?.isUp(slug) ?? false, port: ws?.port(slug) },
+          context: record && options ? contextLine(record, options).slice(2) : null,
+          repos: Object.keys(settings.get().repos),
+        });
+      }
+
+      if (method !== "PUT" && method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = await jsonBody<Record<string, unknown>>(req);
+      const threadKey = String(body.threadKey ?? "").trim();
+      if (!threadKey) throw new HttpError(400, "threadKey is required");
+      const record = store.get(threadKey);
+      const space = record?.space ?? "team-chat";
+      const slug = threadSlug(threadKey);
+
+      if (url === "/api/work-item") {
+        if (body.id === null || body.id === undefined) {
+          await store.update(threadKey, space, { workItemId: undefined });
+          return send(res, 200, { ok: true, workItemId: null });
+        }
+        const id = Number(body.id);
+        if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "id must be a positive integer");
+        await store.update(threadKey, space, { workItemId: id });
+        return send(res, 200, { ok: true, workItemId: id });
+      }
+
+      if (url === "/api/thread/repo") {
+        if (!ws) throw new HttpError(409, "no repos configured on this bridge");
+        if (body.repo === null || body.repo === "") {
+          if (!record?.worktree || !record.repo) return send(res, 200, { ok: true, detached: true });
+          ws.down(slug);
+          await ws.remove(record.repo, record.worktree);
+          await store.update(threadKey, space, { worktree: undefined, repo: undefined, branch: undefined });
+          return send(res, 200, { ok: true, detached: true, branchKept: record.branch });
+        }
+        const repo = String(body.repo ?? "").trim();
+        if (!repo) throw new HttpError(400, "repo is required (or null to detach)");
+        if (record?.worktree) throw new HttpError(409, `thread already on ${record.repo}; detach first`);
+        try {
+          const { worktree, branch } = await ws.create(repo, slug);
+          await store.update(threadKey, space, { repo, worktree, branch });
+          return send(res, 200, { ok: true, repo, worktree, branch });
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      if (url === "/api/thread/app") {
+        if (!ws) throw new HttpError(409, "no repos configured on this bridge");
+        if (!record?.worktree || !record.repo) throw new HttpError(409, "attach a repo to this thread first");
+        const action = String(body.action ?? "");
+        if (action === "up") {
+          try {
+            const { port } = await ws.up(slug, record.repo, record.worktree);
+            return send(res, 200, { ok: true, running: true, port });
+          } catch (err) {
+            throw new HttpError(400, err instanceof Error ? err.message : String(err));
+          }
+        }
+        if (action === "down") {
+          return send(res, 200, { ok: true, stopped: ws.down(slug) });
+        }
+        throw new HttpError(400, 'action must be "up" or "down"');
+      }
+
+      throw new HttpError(404, "not found");
     }
 
     if (url === "/api/threads" && method === "GET") {
@@ -282,8 +357,9 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       try {
         if (url === "/api/schedules") {
           const { name, prompt, cron, space, repo } = body;
-          if (!prompt?.trim() || !cron || !space) throw new Error("prompt, cron and space are required");
-          await schedules.add({ name: name?.trim() || prompt.trim().slice(0, 48), prompt: prompt.trim(), cron, space, createdBy: "control plane", ...(repo && { repo }) });
+          if (!prompt?.trim() || !cron) throw new Error("prompt and cron are required");
+          // No Chat space = the run is only recorded in the job log.
+          await schedules.add({ name: name?.trim() || jobName(prompt), prompt: prompt.trim(), cron, space: space || "team-chat", createdBy: "control plane", ...(repo && { repo }) });
         } else if (url === "/api/schedules/update" && body.id) {
           const { id, enabled, cron, prompt, name } = body;
           await schedules.update(id, { ...(enabled !== undefined && { enabled }), ...(cron && { cron }), ...(prompt && { prompt }), ...(name && { name }) });

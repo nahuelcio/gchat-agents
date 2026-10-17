@@ -87,7 +87,7 @@ export async function teamSend(
       sender: req.name,
       reply: async (r, meta) => {
         replies.push(r);
-        await transcripts.append(threadKey, [{ author: "gchat-agents", text: r, bot: true, ...(meta?.questions && { questions: meta.questions }) }]);
+        await transcripts.append(threadKey, [{ author: "Switchboard", text: r, bot: true, ...(meta?.questions && { questions: meta.questions }) }]);
       },
       ...(req.allowCommands && { allowCommands: req.allowCommands }),
     },

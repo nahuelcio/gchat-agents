@@ -283,7 +283,7 @@ export function Schedules({ settings, notify }: ViewProps) {
                       {logMessages.map((m, i) => (
                         <li key={`${m.at ?? i}-${i}`} className={m.bot ? "bot" : ""}>
                           <div className="job-log-meta">
-                            <span className="strong">{m.author}</span>
+                            <span className="strong">{m.bot ? "Switchboard" : m.author}</span>
                             <span className="muted">{ago(m.at)}</span>
                           </div>
                           <pre className="job-log-text">{m.text}</pre>

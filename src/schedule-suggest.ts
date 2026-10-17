@@ -1,4 +1,4 @@
-import { describeCron, nextRun } from "./schedules.js";
+import { describeCron, jobName, nextRun } from "./schedules.js";
 import type { AgentDriver } from "./driver/types.js";
 
 export interface ScheduleSuggestion {
@@ -42,7 +42,7 @@ export function parseSuggestion(reply: string): ScheduleSuggestion {
   if (!prompt) throw new Error("The suggestion is missing a prompt.");
   if (!cron) throw new Error("The suggestion is missing a cron expression.");
   nextRun(cron, new Date()); // validates fields / that it ever matches
-  const name = (nameRaw || prompt).slice(0, 48);
+  const name = nameRaw ? nameRaw.slice(0, 48) : jobName(prompt);
   return { name, prompt, cron, when: describeCron(cron) };
 }
 

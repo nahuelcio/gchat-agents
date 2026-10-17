@@ -115,7 +115,7 @@ const HELP = [
   "/agent opencode|claude|default — agent for this thread only",
   "",
   "Schedules:",
-  "/schedule <m h dom mon dow> <prompt> — run a prompt on a cron, results in this space",
+  "/schedule <m h dom mon dow> <prompt> — run a prompt on a cron, results in this thread's space or the Schedules log",
   "/schedules — list them",
   "/unschedule <id> — delete one",
   "",
@@ -551,5 +551,5 @@ async function scheduleCommand(command: string, args: string[], req: TurnRequest
     createdBy: req.sender ?? "someone in a thread",
     ...(record?.repo && { repo: record.repo }),
   });
-  return `Scheduled ${job.id}: ${describeCron(cron)}. Next run ${formatWhen(job.nextRunAt)}. Results post in this space.`;
+  return `Scheduled ${job.id}: ${describeCron(cron)}. Next run ${formatWhen(job.nextRunAt)}. ${req.spaceName.startsWith("spaces/") ? "Results post in this space." : "Results show in the Schedules log."}`;
 }

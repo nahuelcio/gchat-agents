@@ -9,6 +9,9 @@ export function scheduleThreadKey(jobId: string): string {
   return `schedule/${jobId}`;
 }
 
+const SCHEDULED_PREAMBLE =
+  "[Scheduled run: this job is already on a schedule. Do the task below now and reply with the result. Do not create schedules, cron jobs or reminders.]";
+
 /**
  * One scheduled run = one turn in the job's own thread. Prompt and replies are
  * recorded so the control plane can show a log; Chat still gets the result when
@@ -26,12 +29,15 @@ export async function runScheduledJob(job: Job, deps: HandlerDeps, transcripts: 
     {
       threadKey,
       spaceName: job.space,
-      text: job.prompt,
+      // The prompt often reads like "run X weekly"; without this the agent tries to schedule it instead of doing it.
+      text: `${SCHEDULED_PREAMBLE}
+
+${job.prompt}`,
       sender: `Schedule "${job.name}"`,
       // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
       reply: async (text, meta) => {
         await transcripts.append(threadKey, [
-          { author: "gchat-agents", text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
+          { author: "Switchboard", text, bot: true, ...(meta?.questions && { questions: meta.questions }) },
         ]);
         if (job.space.startsWith("spaces/")) {
           await deps.chat.postMessage(job.space, {

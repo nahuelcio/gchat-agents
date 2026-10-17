@@ -199,3 +199,11 @@ export class Scheduler {
       : this.store.update(id, { lastStatus: "failed", failures: 0, nextRunAt: nextRun(job.cron, now).toISOString() }, now);
   }
 }
+
+/** A readable default job name: first sentence/clause, cut on a word boundary. */
+export function jobName(prompt: string, max = 48): string {
+  const first = prompt.trim().split(/[.:;\n]/)[0]!.trim();
+  if (first.length <= max) return first;
+  const cut = first.slice(0, max - 1);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : cut.length).trim()}…`;
+}

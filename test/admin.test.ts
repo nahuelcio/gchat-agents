@@ -246,7 +246,7 @@ describe("admin server", () => {
 
     await transcripts.append(`schedule/${id}`, [
       { author: 'Schedule "Summarize commits"', text: "Summarize commits", bot: false },
-      { author: "gchat-agents", text: "Done.", bot: true },
+      { author: "Switchboard", text: "Done.", bot: true },
     ]);
     const log = (await (await fetch(`${base}/api/schedules/log?id=${id}`)).json()) as { messages: { text: string; bot: boolean }[] };
     expect(log.messages).toEqual([

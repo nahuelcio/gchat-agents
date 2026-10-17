@@ -42,10 +42,10 @@ describe("runScheduledJob", () => {
     expect(await runScheduledJob(job, deps, transcripts)).toBe(true);
     expect(transcripts.get(scheduleThreadKey(job.id))).toEqual([
       expect.objectContaining({ author: 'Schedule "Weekly retro"', text: "Run the weekly retro", bot: false }),
-      expect.objectContaining({ author: "gchat-agents", text: 'Echo: Schedule "Weekly retro": Run the weekly retro', bot: true }),
+      expect.objectContaining({ author: "Switchboard", text: expect.stringMatching(/^Echo: Schedule "Weekly retro": \[Scheduled run[^]*Run the weekly retro$/), bot: true }),
     ]);
     expect(posted).toEqual([
-      { space: "spaces/AAA", text: 'Echo: Schedule "Weekly retro": Run the weekly retro' },
+      { space: "spaces/AAA", text: expect.stringMatching(/^Echo: Schedule "Weekly retro": \[Scheduled run[^]*Run the weekly retro$/) },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe("runScheduledJob", () => {
     expect(await runScheduledJob(job, deps, transcripts)).toBe(true);
     expect(transcripts.get(scheduleThreadKey(job.id)).map((m) => m.text)).toEqual([
       "hello",
-      'Echo: Schedule "Local": hello',
+      expect.stringMatching(/^Echo: Schedule "Local": \[Scheduled run[^]*hello$/),
     ]);
   });
 });

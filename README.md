@@ -1,4 +1,4 @@
-# gchat-agents
+# Switchboard
 
 Talk to local coding agents — [OpenCode](https://github.com/opencode-ai/opencode) or [Claude Code](https://claude.com/claude-code) — from **Google Chat**.
 

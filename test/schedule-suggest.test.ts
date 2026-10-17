@@ -22,7 +22,7 @@ describe("schedule suggest", () => {
   it("tolerates markdown fences and falls back name from prompt", () => {
     const long = "A".repeat(60);
     expect(parseSuggestion("```json\n" + JSON.stringify({ prompt: long, cron: "0 * * * *" }) + "\n```")).toMatchObject({
-      name: "A".repeat(48),
+      name: `${"A".repeat(47)}…`,
       cron: "0 * * * *",
       when: "Every hour",
     });

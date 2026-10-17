@@ -96,9 +96,9 @@ describe("shared playground on the public port", () => {
     };
     expect(res.messages.map((m) => `${m.author}: ${m.text}`)).toEqual([
       "Ana: hi",
-      "gchat-agents: Echo: Ana: hi",
+      "Switchboard: Echo: Ana: hi",
       "Luis: and me",
-      "gchat-agents: Echo: Luis: and me",
+      "Switchboard: Echo: Luis: and me",
     ]);
     expect(res.busy).toBe(false);
   });

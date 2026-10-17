@@ -112,7 +112,7 @@ settings.onChange((s) => {
 
 const server = createHttpServer(deps, { token: shareToken, webDir, agents: listAgents, transcripts });
 server.listen(config.port, () => {
-  console.info(`gchat-agents listening on :${config.port} (workdir: ${config.workdir})`);
+  console.info(`Switchboard listening on :${config.port} (workdir: ${config.workdir})`);
   console.info(`allowlist: ${deps.config.allowedSpaces.join(", ") || "EMPTY — set spaces in the control plane"}`);
   if (!google.status().configured) {
     console.warn("Google Chat not connected: replies are off. Connect it in the control plane (Settings › Google Chat); the team chat works meanwhile.");
