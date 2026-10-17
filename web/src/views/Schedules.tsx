@@ -17,13 +17,16 @@ function status(job: Job): { label: string; tone: string } {
   return { label: "Scheduled", tone: "accent" };
 }
 
+/** Not a Chat space: the run is only recorded in the job log (see schedule-run.ts). */
+const TEAM_ONLY = "team-chat";
+
 export function Schedules({ settings, notify }: ViewProps) {
   const [jobs, setJobs] = useState<Job[]>();
   const [health, setHealth] = useState<Health>();
   const [open, setOpen] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [aiDraft, setAiDraft] = useState("");
-  const [form, setForm] = useState({ prompt: "", cron: PRESETS[1]!.cron, space: settings.allowedSpaces[0] ?? "", repo: "" });
+  const [form, setForm] = useState({ prompt: "", cron: PRESETS[1]!.cron, space: settings.allowedSpaces[0] ?? TEAM_ONLY, repo: "" });
   const [logId, setLogId] = useState<string>();
   const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
 
@@ -177,9 +180,11 @@ export function Schedules({ settings, notify }: ViewProps) {
             <label className="field">
               <span>Post results to</span>
               <select value={form.space} onChange={(e) => setForm({ ...form, space: e.target.value })} required>
-                {settings.allowedSpaces.length === 0 && <option value="">No spaces allowed yet</option>}
+                <option value={TEAM_ONLY}>Only this app (job log)</option>
                 {settings.allowedSpaces.map((s) => (
-                  <option key={s}>{s}</option>
+                  <option key={s} value={s}>
+                    Google Chat · {s}
+                  </option>
                 ))}
               </select>
             </label>
@@ -228,7 +233,7 @@ export function Schedules({ settings, notify }: ViewProps) {
                     {j.when} <code className="muted">{j.cron}</code>
                   </div>
                   <div className="muted small">
-                    {j.createdBy === "control plane" ? "Created here" : `Created by ${j.createdBy}`} · {j.space}
+                    {j.createdBy === "control plane" ? "Created here" : `Created by ${j.createdBy}`} · {j.space.startsWith("spaces/") ? j.space : "this app only"}
                     {j.repo ? ` · ${j.repo}` : ""}
                   </div>
                 </div>

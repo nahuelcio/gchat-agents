@@ -531,10 +531,12 @@ function SpacesCard({ settings, save }: ViewProps) {
   return (
     <details className="card" open>
       <summary className="card-title">
-        <h2>Spaces</h2>
-        <p className="muted small">Only these Chat spaces reach the agent.</p>
+        <h2>Google Chat spaces</h2>
+        <p className="muted small">Only needed if you use Google Chat: messages from spaces not listed here are ignored. Team chat in this app is not affected.</p>
       </summary>
-      {settings.allowedSpaces.length === 0 && <p className="empty warn-text">No spaces allowed — every Chat event is ignored.</p>}
+      {settings.allowedSpaces.length === 0 && (
+        <p className="empty">No spaces yet — Google Chat messages are ignored until you add one (the setup test above adds it for you).</p>
+      )}
       <div className="chips">
         {settings.allowedSpaces.map((s) => (
           <span key={s} className="chip static mono">
@@ -556,7 +558,7 @@ function SpacesCard({ settings, save }: ViewProps) {
           <label htmlFor="space-new" className="sr-only">
             Add a space
           </label>
-          <input id="space-new" className="mono pill-input" value={space} onChange={(e) => setSpace(e.target.value)} placeholder="spaces/XXXX" required />
+          <input id="space-new" className="mono pill-input" value={space} onChange={(e) => setSpace(e.target.value)} placeholder="Add spaces/XXXX + Enter" required />
         </form>
       </div>
     </details>
