@@ -1,4 +1,4 @@
-import { useEffect, useState, type FocusEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FocusEvent } from "react";
 import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type RepoConfig, type Settings } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
@@ -28,15 +28,23 @@ export function SettingsView(props: ViewProps) {
   );
 }
 
+const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+
 function AgentCard({ settings, save }: ViewProps) {
   const [agents, setAgents] = useState<Agent[]>();
   const [models, setModels] = useState<string[]>([]);
+  const [modelsBusy, setModelsBusy] = useState(false);
   const driver = settings.agentDriver;
   const [model, setModel] = useState(settings.models[driver] ?? "");
 
+  const loadModels = () => {
+    setModelsBusy(true);
+    return api.models().then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
+  };
+
   useEffect(() => {
     api.agents().then(setAgents, () => setAgents([]));
-    api.models().then(setModels, () => {});
+    void loadModels();
   }, []);
   useEffect(() => {
     setModel(settings.models[driver] ?? "");
@@ -74,33 +82,219 @@ function AgentCard({ settings, save }: ViewProps) {
             </label>
           ))}
       </div>
+      {driver === "opencode" ? (
+        <ModelBrowser
+          models={models}
+          selected={model}
+          busy={modelsBusy}
+          onRefresh={() => void loadModels()}
+          onSelect={(m) => {
+            setModel(m);
+            void save(
+              { models: { ...settings.models, opencode: m || undefined } },
+              m ? `Default model: ${m}` : "Using the agent's default model",
+            );
+          }}
+        />
+      ) : (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const value = model.trim();
+            void save({ models: { ...settings.models, [driver]: value || undefined } }, value ? `Default model: ${value}` : "Using the agent's default model");
+          }}
+        >
+          <label className="field grow">
+            <span>Default model</span>
+            <input
+              className="mono"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="e.g. claude-opus-5-5 — empty = default"
+            />
+            <div className="model-chips">
+              {CLAUDE_MODELS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`chip ${model === m ? "on" : ""}`}
+                  onClick={() => {
+                    setModel(m);
+                    void save({ models: { ...settings.models, claude: m } }, `Default model: ${m}`);
+                  }}
+                >
+                  {m.replace("claude-", "")}
+                </button>
+              ))}
+            </div>
+            <span className="muted small">Threads can override it with /model.</span>
+          </label>
+          <button className="btn primary">Save</button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function ModelBrowser({
+  models,
+  selected,
+  busy,
+  onRefresh,
+  onSelect,
+}: {
+  models: string[];
+  selected: string;
+  busy: boolean;
+  onRefresh: () => void;
+  onSelect: (id: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [custom, setCustom] = useState("");
+  const [openProviders, setOpenProviders] = useState<Set<string>>(() => new Set());
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const grouped = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const list = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+    const map = new Map<string, string[]>();
+    for (const id of list) {
+      const slash = id.indexOf("/");
+      const provider = slash >= 0 ? id.slice(0, slash) : "other";
+      const bucket = map.get(provider) ?? [];
+      bucket.push(id);
+      map.set(provider, bucket);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [models, search]);
+
+  const matchCount = grouped.reduce((n, [, ids]) => n + ids.length, 0);
+  const filtering = search.trim().length > 0;
+  const selectedProvider = selected.includes("/") ? selected.slice(0, selected.indexOf("/")) : "";
+
+  useEffect(() => {
+    if (!selectedProvider) return;
+    setOpenProviders((prev) => (prev.has(selectedProvider) ? prev : new Set(prev).add(selectedProvider)));
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    const el = listRef.current?.querySelector(".model-row.on");
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selected, models.length]);
+
+  const toggleProvider = (provider: string) => {
+    setOpenProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) next.delete(provider);
+      else next.add(provider);
+      return next;
+    });
+  };
+
+  return (
+    <div className="model-browser">
+      <div className="field-head">
+        <span>Default model</span>
+        <button type="button" className="btn linkish small" disabled={busy} onClick={onRefresh}>
+          {busy ? "Loading…" : "Refresh list"}
+        </button>
+      </div>
+      <div className="model-current">
+        {selected ? (
+          <>
+            <code className="grow">{selected}</code>
+            <button type="button" className="btn small" onClick={() => onSelect("")}>
+              Agent default
+            </button>
+          </>
+        ) : (
+          <span className="muted">Using OpenCode&apos;s default model</span>
+        )}
+      </div>
+      {models.length > 0 ? (
+        <>
+          <label className="field model-filter-field" htmlFor="model-filter">
+            <span>Search</span>
+            <input
+              id="model-filter"
+              className="model-filter"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={`Type to filter ${models.length} models…`}
+              autoComplete="off"
+              spellCheck={false}
+              autoFocus
+            />
+          </label>
+          <p className="muted small model-browser-meta">
+            {filtering
+              ? `${matchCount} match${matchCount === 1 ? "" : "es"}`
+              : `${models.length} models · expand a provider or search`}
+          </p>
+          <div ref={listRef} className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
+            {grouped.map(([provider, ids]) => {
+              const open = filtering || openProviders.has(provider);
+              return (
+                <div key={provider} className="model-group">
+                  <button
+                    type="button"
+                    className="model-group-head"
+                    aria-expanded={open}
+                    disabled={filtering}
+                    onClick={() => toggleProvider(provider)}
+                  >
+                    <span className="model-group-chevron" aria-hidden="true">
+                      {open ? "▾" : "▸"}
+                    </span>
+                    <span>{provider}</span>
+                    <span className="model-group-count">{ids.length}</span>
+                  </button>
+                  {open &&
+                    ids.map((id) => {
+                      const name = id.slice(provider.length + 1);
+                      return (
+                        <button
+                          type="button"
+                          key={id}
+                          role="option"
+                          aria-selected={id === selected}
+                          className={`model-row ${id === selected ? "on" : ""}`}
+                          onClick={() => onSelect(id)}
+                        >
+                          <span className="model-name">{name || id}</span>
+                        </button>
+                      );
+                    })}
+                </div>
+              );
+            })}
+            {matchCount === 0 && <p className="muted small model-picker-empty">No models match this filter.</p>}
+          </div>
+        </>
+      ) : (
+        <p className="muted small">No models yet. Run <code>opencode auth login</code>, then Refresh list.</p>
+      )}
       <form
-        className="row"
+        className="model-custom row"
         onSubmit={(e) => {
           e.preventDefault();
-          const value = model.trim();
-          void save({ models: { ...settings.models, [driver]: value || undefined } }, value ? `Default model: ${value}` : "Using the agent's default model");
+          const value = custom.trim();
+          if (!value) return;
+          onSelect(value);
+          setCustom("");
         }}
       >
         <label className="field grow">
-          <span>Default model</span>
-          <input
-            className="mono"
-            list={driver === "opencode" ? "models" : undefined}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder={driver === "opencode" ? `${models.length} models available — empty = default` : "e.g. claude-opus-5-5 — empty = default"}
-          />
-          <span className="muted small">Threads can override it with /model.</span>
+          <span className="muted small">Custom model ID</span>
+          <input className="mono" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="provider/model#variant" />
         </label>
-        <datalist id="models">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <button className="btn primary">Save</button>
+        <button type="submit" className="btn" disabled={!custom.trim()}>
+          Use
+        </button>
       </form>
-    </section>
+      <span className="muted small">Threads can override it with /model.</span>
+    </div>
   );
 }
 
