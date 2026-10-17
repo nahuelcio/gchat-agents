@@ -50,13 +50,22 @@ Details that the drivers handle for you:
 
 ### 2. Run it
 
+**Windows (PowerShell or cmd), from the repo root:**
+
 ```
-npm install --include=dev        # --include=dev matters if your shell sets NODE_ENV=production
-npm i -g opentunnel              # public HTTPS URL for the bridge (blind TLS: the relay never sees plaintext)
-npm start                        # build + tunnel + bridge + control plane
+npm install --include=dev
+npm start
 ```
 
-Nothing is required to start: without credentials the playground and control plane work and Chat replies are off. To answer in Google Chat, set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`. `npm start` prints the public endpoint (also shown in the control plane, with a Copy button): paste it as the Chat app's **HTTP endpoint URL**, with the authentication audience set to that same URL. The URL is stable across restarts: `opentunnel route add` reuses the route for the port.
+That builds the control-plane UI and runs the Rust binary. Open `http://127.0.0.1:8081`.
+
+Echo driver (no agent CLI needed):
+
+```
+npm run dev
+```
+
+Production runtime is the Rust binary (`rust/`). Node is only used to build the control-plane UI. Nothing is required to start: without credentials the playground and control plane work and Chat replies are off. To answer in Google Chat, set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`.
 
 Then open `http://127.0.0.1:8081` to pick the agent, add repos and allow spaces. Add the bot to a space or DM it.
 
@@ -88,47 +97,33 @@ This endpoint **triggers an agent that executes code on this machine**. Take it 
 
 ```
 npm install
-npm run build          # tsc + control plane UI (vite)
-npm run dev            # backend watch + control plane UI hot reload (open :5173)
+npm test               # cargo test
+npm run e2e            # build debug binary + healthz /api contract
+npm run dev            # echo driver on :8080 / :8081
+npm run build:web      # control plane UI (vite)
 npm run dev:web        # UI only (needs bridge already on :8081)
-npm test               # vitest
-npm run smoke -- --driver echo   # end-to-end without Google or opencode
 ```
-
-Each `--text` is one message in the same thread, so command flows run too:
-`AGENT_REPOS_FILE=repos.json npm run smoke -- --driver echo --text "/repo web" --text "/up" --text "/logs"`.
-
-The smoke script fabricates a Chat event and prints the reply instead of POSTing. Drop `--driver echo` to exercise the real `opencode` binary.
 
 ## Layout
 
 ```
-src/
-  server.ts        HTTP: /google/chat, /healthz, 1MB body cap
-  verify.ts        Google token verification (URL-audience ID token / project-number JWT)
-  handler.ts       event -> auth -> allowlist -> queue -> driver -> reply
-  queue.ts         serial per-thread turn queue
-  store.ts         thread -> opencode session map (atomic JSON writes)
-  text.ts          mention stripping, 3800-char chunking
-  chat-client.ts   Google Chat REST poster (service account, chat.bot)
-  workspace.ts     per-thread git worktrees and dev-server processes
-  settings.ts      control-plane settings (validated, atomic writes)
-  agents.ts        detects installed coding agents and opencode models
-  schedules.ts     cron parser, job store, scheduler with retries
-  health.ts        uptime, starts, crash count, heartbeat
-  admin.ts         control-plane JSON API + static UI on 127.0.0.1
-  integrations.ts  Azure DevOps (ado CLI detection, projects/repos, clone)
-web/               control-plane UI (React + Vite)
-  driver/
-    types.ts        AgentDriver seam
-    spawn-capture.ts shared spawn+timeout+process-group-kill helper
-    opencode.ts     OpenCode adapter (spawns opencode CLI)
-    claude.ts       Claude Code adapter (spawns claude CLI)
-    echo.ts         canned driver (tests, smoke)
-    configured.ts   picks driver/model from settings each turn
+rust/              production backend (axum + tokio)
+  src/
+    main.rs        binary entry (loads .env, serves bridge + admin)
+    bridge.rs      /healthz, /google/chat
+    admin.rs       /api/* control plane (loopback)
+    handler.rs     auth → allowlist → per-thread queue → driver
+    driver/        echo, opencode, claude, spawn+timeout
+    session.rs     sessions.json atomic store
+    settings.rs    config.json
+    schedules.rs   cron + job store + scheduler
+    workspace.rs   git worktrees / app up
+    share.rs       share-token
+web/               control-plane UI (React + Vite) — unchanged
+src/               legacy TypeScript backend (retired from runtime)
 ```
 
-Another runtime (Codex, Cursor, …) means writing one more `AgentDriver` adapter — nothing else changes.
+Another runtime (Codex, Cursor, …) means writing one more `AgentDriver` adapter in `rust/src/driver/` — nothing else changes.
 
 ## Status
 

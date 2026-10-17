@@ -1,7 +1,8 @@
 # Keeps the bridge alive: systemd restarts it whenever it exits or crashes.
 # Install (user service, no root):
+#   cargo build --release --manifest-path rust/Cargo.toml
 #   mkdir -p ~/.config/systemd/user
-#   sed -e "s|@DIR@|$PWD|g" -e "s|@NODE@|$(command -v node)|g" -e "s|@NODEDIR@|$(dirname $(command -v node))|g" scripts/switchboard.service > ~/.config/systemd/user/switchboard.service
+#   sed -e "s|@DIR@|$PWD|g" -e "s|@BIN@|$PWD/rust/target/release/switchboard|g" scripts/switchboard.service > ~/.config/systemd/user/switchboard.service
 #   systemctl --user daemon-reload && systemctl --user enable --now switchboard
 #   loginctl enable-linger "$USER"   # keep running after logout
 # Logs: journalctl --user -u switchboard -f
@@ -11,15 +12,12 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=@DIR@
-# .env is loaded by node itself (--env-file-if-exists), so a missing file is fine.
-# Absolute node path: user units do not load nvm/asdf shims.
-ExecStart=@NODE@ --env-file-if-exists=@DIR@/.env dist/src/index.js
-# Agents (opencode, claude) are found via this PATH.
-Environment=PATH=@NODEDIR@:/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+EnvironmentFile=-@DIR@/.env
+ExecStart=@BIN@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin:%h/.cargo/bin
 Environment=SWITCHBOARD_SUPERVISED=systemd
 Restart=always
 RestartSec=5
-# Agent turns can run long; give in-flight work a moment on stop.
 TimeoutStopSec=20
 
 [Install]

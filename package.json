@@ -8,13 +8,17 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "npm run -s build && node --env-file-if-exists=.env dist/src/index.js",
-    "dev": "node scripts/dev.mjs",
-    "build": "tsc -p tsconfig.json && npm run -s build:web",
+    "start": "npm run -s build:web && cargo run --manifest-path rust/Cargo.toml --release",
+    "dev": "cargo run --manifest-path rust/Cargo.toml -- --driver echo",
+    "start:dev": "npm run -s dev",
+    "build": "npm run -s build:web && cargo build --manifest-path rust/Cargo.toml --release",
     "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
+    "build:rust": "cargo build --manifest-path rust/Cargo.toml --release",
     "dev:web": "vite --config web/vite.config.ts",
-    "test": "vitest run",
-    "smoke": "tsc -p tsconfig.json && node dist/scripts/smoke.js"
+    "test": "cargo test --manifest-path rust/Cargo.toml",
+    "test:web": "vitest run",
+    "e2e": "cargo build --manifest-path rust/Cargo.toml && node scripts/e2e-rust.mjs",
+    "smoke": "cargo run --manifest-path rust/Cargo.toml -- --driver echo"
   },
   "dependencies": {
     "google-auth-library": "^11.2.0"
