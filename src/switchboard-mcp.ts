@@ -139,18 +139,23 @@ export function claudeMcpConfig(serverPath: string, threadKey: string, adminUrl:
   });
 }
 
-/** OpenCode `OPENCODE_CONFIG_CONTENT` fragment (merges into the active config). */
-export function opencodeMcpConfig(serverPath: string, threadKey: string, adminUrl: string): string {
-  return JSON.stringify({
-    mcp: {
-      switchboard: {
-        type: "local",
-        enabled: true,
-        command: [process.execPath, serverPath],
-        environment: mcpEnv(threadKey, adminUrl),
-      },
+function withThreadArg(tool: (typeof TOOLS)[number]) {
+  const schema = tool.inputSchema as { type: string; properties?: Record<string, unknown>; required?: string[] };
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: { ...schema.properties, thread: { type: "string", description: "Switchboard thread id given in your conversation ([Switchboard thread: …]). Required unless the server already knows it." } },
     },
-  });
+  };
+}
+
+export function switchboardThreadNote(threadKey: string): string {
+  return `[Switchboard thread: ${threadKey}. Pass it as "thread" when you call switchboard tools.]`;
+}
+
+export function opencodeMcpArgs(serverPath: string, adminUrl: string): string[] {
+  return ["mcp", "add", "switchboard", "--global", "--env", `SWITCHBOARD_ADMIN_URL=${adminUrl}`, "--", process.execPath, serverPath];
 }
 
 export const SWITCHBOARD_HINT = [
@@ -215,9 +220,11 @@ type ThreadStatus = {
 export async function runTool(
   name: string,
   args: Record<string, unknown>,
-  env: NodeJS.ProcessEnv = process.env,
+  baseEnv: NodeJS.ProcessEnv = process.env,
   fetchFn: typeof fetch = fetch,
 ): Promise<string> {
+  const thread = typeof args.thread === "string" ? args.thread.trim() : "";
+  const env = thread ? { ...baseEnv, SWITCHBOARD_THREAD_KEY: thread } : baseEnv;
   if (name === "invite_agent") {
     const agent = String(args.name ?? "").replace(/^@/, "").trim();
     if (!agent) throw new Error("name is required");
@@ -375,7 +382,7 @@ export async function handleRpc(
     });
   }
   if (method === "notifications/initialized" || method === "initialized") return undefined;
-  if (method === "tools/list") return respond(id, { tools: [...TOOLS] });
+  if (method === "tools/list") return respond(id, { tools: TOOLS.map(withThreadArg) });
   if (method === "tools/call") {
     const name = String(params?.name ?? "");
     const toolArgs = (params?.arguments ?? {}) as Record<string, unknown>;

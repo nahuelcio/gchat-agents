@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { resolveBin } from "./resolve-bin.js";
 
@@ -122,4 +123,18 @@ export async function detectAgents(bins: { opencode: string; claude: string }, r
       return supported ? { ...agent, ...(await readiness(id, bin, run)) } : agent;
     }),
   );
+}
+
+export async function ensureOpencodeMcp(
+  bin: string,
+  args: string[],
+  markerFile: string,
+  run: RunFn = defaultRun,
+): Promise<"registered" | "unchanged"> {
+  const want = args.join("\u0000");
+  const had = await readFile(markerFile, "utf8").catch(() => "");
+  if (had === want) return "unchanged";
+  await run(bin, args, 60_000);
+  await writeFile(markerFile, want);
+  return "registered";
 }

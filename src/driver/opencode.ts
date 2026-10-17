@@ -1,7 +1,7 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
 import { continuation, formatQuestions, normalizeQuestions } from "../questions.js";
-import { opencodeMcpConfig, type SwitchboardMcp } from "../switchboard-mcp.js";
+import { switchboardThreadNote, type SwitchboardMcp } from "../switchboard-mcp.js";
 
 /** Silence after a question event before we treat the CLI as blocked on the user. */
 const ASK_IDLE_MS = 200;
@@ -125,7 +125,7 @@ export class OpenCodeDriver implements AgentDriver {
   }
 
   private spawn(input: AgentTurnInput): LiveProcess {
-    const args = this.switchboard ? ["run", "--standalone", "--format", "json"] : ["run", "--format", "json"];
+    const args = ["run", "--format", "json"];
     // opencode rejects session ids not starting with "ses"; a stale or foreign
     // ref (e.g. from another driver) means: start a fresh session.
     const sessionRef = /^ses_/.test(input.sessionRef ?? "") ? input.sessionRef : undefined;
@@ -136,11 +136,9 @@ export class OpenCodeDriver implements AgentDriver {
     if (agent) args.push("--agent", agent);
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
-    args.push("--", input.text);
-    const env = this.switchboard
-      ? { OPENCODE_CONFIG_CONTENT: opencodeMcpConfig(this.switchboard.serverPath, input.threadKey, this.switchboard.adminUrl) }
-      : undefined;
-    return spawnLive(this.bin, args, input.workdir, this.timeoutMs, env);
+    const thread = this.switchboard && !sessionRef ? `${switchboardThreadNote(input.threadKey)}\n\n` : "";
+    args.push("--", thread + input.text);
+    return spawnLive(this.bin, args, input.workdir, this.timeoutMs);
   }
 
   private async pump(live: LiveProcess, input: AgentTurnInput, preface: string): Promise<AgentTurnResult> {

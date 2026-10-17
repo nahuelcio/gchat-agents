@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { claudeModels, detectAgents, opencodeAgents, opencodeModels, type RunFn } from "../src/agents.js";
+import { claudeModels, detectAgents, ensureOpencodeMcp, opencodeAgents, opencodeModels, type RunFn } from "../src/agents.js";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runTool } from "../src/switchboard-mcp.js";
 
 /** Fake CLI runner: key "bin args..." -> stdout; missing bins throw ENOENT like execFile. */
 function fakeRun(outputs: Record<string, string | Error>): RunFn {
@@ -88,5 +92,32 @@ describe("claudeModels", () => {
       "claude -p /model --output-format text --bare --no-session-persistence": "I can't switch models from here.",
     });
     expect(await claudeModels("claude", run)).toContain("opus");
+  });
+});
+
+describe("ensureOpencodeMcp", () => {
+  it("registers once and again only when the command changes", async () => {
+    const marker = join(await mkdtemp(join(tmpdir(), "ocmcp-")), "opencode-mcp.txt");
+    const calls: string[][] = [];
+    const run: RunFn = async (_bin, args) => {
+      calls.push(args);
+      return "";
+    };
+    expect(await ensureOpencodeMcp("opencode", ["mcp", "add", "switchboard", "a"], marker, run)).toBe("registered");
+    expect(await ensureOpencodeMcp("opencode", ["mcp", "add", "switchboard", "a"], marker, run)).toBe("unchanged");
+    expect(await ensureOpencodeMcp("opencode", ["mcp", "add", "switchboard", "b"], marker, run)).toBe("registered");
+    expect(calls).toHaveLength(2);
+  });
+});
+
+describe("switchboard tools with a thread argument", () => {
+  it("uses the thread passed by the agent when the server has none in its env", async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (_url: string, init?: { body?: string }) => {
+      seen.push(JSON.parse(init?.body ?? "{}").threadKey);
+      return new Response(JSON.stringify({ members: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await runTool("invite_agent", { name: "qa", thread: "share/r9" }, { SWITCHBOARD_ADMIN_URL: "http://x" }, fetchFn);
+    expect(seen).toEqual(["share/r9"]);
   });
 });

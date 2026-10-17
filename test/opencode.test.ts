@@ -79,18 +79,23 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     expect(args).toEqual(["run", "--format", "json", "--", "hello"]);
   });
 
-  it("runs standalone with the Switchboard MCP in its env so the background service's config is not used", async () => {
+  it("uses the background service and tells a new session which Switchboard thread it is in", async () => {
     const argsFile = join(dir, "args-sb.txt");
-    const envFile = join(dir, "env-sb.txt");
     const bin = await fakeBin(
       "oc-sb.sh",
-      `#!/bin/sh\necho "$@" > ${JSON.stringify(argsFile)}\necho "$OPENCODE_CONFIG_CONTENT" > ${JSON.stringify(envFile)}\n` +
-        `echo '{"type":"text","sessionID":"ses_sb","part":{"type":"text","text":"ok"}}'\n`,
+      `#!/bin/sh
+echo "$@" > ${JSON.stringify(argsFile)}
+` +
+        `echo '{"type":"text","sessionID":"ses_sb","part":{"type":"text","text":"ok"}}'
+`,
     );
     const driver = new OpenCodeDriver({ bin, timeoutMs: 10_000, switchboard: { serverPath: "/x/switchboard-mcp.js", adminUrl: "http://127.0.0.1:1" } });
     await driver.runTurn({ threadKey: "share/r1", text: "hi", workdir: dir });
-    expect((await readFile(argsFile, "utf8")).split(/\s+/).filter(Boolean).slice(0, 2)).toEqual(["run", "--standalone"]);
-    expect(await readFile(envFile, "utf8")).toContain('"SWITCHBOARD_THREAD_KEY":"share/r1"');
+    const first = await readFile(argsFile, "utf8");
+    expect(first).not.toContain("--standalone");
+    expect(first).toContain("[Switchboard thread: share/r1.");
+    await driver.runTurn({ threadKey: "share/r1", sessionRef: "ses_sb", text: "again", workdir: dir });
+    expect(await readFile(argsFile, "utf8")).not.toContain("Switchboard thread");
   });
 
   it("exits when the CLI waits on stdin EOF after printing the reply", async () => {

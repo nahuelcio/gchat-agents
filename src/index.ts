@@ -7,7 +7,8 @@ import { loadConfig } from "./config.js";
 import { GoogleConnection } from "./google.js";
 import { createAdminServer } from "./admin.js";
 import { detectAdo } from "./integrations.js";
-import { claudeModels, detectAgents, opencodeAgents, opencodeModels } from "./agents.js";
+import { claudeModels, detectAgents, ensureOpencodeMcp, opencodeAgents, opencodeModels } from "./agents.js";
+import { opencodeMcpArgs } from "./switchboard-mcp.js";
 import type { HandlerDeps } from "./handler.js";
 import { Health } from "./health.js";
 import { Scheduler, ScheduleStore } from "./schedules.js";
@@ -68,6 +69,10 @@ const switchboardMcp = {
   serverPath: fileURLToPath(new URL("./switchboard-mcp.js", import.meta.url)),
   adminUrl: `http://127.0.0.1:${config.adminPort}`,
 };
+void ensureOpencodeMcp(config.opencodeBin, opencodeMcpArgs(switchboardMcp.serverPath, switchboardMcp.adminUrl), join(config.dataDir, "opencode-mcp.txt")).then(
+  (r) => r === "registered" && console.info("OpenCode: Switchboard MCP registered in the global config"),
+  (err: unknown) => console.warn(`OpenCode: could not register the Switchboard MCP (${err instanceof Error ? err.message : String(err)})`),
+);
 const deps: HandlerDeps = {
   verifier: new GoogleTokenVerifier(tokenAudience),
   driver: new ConfiguredDriver(settings, {
