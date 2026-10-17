@@ -11,7 +11,7 @@ describe("Health", () => {
     const first = new Health(file, {});
     expect(first.snapshot()).toMatchObject({ starts: 1, crashes: 0, supervised: false });
     // no markStopped(): simulates a crash
-    const second = new Health(file, { GCHAT_AGENTS_SUPERVISED: "systemd" });
+    const second = new Health(file, { SWITCHBOARD_SUPERVISED: "systemd" });
     expect(second.snapshot()).toMatchObject({ starts: 2, crashes: 1, supervised: true });
     second.markStopped();
     const third = new Health(file, {});

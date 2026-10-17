@@ -10,7 +10,7 @@ interface Persisted {
 
 /**
  * Liveness bookkeeping for the control plane. Keeping the process alive is the
- * supervisor's job (systemd `Restart=always`, see scripts/gchat-agents.service);
+ * supervisor's job (systemd `Restart=always`, see scripts/switchboard.service);
  * this records what happened so the team can see it.
  */
 export class Health {
@@ -30,8 +30,8 @@ export class Health {
     }
     this.startedAt = now();
     this.lastBeat = this.startedAt;
-    // Set by scripts/gchat-agents.service. (INVOCATION_ID is inherited by anything started from a systemd session, so it proves nothing.)
-    this.supervised = env["GCHAT_AGENTS_SUPERVISED"] === "systemd";
+    // Set by scripts/switchboard.service. (INVOCATION_ID is inherited by anything started from a systemd session, so it proves nothing.)
+    this.supervised = env["SWITCHBOARD_SUPERVISED"] === "systemd";
     this.state = {
       starts: prev.starts + 1,
       crashes: prev.crashes + (prev.running ? 1 : 0),

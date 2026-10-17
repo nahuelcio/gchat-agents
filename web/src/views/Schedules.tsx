@@ -98,7 +98,7 @@ export function Schedules({ settings, notify }: ViewProps) {
           <p className="muted">
             {health?.supervised
               ? "Supervised by systemd: if the process exits or crashes, it is restarted in 5 s."
-              : "Not supervised. Install the systemd unit in scripts/gchat-agents.service so a crash restarts it automatically."}{" "}
+              : "Not supervised. Install the systemd unit in scripts/switchboard.service so a crash restarts it automatically."}{" "}
             Stuck agent turns are killed at the turn timeout.
           </p>
         </div>

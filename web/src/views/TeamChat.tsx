@@ -168,9 +168,9 @@ interface Props {
 export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos }: Props) {
   const [picking, setPicking] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [name, setName] = useState<string>(() => remember("gchat-agents.name", ""));
+  const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
   const [nameDraft, setNameDraft] = useState("");
-  const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("gchat-agents.guest-threads", []) : []));
+  const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("switchboard.guest-threads", []) : []));
   const [activeId, setActiveId] = useState<string | undefined>(initialThread);
   const [state, setState] = useState<TeamThreadState>();
   const [draft, setDraft] = useState("");
@@ -263,7 +263,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     setThreads((list) => (list.some((t) => t.id === initialThread) ? list : [{ id: initialThread, title: "Shared thread", count: 0 }, ...list]));
   }, [transport.guest, initialThread]);
   useEffect(() => {
-    if (transport.guest) store("gchat-agents.guest-threads", threads);
+    if (transport.guest) store("switchboard.guest-threads", threads);
   }, [transport.guest, threads]);
 
   const loadThreads = useCallback(() => {
@@ -394,7 +394,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             e.preventDefault();
             const value = nameDraft.trim().slice(0, 40);
             if (!value) return;
-            store("gchat-agents.name", value);
+            store("switchboard.name", value);
             setName(value);
           }}
         >
@@ -427,7 +427,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         </div>
         <p className="muted small">
           {transport.guest ? `Chatting as ${name}. ` : "Every team thread. "}
-          <button className="linklike" onClick={() => { store("gchat-agents.name", ""); setName(""); }}>
+          <button className="linklike" onClick={() => { store("switchboard.name", ""); setName(""); }}>
             Change name
           </button>
         </p>

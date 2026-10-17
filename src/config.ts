@@ -57,7 +57,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowedSpaces,
     agentDriver: driverKind(env["AGENT_DRIVER"]?.trim() || "opencode"),
     // Outside this checkout: agents must neither edit the bridge nor take it as their project.
-    workdir: env["AGENT_WORKDIR"]?.trim() || join(env["XDG_DATA_HOME"]?.trim() || join(homedir(), ".local", "share"), "gchat-agents", "workspace"),
+    workdir: env["AGENT_WORKDIR"]?.trim() || join(env["XDG_DATA_HOME"]?.trim() || join(homedir(), ".local", "share"), "switchboard", "workspace"),
     opencodeBin: env["OPENCODE_BIN"]?.trim() || "opencode",
     opencodeModel,
     claudeBin: env["CLAUDE_BIN"]?.trim() || "claude",

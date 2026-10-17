@@ -1,12 +1,12 @@
 # Keeps the bridge alive: systemd restarts it whenever it exits or crashes.
 # Install (user service, no root):
 #   mkdir -p ~/.config/systemd/user
-#   sed -e "s|@DIR@|$PWD|g" -e "s|@NODE@|$(command -v node)|g" -e "s|@NODEDIR@|$(dirname $(command -v node))|g" scripts/gchat-agents.service > ~/.config/systemd/user/gchat-agents.service
-#   systemctl --user daemon-reload && systemctl --user enable --now gchat-agents
+#   sed -e "s|@DIR@|$PWD|g" -e "s|@NODE@|$(command -v node)|g" -e "s|@NODEDIR@|$(dirname $(command -v node))|g" scripts/switchboard.service > ~/.config/systemd/user/switchboard.service
+#   systemctl --user daemon-reload && systemctl --user enable --now switchboard
 #   loginctl enable-linger "$USER"   # keep running after logout
-# Logs: journalctl --user -u gchat-agents -f
+# Logs: journalctl --user -u switchboard -f
 [Unit]
-Description=gchat-agents bridge and control plane
+Description=Switchboard bridge and control plane
 After=network-online.target
 
 [Service]
@@ -16,7 +16,7 @@ WorkingDirectory=@DIR@
 ExecStart=@NODE@ --env-file-if-exists=@DIR@/.env dist/src/index.js
 # Agents (opencode, claude) are found via this PATH.
 Environment=PATH=@NODEDIR@:/usr/local/bin:/usr/bin:/bin:%h/.local/bin
-Environment=GCHAT_AGENTS_SUPERVISED=systemd
+Environment=SWITCHBOARD_SUPERVISED=systemd
 Restart=always
 RestartSec=5
 # Agent turns can run long; give in-flight work a moment on stop.
