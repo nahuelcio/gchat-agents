@@ -79,6 +79,20 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     expect(args).toEqual(["run", "--format", "json", "--", "hello"]);
   });
 
+  it("exits when the CLI waits on stdin EOF after printing the reply", async () => {
+    const bin = await fakeBin(
+      "oc-stdin.sh",
+      `#!/bin/sh\n` +
+        `echo '{"type":"text","sessionID":"ses_eof","part":{"type":"text","text":"closed"}}'\n` +
+        `cat >/dev/null\n`,
+    );
+    const driver = new OpenCodeDriver({ bin, timeoutMs: 10_000 });
+    await expect(driver.runTurn({ threadKey: "t", text: "hi", workdir: dir })).resolves.toEqual({
+      reply: "closed",
+      sessionRef: "ses_eof",
+    });
+  });
+
   it("continues with --session for ses_ refs and starts fresh otherwise", async () => {
     const argsFile = join(dir, "args.txt");
     const bin = await fakeBin(
@@ -93,6 +107,26 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     const lines = (await readFile(argsFile, "utf8")).trim().split("\n");
     expect(lines[0]?.split(/\s+/)).toEqual(["run", "--format", "json", "--session", "ses_keep", "--", "a"]);
     expect(lines[1]?.split(/\s+/)).toEqual(["run", "--format", "json", "--", "b"]);
+  });
+
+  it("passes --agent when configured", async () => {
+    const argsFile = join(dir, "args.txt");
+    const bin = await fakeBin(
+      "oc-agent.sh",
+      `#!/bin/sh\necho "$@" > ${JSON.stringify(argsFile)}\n` +
+        `echo '{"type":"text","sessionID":"ses_a","part":{"type":"text","text":"ok"}}'\n`,
+    );
+    const driver = new OpenCodeDriver({ bin, agent: "plan", timeoutMs: 10_000 });
+    await driver.runTurn({ threadKey: "t", text: "hi", workdir: dir });
+    expect((await readFile(argsFile, "utf8")).split(/\s+/).filter(Boolean)).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--agent",
+      "plan",
+      "--",
+      "hi",
+    ]);
   });
 
   it("surfaces NDJSON error lines from a nonzero exit", async () => {
@@ -114,15 +148,16 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     ).rejects.toThrow("opencode timed out after 150ms");
   }, 5000);
 
-  it("parks when a question event goes quiet and feeds the answer back on stdin", async () => {
-    const answerFile = join(dir, "answer.txt");
+  it("parks when a question event goes quiet and resumes with a fresh run", async () => {
+    const argsFile = join(dir, "args.txt");
     const bin = await fakeBin(
       "oc-ask.sh",
       `#!/bin/sh\n` +
-        `echo '{"type":"question","sessionID":"ses_q","questions":[{"question":"Which library?","header":"Library","options":[{"label":"date-fns","description":"small"},{"label":"luxon","description":"tz"}]}]}'\n` +
-        `read line\n` +
-        `echo "$line" > ${JSON.stringify(answerFile)}\n` +
-        `echo '{"type":"text","sessionID":"ses_q","part":{"type":"text","text":"noted"}}'\n`,
+        `echo "$@" >> ${JSON.stringify(argsFile)}\n` +
+        `case " $* " in\n` +
+        `*"Which library?"*) echo '{"type":"text","sessionID":"ses_q","part":{"type":"text","text":"noted"}}' ;;\n` +
+        `*) echo '{"type":"question","sessionID":"ses_q","questions":[{"question":"Which library?","header":"Library","options":[{"label":"date-fns","description":"small"},{"label":"luxon","description":"tz"}]}]}' ;;\n` +
+        `esac\n`,
     );
     const driver = new OpenCodeDriver({ bin, timeoutMs: 10_000 });
     const parked = await driver.runTurn({ threadKey: "t", text: "pick", workdir: dir });
@@ -130,7 +165,8 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     expect(parked.pending?.questions).toHaveLength(1);
     const done = await parked.pending!.resume("luxon");
     expect(done.reply).toContain("noted");
-    expect(await readFile(answerFile, "utf8")).toContain("luxon");
+    const args = await readFile(argsFile, "utf8");
+    expect(args).toContain("luxon");
   });
 
   it("reports a missing binary clearly", async () => {

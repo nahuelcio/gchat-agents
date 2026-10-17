@@ -10,6 +10,7 @@ import {
   type TeamTransport,
 } from "../api";
 import { Icon } from "../App";
+import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
 const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/context", "/compact", "/model ", "/schedules"];
 const GUEST_SUGGESTIONS = ["/help", "/context", "/compact", "/clear", "/model "];
@@ -175,17 +176,70 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [sending, setSending] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [speakingId, setSpeakingId] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
+  const [speechIn] = useState(canListen);
+  const [speechOut] = useState(canSpeak);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const dictation = useRef<LiveDictation | undefined>(undefined);
+  const draftBase = useRef("");
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
   useEffect(
     () => () => {
       for (const p of pendingRef.current) URL.revokeObjectURL(p.url);
+      dictation.current?.stop();
+      stopSpeaking();
     },
     [],
   );
+
+  function toggleListen() {
+    if (!speechIn || sending) return;
+    if (listening) {
+      dictation.current?.stop();
+      return;
+    }
+    draftBase.current = draft.trim();
+    const session = startDictation({
+      onPartial: (text) => {
+        const base = draftBase.current;
+        setDraft(base ? `${base} ${text}` : text);
+      },
+      onFinal: (text) => {
+        const base = draftBase.current;
+        const next = base ? `${base} ${text}` : text;
+        draftBase.current = next;
+        setDraft(next);
+      },
+      onError: (message) => notify(message, true),
+      onEnd: () => {
+        setListening(false);
+        dictation.current = undefined;
+      },
+    });
+    if (!session) {
+      notify("Speech recognition is not supported in this browser", true);
+      return;
+    }
+    dictation.current = session;
+    setListening(true);
+    session.start();
+  }
+
+  function toggleSpeak(id: number, text: string) {
+    if (!speechOut) return;
+    if (speakingId === id) {
+      stopSpeaking();
+      setSpeakingId(null);
+      return;
+    }
+    stopSpeaking();
+    setSpeakingId(id);
+    speakText(text, () => setSpeakingId((cur) => (cur === id ? null : cur)));
+  }
 
   function queueImages(files: FileList | File[]) {
     const images = [...files].filter((f) => f.type.startsWith("image/"));
@@ -485,6 +539,26 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   </div>
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
                   {body.footer && <div className="message-footer">{body.footer}</div>}
+                  {m.bot && speechOut && body.text.trim() && (
+                    <button
+                      type="button"
+                      className={`speak-btn ${speakingId === i ? "on" : ""}`}
+                      aria-label={speakingId === i ? "Stop speaking" : "Speak message"}
+                      onClick={() => toggleSpeak(i, body.text)}
+                    >
+                      <Icon size={14}>
+                        {speakingId === i ? (
+                          <rect x="7" y="7" width="10" height="10" />
+                        ) : (
+                          <>
+                            <polygon points="5,4 15,12 5,20" />
+                            <path d="M17 8a5 5 0 0 1 0 8" />
+                          </>
+                        )}
+                      </Icon>
+                      {speakingId === i ? "Stop" : "Listen"}
+                    </button>
+                  )}
                   {m.questions && m.questions.length > 0 && !all.slice(i + 1).some((later) => !later.bot) && (
                     <AgentQuestions questions={m.questions} disabled={sending} onAnswer={(text) => void send(text)} />
                   )}
@@ -492,7 +566,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               </div>
             );
           })}
-          {working && <p className="muted small working">gchat-agents is working…</p>}
+          {working && <p className="muted small working">Switchboard is working…</p>}
           <div ref={bottom} />
         </div>
 
@@ -564,7 +638,27 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   <path d="M4 16l4-4 3 3 3-4 6 5" />
                 </Icon>
               </button>
-              <input id="composer" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message the agent, or paste an image" autoComplete="off" />
+              {speechIn && (
+                <button
+                  type="button"
+                  className={`attach mic ${listening ? "on" : ""}`}
+                  aria-label={listening ? "Stop listening" : "Speak to text"}
+                  disabled={sending}
+                  onClick={toggleListen}
+                >
+                  <Icon size={18}>
+                    <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" />
+                    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+                  </Icon>
+                </button>
+              )}
+              <input
+                id="composer"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={listening ? "Listening…" : "Message, paste an image, or use the mic"}
+                autoComplete="off"
+              />
               <button className="send" aria-label="Send" disabled={sending || (!draft.trim() && !pending.length)}>
                 <Icon size={18}>
                   <path d="M5 12h14M13 6l6 6-6 6" />

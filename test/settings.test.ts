@@ -4,7 +4,15 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SettingsStore, type Settings } from "../src/settings.js";
 
-const defaults: Settings = { agentDriver: "opencode", models: {}, repos: {}, allowedSpaces: ["spaces/ENV"], contextFooter: "every5", autoCompactAt: 85 };
+const defaults: Settings = {
+  agentDriver: "opencode",
+  models: {},
+  agents: {},
+  repos: {},
+  allowedSpaces: ["spaces/ENV"],
+  contextFooter: "every5",
+  autoCompactAt: 85,
+};
 
 let dir: string;
 beforeEach(async () => {
@@ -30,14 +38,22 @@ describe("SettingsStore", () => {
       autoCompactAt: 85,
       agentDriver: "claude",
       models: { claude: "claude-opus-5-5" },
+      agents: {},
       repos: { web: { path: dir, up: "npm start" } },
       allowedSpaces: ["spaces/AAA"],
     });
   });
 
+  it("persists the default OpenCode agent", async () => {
+    const file = join(dir, "config.json");
+    await new SettingsStore(file, defaults).update({ agents: { opencode: "plan" } });
+    expect(new SettingsStore(file, defaults).get().agents).toEqual({ opencode: "plan" });
+  });
+
   it("rejects invalid input without changing anything", async () => {
     const store = new SettingsStore(join(dir, "config.json"), defaults);
     await expect(store.update({ agentDriver: "gemini" as never })).rejects.toThrow(/agentDriver/);
+    await expect(store.update({ agents: { opencode: "bad agent" } })).rejects.toThrow(/agents\.opencode/);
     await expect(store.update({ repos: { web: { path: "relative/dir" } } })).rejects.toThrow(/absolute/);
     await expect(store.update({ repos: { web: { path: join(dir, "missing") } } })).rejects.toThrow(/does not exist/);
     await expect(store.update({ repos: { "a b": { path: dir } } })).rejects.toThrow(/repo name/);

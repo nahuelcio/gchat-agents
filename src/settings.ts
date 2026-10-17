@@ -9,6 +9,7 @@ import type { RepoConfig } from "./workspace.js";
 export interface Settings {
   agentDriver: AgentDriverKind;
   models: { opencode?: string; claude?: string };
+  agents: { opencode?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
   /** When agent replies in Chat carry the context footer. */
@@ -24,6 +25,9 @@ const REPO_NAME = /^[a-zA-Z0-9._-]+$/;
 function validate(s: Settings): void {
   if (s.agentDriver !== "opencode" && s.agentDriver !== "claude") {
     throw new Error(`agentDriver must be "opencode" or "claude"`);
+  }
+  if (s.agents?.opencode !== undefined && (typeof s.agents.opencode !== "string" || !/^[\w.-]+$/.test(s.agents.opencode))) {
+    throw new Error(`agents.opencode must be a simple agent id (letters, digits, . _ -)`);
   }
   for (const [name, repo] of Object.entries(s.repos)) {
     if (!REPO_NAME.test(name)) throw new Error(`"${name}" is not a valid repo name (letters, digits, . _ -)`);
@@ -58,8 +62,10 @@ export class SettingsStore {
       // missing or corrupt file -> env defaults
     }
     // Only known fields: files from older versions may carry removed ones.
-    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt } = { ...DEFAULTS, ...defaults, ...saved };
-    this.current = { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt };
+    const merged = { ...DEFAULTS, ...defaults, ...saved };
+    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt } = merged;
+    const agents = { ...(defaults.agents ?? {}), ...(saved.agents ?? {}) };
+    this.current = { agentDriver, models, agents, repos, allowedSpaces, contextFooter, autoCompactAt };
   }
 
   get(): Settings {

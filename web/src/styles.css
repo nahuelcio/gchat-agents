@@ -94,22 +94,13 @@ a { color: var(--accent); }
   height: 36px;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--panel);
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 2px;
-  padding: 0;
+  place-items: center;
   overflow: hidden;
   box-shadow: 3px 3px 0 var(--primary);
   animation: block-pop 0.45s ease-out;
 }
-.brand-mark .b { display: block; border-radius: 1px; }
-.brand-mark .b1 { background: #00f0ff; }
-.brand-mark .b2 { background: var(--secondary); }
-.brand-mark .b3 { background: #f59e0b; }
-.brand-mark .b4 { background: var(--success); }
-.brand-mark svg { display: none; }
+.brand-mark svg { display: block; width: 100%; height: 100%; }
 .brand-text { display: flex; flex-direction: column; gap: 0; }
 .brand-text strong { font-family: var(--font-display); font-size: 1.35rem; color: var(--primary); letter-spacing: 0.06em; text-transform: uppercase; }
 .brand-text small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -278,6 +269,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .btn.linkish { background: transparent; border: 0; color: var(--accent-ink); padding: 0; min-height: 0; font-size: 12px; font-family: var(--font-mono); letter-spacing: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; box-shadow: none; }
 .btn.linkish:hover:not(:disabled) { transform: none; box-shadow: none; background: transparent; }
 .btn.linkish:disabled { opacity: 0.5; cursor: default; }
+.oc-agent-picker { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .model-browser { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
 .model-current {
   display: flex;
@@ -507,6 +499,22 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .attach { background: var(--panel); color: var(--primary); box-shadow: 2px 2px 0 var(--soft); }
 .attach:hover:not(:disabled) { background: var(--soft); }
 .attach:disabled { opacity: 0.45; cursor: default; }
+.attach.mic.on { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); box-shadow: 2px 2px 0 var(--bad); }
+.speak-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--line-2);
+  background: var(--panel);
+  color: var(--fg-2);
+  font: 500 12px/1.2 var(--font-ui);
+  cursor: pointer;
+}
+.speak-btn:hover { border-color: var(--primary); color: var(--primary); }
+.speak-btn.on { border-color: var(--secondary); background: var(--accent-soft); color: var(--accent-ink); }
 .send { background: var(--primary); color: var(--panel); box-shadow: 2px 2px 0 var(--secondary); }
 .send:hover:not(:disabled) { background: var(--secondary); }
 .send:disabled { opacity: 0.45; cursor: default; }

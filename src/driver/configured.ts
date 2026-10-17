@@ -26,7 +26,7 @@ export class ConfiguredDriver implements AgentDriver {
     const driver =
       kind === "claude"
         ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs })
-        : new OpenCodeDriver({ bin: opencodeBin, model: s.models.opencode, timeoutMs });
+        : new OpenCodeDriver({ bin: opencodeBin, model: s.models.opencode, agent: s.agents?.opencode, timeoutMs });
     return driver.runTurn(input);
   }
 }

@@ -7,7 +7,7 @@ import { loadConfig } from "./config.js";
 import { GoogleConnection } from "./google.js";
 import { createAdminServer } from "./admin.js";
 import { detectAdo } from "./integrations.js";
-import { detectAgents, opencodeModels } from "./agents.js";
+import { claudeModels, detectAgents, opencodeAgents, opencodeModels } from "./agents.js";
 import { processMessage, type HandlerDeps } from "./handler.js";
 import { Health } from "./health.js";
 import { Scheduler, ScheduleStore, type Job } from "./schedules.js";
@@ -52,6 +52,7 @@ if (!tokenAudience) throw new Error("Set GOOGLE_TOKEN_AUDIENCE, or leave TUNNEL 
 const settings = new SettingsStore(join(config.dataDir, "config.json"), {
   agentDriver: config.agentDriver,
   models: { opencode: config.opencodeModel, claude: config.claudeModel },
+  agents: {},
   repos: config.repos,
   allowedSpaces: config.allowedSpaces,
 });
@@ -150,6 +151,8 @@ const admin = createAdminServer(settings, {
   detectAdo: () => detectAdo(homedir(), process.env),
   detectAgents: listAgents,
   opencodeModels: () => opencodeModels(config.opencodeBin),
+  opencodeAgents: () => opencodeAgents(config.opencodeBin),
+  claudeModels: () => claudeModels(config.claudeBin),
   handler: deps,
   schedules,
   scheduler,

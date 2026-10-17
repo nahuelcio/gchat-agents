@@ -26,9 +26,11 @@ export interface AdminContext {
   fetch?: FetchFn;
   /** ADO credentials from the machine's `ado` CLI setup. */
   detectAdo?: () => DetectedAdo | undefined;
-  /** Installed coding agents and the models opencode can use (slow: shelled out, cached here). */
+  /** Installed coding agents and the models each driver can use (slow: shelled out, cached here). */
   detectAgents?: () => Promise<DetectedAgent[]>;
   opencodeModels?: () => Promise<string[]>;
+  opencodeAgents?: () => Promise<string[]>;
+  claudeModels?: () => Promise<string[]>;
   /** The bridge's handler deps: the team chat runs real turns through them. */
   handler?: HandlerDeps;
   schedules?: ScheduleStore;
@@ -91,6 +93,8 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
   const fetchFn: FetchFn = (url, init) => (ctx.fetch ?? fetch)(url, init);
   const agents = cached(() => ctx.detectAgents?.() ?? Promise.resolve([]));
   const models = cached(() => ctx.opencodeModels?.() ?? Promise.resolve([]));
+  const opencodeAgentList = cached(() => ctx.opencodeAgents?.() ?? Promise.resolve([]));
+  const claudeModelList = cached(() => ctx.claudeModels?.() ?? Promise.resolve([]));
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const parsed = new URL(req.url ?? "/", "http://localhost");
@@ -201,7 +205,7 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
         else if (url === "/api/google/test") {
           const space = body.space ?? "";
           if (!/^spaces\/[^/\s]+$/.test(space)) throw new Error("Pick a space (spaces/XXXX)");
-          await google.postMessage(space, { text: "gchat-agents is connected. Mention me in a thread to start." });
+          await google.postMessage(space, { text: "Relay is connected. Mention me in a thread to start." });
         } else throw new HttpError(404, "not found");
       } catch (err) {
         if (err instanceof HttpError) throw err;
@@ -270,6 +274,12 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
     if (url === "/api/agents" && method === "GET") return send(res, 200, await agents(refresh));
     if (url === "/api/agents/opencode/models" && method === "GET") {
       return send(res, 200, await upstream(() => models(refresh)));
+    }
+    if (url === "/api/agents/opencode/agents" && method === "GET") {
+      return send(res, 200, await upstream(() => opencodeAgentList(refresh)));
+    }
+    if (url === "/api/agents/claude/models" && method === "GET") {
+      return send(res, 200, await upstream(() => claudeModelList(refresh)));
     }
 
     if (url.startsWith("/api/ado/")) {

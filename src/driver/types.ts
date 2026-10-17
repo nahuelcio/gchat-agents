@@ -21,6 +21,7 @@ export interface AgentTurnInput {
   workdir: string;
   /** Per-thread model override (from /model); omitted = the driver's default. */
   model?: string;
+  agent?: string;
   /** Per-thread agent override (from /agent); omitted = the configured one. */
   driver?: "opencode" | "claude";
   /** When false (scheduled jobs), clarifying questions are declined instead of parked. */

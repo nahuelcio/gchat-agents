@@ -19,6 +19,7 @@ describe("ConfiguredDriver", () => {
     const settings = new SettingsStore(join(dir, "config.json"), {
       agentDriver: "claude",
       models: { claude: "m1" },
+      agents: {},
       repos: {},
       allowedSpaces: [],
     });
@@ -35,7 +36,13 @@ describe("ConfiguredDriver", () => {
     const fake = join(dir, "fake-claude");
     await writeFile(fake, `#!/bin/sh\nprintf '{"type":"result","result":"from claude","session_id":"x","is_error":false}'\n`);
     await chmod(fake, 0o755);
-    const settings = new SettingsStore(join(dir, "config.json"), { agentDriver: "opencode", models: {}, repos: {}, allowedSpaces: [] });
+    const settings = new SettingsStore(join(dir, "config.json"), {
+      agentDriver: "opencode",
+      models: {},
+      agents: {},
+      repos: {},
+      allowedSpaces: [],
+    });
     const driver = new ConfiguredDriver(settings, { opencodeBin: "/nonexistent/opencode", claudeBin: fake, timeoutMs: 5000 });
     expect((await driver.runTurn({ threadKey: "t", text: "hi", workdir: dir, driver: "claude" })).reply).toBe("from claude");
   });

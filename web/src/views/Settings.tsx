@@ -28,27 +28,39 @@ export function SettingsView(props: ViewProps) {
   );
 }
 
-const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
-
 function AgentCard({ settings, save }: ViewProps) {
   const [agents, setAgents] = useState<Agent[]>();
   const [models, setModels] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [ocAgents, setOcAgents] = useState<string[]>([]);
+  const [ocAgentsBusy, setOcAgentsBusy] = useState(false);
   const driver = settings.agentDriver;
   const [model, setModel] = useState(settings.models[driver] ?? "");
+  const [ocAgent, setOcAgent] = useState(settings.agents?.opencode ?? "");
 
-  const loadModels = () => {
+  const loadModels = (refresh = false) => {
     setModelsBusy(true);
-    return api.models().then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
+    return api.models(driver, refresh).then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
+  };
+
+  const loadOcAgents = (refresh = false) => {
+    setOcAgentsBusy(true);
+    return api.opencodeAgents(refresh).then(setOcAgents, () => setOcAgents([])).finally(() => setOcAgentsBusy(false));
   };
 
   useEffect(() => {
     api.agents().then(setAgents, () => setAgents([]));
-    void loadModels();
   }, []);
+  useEffect(() => {
+    void loadModels();
+    if (driver === "opencode") void loadOcAgents();
+  }, [driver]);
   useEffect(() => {
     setModel(settings.models[driver] ?? "");
   }, [settings.models, driver]);
+  useEffect(() => {
+    setOcAgent(settings.agents?.opencode ?? "");
+  }, [settings.agents]);
 
   const others = agents?.filter((a) => a.installed && !a.supported) ?? [];
 
@@ -83,19 +95,34 @@ function AgentCard({ settings, save }: ViewProps) {
           ))}
       </div>
       {driver === "opencode" ? (
-        <ModelBrowser
-          models={models}
-          selected={model}
-          busy={modelsBusy}
-          onRefresh={() => void loadModels()}
-          onSelect={(m) => {
-            setModel(m);
-            void save(
-              { models: { ...settings.models, opencode: m || undefined } },
-              m ? `Default model: ${m}` : "Using the agent's default model",
-            );
-          }}
-        />
+        <>
+          <OpenCodeAgentPicker
+            agents={ocAgents}
+            selected={ocAgent}
+            busy={ocAgentsBusy}
+            onRefresh={() => void loadOcAgents(true)}
+            onSelect={(id) => {
+              setOcAgent(id);
+              void save(
+                { agents: { ...settings.agents, opencode: id || undefined } },
+                id ? `Default OpenCode agent: ${id}` : "Using OpenCode's default agent",
+              );
+            }}
+          />
+          <ModelBrowser
+            models={models}
+            selected={model}
+            busy={modelsBusy}
+            onRefresh={() => void loadModels(true)}
+            onSelect={(m) => {
+              setModel(m);
+              void save(
+                { models: { ...settings.models, opencode: m || undefined } },
+                m ? `Default model: ${m}` : "Using the agent's default model",
+              );
+            }}
+          />
+        </>
       ) : (
         <form
           className="row"
@@ -105,16 +132,22 @@ function AgentCard({ settings, save }: ViewProps) {
             void save({ models: { ...settings.models, [driver]: value || undefined } }, value ? `Default model: ${value}` : "Using the agent's default model");
           }}
         >
-          <label className="field grow">
-            <span>Default model</span>
+          <div className="field grow">
+            <div className="field-head">
+              <span>Default model</span>
+              <button type="button" className="btn linkish" disabled={modelsBusy} onClick={() => void loadModels(true)}>
+                {modelsBusy ? "Loading…" : "Refresh list"}
+              </button>
+            </div>
             <input
               className="mono"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="e.g. claude-opus-5-5 — empty = default"
+              placeholder="e.g. opus — empty = default"
             />
             <div className="model-chips">
-              {CLAUDE_MODELS.map((m) => (
+              {modelsBusy && models.length === 0 && <span className="muted small">Loading models…</span>}
+              {models.map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -124,16 +157,88 @@ function AgentCard({ settings, save }: ViewProps) {
                     void save({ models: { ...settings.models, claude: m } }, `Default model: ${m}`);
                   }}
                 >
-                  {m.replace("claude-", "")}
+                  {m.replace(/^claude-/, "")}
                 </button>
               ))}
             </div>
-            <span className="muted small">Threads can override it with /model.</span>
-          </label>
+            <span className="muted small">Threads can override it with /model. Aliases always track the latest model.</span>
+          </div>
           <button className="btn primary">Save</button>
         </form>
       )}
     </section>
+  );
+}
+
+function OpenCodeAgentPicker({
+  agents,
+  selected,
+  busy,
+  onRefresh,
+  onSelect,
+}: {
+  agents: string[];
+  selected: string;
+  busy: boolean;
+  onRefresh: () => void;
+  onSelect: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState(selected);
+  useEffect(() => {
+    setDraft(selected);
+  }, [selected]);
+
+  return (
+    <div className="oc-agent-picker">
+      <div className="field-head">
+        <span>Default OpenCode agent</span>
+        <button type="button" className="btn linkish" disabled={busy} onClick={onRefresh}>
+          {busy ? "Loading…" : "Refresh list"}
+        </button>
+      </div>
+      <div className="model-current">
+        <span className="model-current-label">Selected</span>
+        {selected ? (
+          <>
+            <code className="grow">{selected}</code>
+            <button type="button" className="btn small" onClick={() => onSelect("")}>
+              Clear
+            </button>
+          </>
+        ) : (
+          <span className="muted grow">OpenCode default (usually build)</span>
+        )}
+      </div>
+      <div className="model-chips" role="listbox" aria-label="OpenCode agents">
+        {busy && agents.length === 0 && <span className="muted small">Loading agents…</span>}
+        {!busy && agents.length === 0 && <span className="muted small">No agents listed — try Refresh, or type an id below.</span>}
+        {agents.map((id) => (
+          <button key={id} type="button" className={`chip ${selected === id ? "on" : ""}`} onClick={() => onSelect(id)}>
+            {id}
+          </button>
+        ))}
+      </div>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSelect(draft.trim());
+        }}
+      >
+        <label className="field grow">
+          <span>Or set by id</span>
+          <input
+            className="mono"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="e.g. build, plan, ask — empty = default"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <button className="btn primary">Save</button>
+      </form>
+    </div>
   );
 }
 

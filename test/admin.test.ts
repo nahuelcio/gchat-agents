@@ -39,6 +39,7 @@ beforeEach(async () => {
   store = new SettingsStore(join(dir, "config.json"), {
     agentDriver: "opencode",
     models: {},
+    agents: {},
     repos: {},
     allowedSpaces: ["spaces/AAA"],
   });

@@ -9,6 +9,7 @@ export type ContextFooter = "every" | "every5" | "above60" | "never";
 export interface Settings {
   agentDriver: "opencode" | "claude";
   models: { opencode?: string; claude?: string };
+  agents: { opencode?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
   contextFooter: ContextFooter;
@@ -95,7 +96,9 @@ export const api = {
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),
   stop: (slug: string) => call("/api/threads/down", { slug }),
   agents: () => call<Agent[]>("/api/agents"),
-  models: () => call<string[]>("/api/agents/opencode/models"),
+  models: (agent: "opencode" | "claude" = "opencode", refresh = false) =>
+    call<string[]>(`/api/agents/${agent}/models${refresh ? "?refresh=1" : ""}`),
+  opencodeAgents: (refresh = false) => call<string[]>(`/api/agents/opencode/agents${refresh ? "?refresh=1" : ""}`),
   health: () => call<Health>("/api/health"),
   share: () => call<{ link: string }>("/api/share"),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),

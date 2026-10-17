@@ -1,6 +1,6 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
-import { answersFromText, continuation, formatQuestions, normalizeQuestions } from "../questions.js";
+import { continuation, formatQuestions, normalizeQuestions } from "../questions.js";
 
 /** Silence after a question event before we treat the CLI as blocked on the user. */
 const ASK_IDLE_MS = 200;
@@ -9,6 +9,7 @@ export interface OpenCodeDriverOptions {
   bin: string;
   /** Optional model override, "provider/model#variant". Omitted = opencode default. */
   model?: string;
+  agent?: string;
   timeoutMs: number;
 }
 
@@ -87,15 +88,6 @@ export function parseRunOutput(stdout: string): ParsedRunOutput {
   return { reply, sessionId, error, ...(questions && { questions }) };
 }
 
-function opencodeAnswer(questions: AgentQuestion[], answer: string): string {
-  const answers = answersFromText(questions, answer);
-  const byIndex: Record<string, string> = {};
-  questions.forEach((q, i) => {
-    byIndex[`q${i}`] = answers[q.question] ?? "";
-  });
-  return JSON.stringify(byIndex);
-}
-
 /**
  * Runs one agent turn by spawning the real opencode CLI:
  *   opencode run --format json [--session <id>] -- <text>   (cwd = workdir)
@@ -104,16 +96,19 @@ function opencodeAnswer(questions: AgentQuestion[], answer: string): string {
 export class OpenCodeDriver implements AgentDriver {
   private bin: string;
   private model?: string;
+  private agent?: string;
   private timeoutMs: number;
 
   constructor(options: OpenCodeDriverOptions) {
     this.bin = options.bin;
     this.model = options.model;
+    this.agent = options.agent;
     this.timeoutMs = options.timeoutMs;
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
     const live = this.spawn(input);
+    live.endInput();
     try {
       return await this.pump(live, input, "");
     } catch (err) {
@@ -132,6 +127,8 @@ export class OpenCodeDriver implements AgentDriver {
     if (sessionRef) args.push("--session", sessionRef);
     const model = input.model ?? this.model;
     if (model) args.push("--model", model);
+    const agent = input.agent ?? this.agent;
+    if (agent) args.push("--agent", agent);
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
     args.push("--", input.text);
@@ -146,7 +143,6 @@ export class OpenCodeDriver implements AgentDriver {
       const line = await live.readLine(asking ? ASK_IDLE_MS : undefined);
       if (line === "idle" && asking) {
         if (input.answerQuestions === false) {
-          live.write(opencodeAnswer(asking, "Unanswered"));
           asking = undefined;
           continue;
         }
@@ -156,12 +152,7 @@ export class OpenCodeDriver implements AgentDriver {
           questions,
           cancel: () => live.kill(),
           resume: async (answer: string) => {
-            if (live.exitCode() !== null || live.startError()) {
-              return this.runTurn({ ...input, sessionRef, text: continuation(questions, answer) });
-            }
-            live.armTimeout();
-            live.write(opencodeAnswer(questions, answer));
-            return this.pump(live, { ...input, sessionRef }, `${preface}${reply}`);
+            return this.runTurn({ ...input, sessionRef, text: continuation(questions, answer) });
           },
         };
         const shown = [`${preface}${reply}`.trim(), formatQuestions(questions)].filter(Boolean).join("\n\n");

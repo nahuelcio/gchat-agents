@@ -32,6 +32,9 @@ const KNOWN = [
 ] as const;
 
 const MODEL_LINE = /^[a-z0-9][\w.-]*\/\S+$/i;
+/** Claude Code aliases from `/model` help (e.g. opus, sonnet[1m]). */
+const CLAUDE_MODEL_ID = /^[a-z][\w.[\]-]*$/i;
+const CLAUDE_AVAILABLE = /Available:\s*(.+?)(?:\.|$)/is;
 
 export async function opencodeModels(bin: string, run: RunFn = defaultRun): Promise<string[]> {
   const out = await run(bin, ["models"], 60_000);
@@ -39,6 +42,42 @@ export async function opencodeModels(bin: string, run: RunFn = defaultRun): Prom
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => MODEL_LINE.test(l));
+}
+
+const AGENT_ID = /^[\w.-]+$/;
+
+export async function opencodeAgents(bin: string, run: RunFn = defaultRun): Promise<string[]> {
+  const out = await run(bin, ["debug", "agents"], 60_000);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const ids = new Set<string>();
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as { id?: unknown; mode?: unknown; hidden?: unknown };
+    if (typeof a.id !== "string" || !AGENT_ID.test(a.id)) continue;
+    if (a.hidden === true || a.mode === "subagent") continue;
+    ids.add(a.id);
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Models Claude Code accepts via `--model` / `/model`.
+ * Parsed from `claude -p /model` (no dedicated list command yet).
+ */
+export async function claudeModels(bin: string, run: RunFn = defaultRun): Promise<string[]> {
+  const out = await run(bin, ["-p", "/model", "--output-format", "text", "--bare", "--no-session-persistence"], 30_000);
+  const match = out.match(CLAUDE_AVAILABLE);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter((id) => id !== "default" && CLAUDE_MODEL_ID.test(id));
 }
 
 async function readiness(id: string, bin: string, run: RunFn): Promise<Pick<DetectedAgent, "ready" | "detail">> {
