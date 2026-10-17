@@ -80,6 +80,34 @@ pub struct AppState {
 }
 
 pub const GUEST_COMMANDS: &[&str] = &["help", "context", "compact", "clear", "model", "agent"];
+pub const UPLOAD_LIMIT: usize = 25 * 1024 * 1024;
+const MAX_ATTACHMENTS: usize = 5;
+const MAX_ATTACHMENT_BYTES: usize = 3_500_000;
+
+pub async fn save_attachments(deps: &HandlerDeps, inputs: &[TeamAttachmentInput]) -> Result<(Vec<crate::transcripts::MessageAttachment>, Vec<String>), String> {
+    if inputs.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let media = deps.media.as_ref().ok_or("media store unavailable")?;
+    if inputs.len() > MAX_ATTACHMENTS {
+        return Err(format!("at most {MAX_ATTACHMENTS} attachments"));
+    }
+    let (mut stored, mut lines) = (Vec::new(), Vec::new());
+    for raw in inputs {
+        if !raw.content_type.trim().starts_with("image/") {
+            return Err("only image attachments are supported".into());
+        }
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw.data.trim()).map_err(|_| "invalid attachment data".to_string())?;
+        if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!("each image must be between 1 byte and {MAX_ATTACHMENT_BYTES} bytes"));
+        }
+        let name = raw.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        let saved = media.save(&bytes, raw.content_type.trim(), name).await?;
+        stored.push(crate::media::to_message_attachment(&saved));
+        lines.push(crate::media::attachment_prompt_line(&saved));
+    }
+    Ok((stored, lines))
+}
 
 pub async fn team_send(
     deps: Arc<HandlerDeps>,
@@ -88,12 +116,13 @@ pub async fn team_send(
     text: &str,
     name: &str,
     allowed_commands: Option<&[&str]>,
+    attachments: &[TeamAttachmentInput],
 ) -> Result<serde_json::Value, String> {
     if !thread_id_ok(thread) {
         return Err("bad thread id".into());
     }
     let text = text.trim();
-    if text.is_empty() {
+    if text.is_empty() && attachments.is_empty() {
         return Err("thread and text or an image are required".into());
     }
     if let (Some(allowed), Some(cmd)) = (allowed_commands, text.strip_prefix('/')) {
@@ -103,16 +132,18 @@ pub async fn team_send(
         }
     }
     let thread_key = format!("{TEAM_PREFIX}{thread}");
+    let (stored, lines) = save_attachments(&deps, attachments).await?;
+    let prompt_text = std::iter::once(text.to_string()).chain(lines).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n\n");
     transcripts
         .append(
             &thread_key,
             vec![TranscriptMessage {
                 author: name.to_string(),
-                text: text.to_string(),
+                text: if text.is_empty() { "(image)".into() } else { text.to_string() },
                 bot: false,
                 at: None,
                 questions: None,
-                attachments: None,
+                attachments: Some(stored).filter(|s| !s.is_empty()),
             }],
         )
         .await?;
@@ -135,7 +166,7 @@ pub async fn team_send(
     let deps2 = deps.clone();
     let transcripts2 = transcripts.clone();
     let thread_key2 = thread_key;
-    let prompt = text.to_string();
+    let prompt = prompt_text;
     let sender = name.to_string();
     tokio::spawn(async move {
         let captured = Arc::new(Mutex::new(Vec::new()));

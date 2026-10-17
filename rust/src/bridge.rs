@@ -19,13 +19,13 @@ pub fn bridge_router(state: Arc<AppState>) -> Router {
         .route("/play/api/agents", get(play_agents))
         .route("/play/api/personas", get(play_personas))
         .route("/play/api/media/{id}", get(crate::admin::get_media))
+        .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
         .layer(axum::middleware::from_fn_with_state(state.clone(), require_share_token));
     Router::new()
         .merge(play)
         .route("/healthz", get(healthz))
-        .route("/google/chat", post(google_chat))
+        .route("/google/chat", post(google_chat).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)))
         .fallback(bridge_fallback)
-        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
 }
 
@@ -83,6 +83,7 @@ struct PlaySend {
     thread: Option<String>,
     text: Option<String>,
     name: Option<String>,
+    attachments: Option<Vec<crate::team::TeamAttachmentInput>>,
 }
 
 async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend>) -> Response {
@@ -94,6 +95,7 @@ async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend
         body.text.as_deref().unwrap_or(""),
         &name,
         Some(crate::team::GUEST_COMMANDS),
+        body.attachments.as_deref().unwrap_or_default(),
     )
     .await
     {

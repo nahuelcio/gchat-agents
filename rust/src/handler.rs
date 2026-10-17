@@ -1154,6 +1154,21 @@ async fn set_title(req: &TurnRequest, deps: &HandlerDeps, title: Option<String>)
         .await
 }
 
+pub async fn thread_command(deps: &HandlerDeps, thread_key: &str, text: &str) -> Result<String, String> {
+    let space = deps.store.get(thread_key).map(|r| r.space).unwrap_or_else(|| "team-chat".into());
+    let req = TurnRequest {
+        thread_key: thread_key.to_string(),
+        space_name: space,
+        text: text.to_string(),
+        sender: None,
+        reply_via_chat: false,
+        thread: None,
+        room_n: None,
+        captured_replies: None,
+    };
+    run_command(&req, deps).await
+}
+
 pub async fn fire_jobs(deps: &HandlerDeps, mut jobs: Vec<crate::schedules::Job>, reason: &str) -> Vec<String> {
     jobs.sort_by(|a, b| a.id.cmp(&b.id));
     jobs.dedup_by(|a, b| a.id == b.id);

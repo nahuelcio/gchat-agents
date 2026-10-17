@@ -374,3 +374,80 @@ async fn guests_chat_through_the_share_link_with_limited_commands() {
     let stop = client.post(url("/play/api/stop")).bearer_auth(&token).json(&json!({ "thread": "g1" })).send().await.unwrap();
     assert_eq!(stop.status().as_u16(), 200);
 }
+
+#[tokio::test]
+async fn images_are_stored_shown_and_passed_to_the_agent() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let (status, _) = post_json(
+        admin,
+        "/api/team/send",
+        json!({ "thread": "img1", "name": "Ana", "text": "", "attachments": [{ "contentType": "image/png", "data": png, "name": "pixel.png" }] }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, err) = post_json(
+        admin,
+        "/api/team/send",
+        json!({ "thread": "img1", "name": "Ana", "text": "x", "attachments": [{ "contentType": "text/plain", "data": "aGk=" }] }),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(err["error"], "only image attachments are supported");
+    let mut thread = Value::Null;
+    for _ in 0..50 {
+        thread = get_json(admin, "/api/team/thread?thread=img1").await.1;
+        if thread["messages"].as_array().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let messages = thread["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["text"], "(image)");
+    let id = messages[0]["attachments"][0]["id"].as_str().unwrap().to_string();
+    assert!(messages[1]["text"].as_str().unwrap().contains("[Attached image/png"), "{}", messages[1]["text"]);
+    let res = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{admin}/api/media/{id}"))
+        .header("host", format!("127.0.0.1:{admin}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.headers()["content-type"], "image/png");
+    assert_eq!(res.bytes().await.unwrap().len(), 70);
+}
+
+#[tokio::test]
+async fn mcp_thread_tools_reach_the_admin() {
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("api");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [vec!["init", "-q"], vec!["commit", "-q", "--allow-empty", "-m", "i"]] {
+        assert!(std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(&args).current_dir(&repo).status().unwrap().success());
+    }
+    let (_bridge, admin, _state) = start_servers(dir.path().join("data")).await;
+    put_json(
+        admin,
+        "/api/settings",
+        json!({ "personas": [{ "name": "qa", "prompt": "QA" }], "repos": { "api": { "path": repo.to_string_lossy() } } }),
+    )
+    .await;
+    let env = switchboard::mcp::mcp_env("share/mcp1", &format!("http://127.0.0.1:{admin}"));
+    let client = reqwest::Client::new();
+    let tool = |name: &str, args: Value| {
+        let (env, client, name) = (env.clone(), client.clone(), name.to_string());
+        async move { switchboard::mcp::run_tool(&name, &args, &env, &client).await }
+    };
+    assert_eq!(tool("invite_agent", json!({ "name": "@qa" })).await.unwrap(), "@qa joined the room.");
+    assert!(tool("invite_agent", json!({ "name": "nadie" })).await.unwrap_err().contains("no agent @nadie"));
+    tool("link_work_item", json!({ "id": 42 })).await.unwrap();
+    tool("attach_repo", json!({ "repo": "api" })).await.unwrap();
+    assert!(tool("thread_status", json!({})).await.unwrap().contains("api"));
+    let (_, raw) = get_json(admin, "/api/thread/status?threadKey=share/mcp1").await;
+    assert_eq!(raw["workItemId"], 42);
+    assert_eq!(raw["repo"], "api");
+    assert!(raw["branch"].as_str().unwrap().starts_with("switchboard/"));
+    let (_, thread) = get_json(admin, "/api/team/thread?thread=mcp1").await;
+    assert!(thread["members"].as_array().unwrap().iter().any(|m| m["persona"] == "qa"));
+    assert!(tool("start_app", json!({})).await.unwrap_err().contains("no up command"));
+}

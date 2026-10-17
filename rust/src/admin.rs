@@ -57,7 +57,13 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/members", post(post_team_members))
         .route("/api/media/{id}", get(get_media))
         .route("/api/thread/repos", get(get_thread_repos))
+        .route("/api/thread/status", get(get_thread_status))
+        .route("/api/thread/invite", post(post_thread_invite).put(post_thread_invite))
+        .route("/api/thread/repo", post(post_thread_repo).put(post_thread_repo))
+        .route("/api/thread/app", post(post_thread_app).put(post_thread_app))
+        .route("/api/work-item", axum::routing::put(put_work_item))
         .fallback(admin_fallback)
+        .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
         .layer(axum::middleware::from_fn(require_local_host))
         .with_state(state)
 }
@@ -618,6 +624,7 @@ struct TeamSendBody {
     thread: Option<String>,
     text: Option<String>,
     name: Option<String>,
+    attachments: Option<Vec<crate::team::TeamAttachmentInput>>,
 }
 
 async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<TeamSendBody>) -> Response {
@@ -631,6 +638,7 @@ async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<Tea
         &text,
         &name.chars().take(40).collect::<String>(),
         None,
+        body.attachments.as_deref().unwrap_or_default(),
     )
     .await
     {
@@ -741,6 +749,124 @@ pub async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String
         }
     }
     (StatusCode::OK, headers, bytes).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadKeyQuery {
+    thread_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadAction {
+    thread_key: Option<String>,
+    name: Option<String>,
+    repo: Option<Value>,
+    action: Option<String>,
+    id: Option<Value>,
+}
+
+fn thread_key_of(key: Option<String>) -> Option<String> {
+    key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
+}
+
+fn missing_thread_key() -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": "threadKey is required" }))).into_response()
+}
+
+async fn thread_reply(state: &AppState, thread_key: &str, command: &str) -> Response {
+    match crate::handler::thread_command(&state.handler, thread_key, command).await {
+        Ok(message) => {
+            let r = state.handler.store.get(thread_key);
+            Json(json!({
+                "ok": true,
+                "message": message,
+                "repo": r.as_ref().and_then(|r| r.repo.clone()),
+                "branch": r.as_ref().and_then(|r| r.branch.clone()),
+                "worktree": r.as_ref().and_then(|r| r.worktree.clone()),
+            }))
+            .into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_thread_status(State(state): State<Arc<AppState>>, Query(q): Query<ThreadKeyQuery>) -> Response {
+    let Some(key) = thread_key_of(q.thread_key) else {
+        return missing_thread_key();
+    };
+    let r = state.handler.store.get(&key);
+    let settings = state.settings.get();
+    let slug = slug_for(&key);
+    let options = (state.handler.options)();
+    Json(json!({
+        "threadKey": key,
+        "space": r.as_ref().map(|r| r.space.clone()).unwrap_or_else(|| "team-chat".into()),
+        "repo": r.as_ref().and_then(|r| r.repo.clone()),
+        "branch": r.as_ref().and_then(|r| r.branch.clone()),
+        "worktree": r.as_ref().and_then(|r| r.worktree.clone()),
+        "workItemId": r.as_ref().and_then(|r| r.work_item_id),
+        "agent": r.as_ref().and_then(|r| r.driver).unwrap_or(settings.agent_driver),
+        "model": r.as_ref().and_then(|r| r.model.clone()),
+        "app": { "running": state.workspaces.is_up(&slug), "port": state.workspaces.port(&slug) },
+        "context": r.as_ref().map(|r| crate::handler::context_line(r, &options).trim_start_matches('\n').to_string()),
+        "repos": settings.repos.keys().collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+async fn post_thread_invite(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    let name = body.name.unwrap_or_default();
+    thread_reply(&state, &key, &format!("/invite {}", name.trim().trim_start_matches('@'))).await
+}
+
+async fn post_thread_repo(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    match body.repo.as_ref().and_then(|v| v.as_str()).map(str::trim).filter(|r| !r.is_empty()) {
+        Some(repo) => thread_reply(&state, &key, &format!("/repo {repo}")).await,
+        None => thread_reply(&state, &key, "/close").await,
+    }
+}
+
+async fn post_thread_app(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    match body.action.as_deref() {
+        Some("up") => thread_reply(&state, &key, "/up").await,
+        Some("down") => thread_reply(&state, &key, "/down").await,
+        Some("logs") => thread_reply(&state, &key, "/logs").await,
+        _ => (StatusCode::BAD_REQUEST, Json(json!({ "error": "action must be up, down or logs" }))).into_response(),
+    }
+}
+
+async fn put_work_item(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    let id = match body.id {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_i64().filter(|n| *n > 0) {
+            Some(n) => Some(n),
+            None => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "id must be a positive integer" }))).into_response(),
+        },
+    };
+    let space = state.handler.store.get(&key).map(|r| r.space).unwrap_or_else(|| "team-chat".into());
+    match state
+        .handler
+        .store
+        .update(&key, &space, crate::session::SessionPatch { work_item_id: Some(id), ..Default::default() })
+        .await
+    {
+        Ok(()) => Json(json!({ "ok": true, "workItemId": id })).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 async fn get_thread_repos(State(state): State<Arc<AppState>>) -> Response {
