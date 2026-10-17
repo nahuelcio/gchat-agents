@@ -29,6 +29,7 @@ pub struct TeamThreadState {
     pub model: Option<String>,
     pub repo: Option<String>,
     pub branch: Option<String>,
+    pub title: Option<String>,
     pub worktree: Option<String>,
     pub context: Option<String>,
     pub app: AppState,
@@ -310,6 +311,7 @@ pub async fn team_thread(
         model: record.as_ref().and_then(|r| r.model.clone()),
         repo: record.as_ref().and_then(|r| r.repo.clone()),
         branch: record.as_ref().and_then(|r| r.branch.clone()),
+        title: record.as_ref().and_then(|r| r.title.clone()),
         worktree: record.as_ref().and_then(|r| r.worktree.clone()),
         context: record
             .as_ref()

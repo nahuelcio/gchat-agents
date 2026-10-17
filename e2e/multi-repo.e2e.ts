@@ -39,6 +39,14 @@ test("a thread works across several repos at once", async ({ app, screen }) => {
   await screen.getByText("worker").tap();
   await screen.getByRole("button", "Start in 2 repos").tap();
   await expect(screen.getByText(/Worktrees ready in .*: api, worker/)).toBeVisible({ timeout: 30000 });
+  const head = screen.getByRole("region", "Conversation");
+  await expect(head.getByText(/^switchboard\/\w+ · api, worker$/)).toBeVisible({ timeout: 10000 });
+  await screen.getByRole("textbox", "Message the agent").fill("/topic Login SAML");
+  await screen.getByRole("button", "Send").tap();
+  await expect(head.getByText("Login SAML", { exact: true })).toBeVisible({ timeout: 10000 });
+  await app.open("/#overview");
+  await screen.getByRole("link", "Login SAML").tap();
+  await expect(head.getByText("Login SAML", { exact: true })).toBeVisible({ timeout: 10000 });
 
   await screen.getByRole("textbox", "Message the agent").fill("/repo web");
   await screen.getByRole("button", "Send").tap();

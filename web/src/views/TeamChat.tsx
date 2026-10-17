@@ -565,8 +565,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
       <section className="play-chat" aria-label="Conversation">
         <header className="play-head">
-          <span className="strong title">{active?.title ?? "Team chat"}</span>
-          {state?.repo && <code className="tag">{state.repo} · {state.branch}</code>}
+          <span className="strong title">{state?.title ?? active?.title ?? "Team chat"}</span>
+          {state?.repo ? <code className="tag">{state.repo} · {state.branch}</code> : state?.title?.startsWith("switchboard/") && <code className="tag muted">branch kept</code>}
           {(state?.agent || state?.model) && <code className="tag">{[state.agent, state.model].filter(Boolean).join(" · ")}</code>}
           {activeId && agents.length > 1 && (
             <label className="agent-pick">

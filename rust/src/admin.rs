@@ -138,6 +138,7 @@ async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
                 "space": r.space,
                 "repo": r.repo,
                 "branch": r.branch,
+                "title": r.title,
                 "worktree": r.worktree,
                 "updatedAt": r.updated_at,
                 "hasSession": r.session_ref.is_some(),
@@ -587,9 +588,10 @@ async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<Ar
         .list(TEAM_PREFIX, archived)
         .into_iter()
         .map(|t| {
+            let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
             json!({
                 "id": t.key.strip_prefix(TEAM_PREFIX).unwrap_or(&t.key),
-                "title": t.title,
+                "title": title,
                 "updatedAt": t.updated_at,
                 "count": t.count,
             })

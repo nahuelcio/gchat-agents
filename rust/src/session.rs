@@ -48,6 +48,8 @@ pub struct SessionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driver: Option<AgentDriverKind>,
@@ -150,6 +152,7 @@ pub struct SessionPatch {
     pub repo: Option<Option<String>>,
     pub worktree: Option<Option<String>>,
     pub branch: Option<Option<String>>,
+    pub title: Option<Option<String>>,
     pub model: Option<Option<String>>,
     pub driver: Option<Option<AgentDriverKind>>,
     pub work_item_id: Option<Option<i64>>,
@@ -181,6 +184,9 @@ impl SessionPatch {
         }
         if let Some(v) = self.branch {
             record.branch = v;
+        }
+        if let Some(v) = self.title {
+            record.title = v;
         }
         if let Some(v) = self.model {
             record.model = v;

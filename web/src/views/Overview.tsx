@@ -37,9 +37,10 @@ export function Overview({ notify }: ViewProps) {
   }, []);
 
   // Google Chat threads only: team chat and schedules have their own views.
-  const real = threads?.filter((t) => t.key.startsWith("spaces/")) ?? [];
+  const real = threads?.filter((t) => t.key.startsWith("spaces/") || (t.key.startsWith("share/") && t.repo)) ?? [];
   const chats = threads?.filter((t) => !t.key.startsWith("schedule/")) ?? [];
-  const team = chats.length - real.length;
+  const team = chats.filter((t) => t.key.startsWith("share/")).length;
+  const google = chats.length - team;
   const running = chats.filter((t) => t.app.running).length;
   const next = jobs.filter((j) => j.enabled && j.nextRunAt).sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))[0];
 
@@ -127,7 +128,7 @@ export function Overview({ notify }: ViewProps) {
         <div className="stat">
           <span>Active threads</span>
           <strong>{threads ? chats.length : "–"}</strong>
-          {threads && <small className="muted">{real.length} in Google Chat · {team} in team chat</small>}
+          {threads && <small className="muted">{google} in Google Chat · {team} in team chat</small>}
         </div>
         <div className="stat">
           <span>Apps running</span>
@@ -171,7 +172,7 @@ export function Overview({ notify }: ViewProps) {
           <h2>Threads</h2>
           <span className="muted">Refreshes every 3 s</span>
         </div>
-        {threads && real.length === 0 && <p className="empty">No Google Chat threads yet. Mention the bot in the team space, or use the team chat.</p>}
+        {threads && real.length === 0 && <p className="empty">No Google Chat threads or rooms with a repo yet. Mention the bot in the team space, or use /repo in a team chat room.</p>}
         {real.length > 0 && (
           <div className="table-wrap">
             <table>
@@ -191,7 +192,11 @@ export function Overview({ notify }: ViewProps) {
                 {real.map((t) => (
                   <tr key={t.key}>
                     <td>
-                      <div className="strong">{t.slug}</div>
+                      {t.key.startsWith("share/") ? (
+                        <a className="strong" href={`#team/${t.key.slice("share/".length)}`}>{t.title ?? t.slug}</a>
+                      ) : (
+                        <div className="strong">{t.title ?? t.slug}</div>
+                      )}
                       {t.context && <div className="mono muted">{t.context}</div>}
                     </td>
                     <td>

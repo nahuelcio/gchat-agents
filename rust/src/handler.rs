@@ -1056,7 +1056,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
@@ -1111,6 +1111,11 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             Ok("Agent updated.".into())
         }
         "repo" | "status" | "up" | "down" | "logs" | "close" => repo_command(cmd, &args, req, deps).await,
+        "topic" => {
+            let title = args.join(" ");
+            set_title(req, deps, Some(title.clone()).filter(|t| !t.trim().is_empty())).await?;
+            Ok(if title.trim().is_empty() { "Topic cleared.".into() } else { format!("Topic set: {title}") })
+        }
         "approve" | "deny" => {
             let scheduler = deps.scheduler.get().ok_or("Schedules are not enabled on this bridge.")?;
             let id = args.first().ok_or_else(|| format!("Usage: /{cmd} <id>"))?;
@@ -1141,6 +1146,12 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             Ok(fire_jobs(deps, jobs, &format!("/{cmd} in chat")).await.join("\n"))
         }
     }
+}
+
+async fn set_title(req: &TurnRequest, deps: &HandlerDeps, title: Option<String>) -> Result<(), String> {
+    deps.store
+        .update(&req.thread_key, &req.space_name, SessionPatch { title: Some(title), ..Default::default() })
+        .await
 }
 
 pub async fn fire_jobs(deps: &HandlerDeps, mut jobs: Vec<crate::schedules::Job>, reason: &str) -> Vec<String> {
@@ -1292,6 +1303,9 @@ async fn repo_command(cmd: &str, args: &[&str], req: &TurnRequest, deps: &Handle
                 repos.push(name);
             }
             set_repos(req, deps, &repos, Some(dir.clone()), Some(branch.clone())).await?;
+            if record.as_ref().and_then(|r| r.title.as_ref()).is_none() {
+                set_title(req, deps, Some(format!("{branch} · {}", repos.join(", ")))).await?;
+            }
             note(deps, "repo_attach", &req.thread_key, branch.clone(), repos.join(", ")).await;
             Ok(format!("Worktrees ready in {dir}: {}
 Branch: {branch}
@@ -1859,8 +1873,13 @@ mod tests {
         run_command(&run("/repo api"), &deps).await.unwrap();
         assert_eq!(sessions(&deps), (false, false));
         assert!(deps.store.get("team/t1").unwrap().summary.is_some());
+        let title = |d: &HandlerDeps| d.store.get("team/t1").unwrap().title.unwrap_or_default();
+        assert!(title(&deps).starts_with("switchboard/") && title(&deps).ends_with("· api"), "{}", title(&deps));
+        run_command(&run("/topic Login SAML"), &deps).await.unwrap();
+        assert_eq!(title(&deps), "Login SAML");
         deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
         run_command(&run("/repo web"), &deps).await.unwrap();
+        assert_eq!(title(&deps), "Login SAML");
         run_command(&run("/close web"), &deps).await.unwrap();
         assert_eq!(sessions(&deps), (true, true));
         run_command(&run("/close"), &deps).await.unwrap();

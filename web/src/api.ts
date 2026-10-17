@@ -58,6 +58,7 @@ export interface Thread {
   context?: string;
   app: { running: boolean; port?: number };
   members?: string[];
+  title?: string | null;
   driver?: "opencode" | "claude" | null;
   model?: string | null;
 }
@@ -261,6 +262,7 @@ export interface TeamThreadState {
   model?: string | null;
   repo?: string | null;
   branch?: string | null;
+  title?: string | null;
   worktree?: string | null;
   context?: string | null;
   app?: { running: boolean; port?: number };
