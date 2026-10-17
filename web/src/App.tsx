@@ -102,8 +102,8 @@ function OwnerApp() {
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" width="36" height="36">
-              <rect width="32" height="32" rx="7" fill="#1c202b" />
-              <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#5b6478" strokeWidth="2" strokeLinecap="round" fill="none" />
+              
+              <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" fill="none" />
               <circle cx="9" cy="9" r="3.2" fill="#00f0ff" />
               <circle cx="23" cy="9" r="3.2" fill="#7107e7" />
               <circle cx="16" cy="24" r="3.2" fill="#f59e0b" />

@@ -224,6 +224,37 @@ describe("admin server", () => {
     expect(schedules.all()).toHaveLength(0);
   });
 
+  it("suggests a schedule from plain language via the agent", async () => {
+    const schedules = new ScheduleStore(join(dir, "schedules.json"));
+    ctx.schedules = schedules;
+    ctx.scheduler = new Scheduler(schedules, async () => true);
+    ctx.handler = {
+      verifier: { verify: async () => {} },
+      driver: {
+        runTurn: async () => ({
+          reply: JSON.stringify({ name: "Standup", prompt: "Summarize yesterday's commits", cron: "0 9 * * 1-5" }),
+        }),
+      },
+      chat: { postMessage: async () => {} },
+      store: ctx.store!,
+      queue: new TurnQueue(),
+      config: { allowedSpaces: [], workdir: dir },
+    };
+    const res = await fetch(`${base}/api/schedules/suggest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "weekdays at 9 summarize commits" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: "Standup",
+      prompt: "Summarize yesterday's commits",
+      cron: "0 9 * * 1-5",
+      when: "Weekdays at 09:00",
+    });
+    expect((await fetch(`${base}/api/schedules/suggest`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(400);
+  });
+
   it("connects Google Chat from a pasted key without ever returning the key, and sends a test message", async () => {
     const posted: string[] = [];
     ctx.google = new GoogleConnection(join(dir, "google-sa.json"), undefined, () => ({ postMessage: async (space) => void posted.push(space) }));

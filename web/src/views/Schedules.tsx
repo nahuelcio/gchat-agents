@@ -21,6 +21,8 @@ export function Schedules({ settings, notify }: ViewProps) {
   const [jobs, setJobs] = useState<Job[]>();
   const [health, setHealth] = useState<Health>();
   const [open, setOpen] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [aiDraft, setAiDraft] = useState("");
   const [form, setForm] = useState({ prompt: "", cron: PRESETS[1]!.cron, space: settings.allowedSpaces[0] ?? "", repo: "" });
 
   useEffect(() => {
@@ -42,6 +44,19 @@ export function Schedules({ settings, notify }: ViewProps) {
       (err: Error) => notify(err.message, true),
     );
 
+  function fillWithAi() {
+    const text = aiDraft.trim();
+    if (!text || suggesting) return;
+    setSuggesting(true);
+    api
+      .suggestSchedule(text)
+      .then((s) => {
+        setForm((f) => ({ ...f, prompt: s.prompt, cron: s.cron }));
+        notify(`Suggested: ${s.when}`);
+      }, (err: Error) => notify(err.message, true))
+      .finally(() => setSuggesting(false));
+  }
+
   const alive = health && health.lastBeatAgoSec < 60;
   const active = jobs?.filter((j) => j.enabled).length ?? 0;
   const failing = jobs?.filter((j) => j.enabled && j.lastStatus === "failed").length ?? 0;
@@ -51,7 +66,7 @@ export function Schedules({ settings, notify }: ViewProps) {
       <header className="page-head">
         <div>
           <h1>Schedules</h1>
-          <p className="sub">Recurring prompts the agent runs on its own — created here or from a thread with /schedule.</p>
+          <p className="sub">Recurring prompts the agent runs on its own — describe one in plain language, or use /schedule in a thread.</p>
         </div>
         <button className="btn primary" onClick={() => setOpen(!open)}>
           New job
@@ -100,11 +115,33 @@ export function Schedules({ settings, notify }: ViewProps) {
             e.preventDefault();
             void act(api.addSchedule({ prompt: form.prompt, cron: form.cron, space: form.space, ...(form.repo && { repo: form.repo }) }), "Job created").then(() => {
               setOpen(false);
+              setAiDraft("");
               setForm({ ...form, prompt: "" });
             });
           }}
         >
           <h2>New job</h2>
+          <div className="field">
+            <div className="field-head">
+              <span>Describe with AI</span>
+              <button type="button" className="btn small" disabled={!aiDraft.trim() || suggesting} onClick={fillWithAi}>
+                {suggesting ? "Asking…" : "Fill with AI"}
+              </button>
+            </div>
+            <textarea
+              rows={2}
+              value={aiDraft}
+              onChange={(e) => setAiDraft(e.target.value)}
+              placeholder="Every weekday at 9, summarize yesterday's commits and list open PRs."
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  fillWithAi();
+                }
+              }}
+            />
+            <span className="muted small">Plain language → the agent fills prompt and cron. Review below, then create.</span>
+          </div>
           <label className="field">
             <span>What should the agent do?</span>
             <textarea rows={2} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />

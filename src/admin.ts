@@ -10,6 +10,7 @@ import type { GoogleConnection } from "./google.js";
 import type { Health } from "./health.js";
 import type { ShareToken } from "./share.js";
 import { describeCron, type NewJob, type Scheduler, type ScheduleStore } from "./schedules.js";
+import { suggestSchedule } from "./schedule-suggest.js";
 import { readBody } from "./server.js";
 import { serveStatic } from "./static.js";
 import type { Settings, SettingsStore } from "./settings.js";
@@ -238,6 +239,16 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       const withText = () => schedules.all().map((j) => ({ ...j, when: describeCron(j.cron) }));
       if (url === "/api/schedules" && method === "GET") return send(res, 200, withText());
       if (method !== "POST") throw new HttpError(405, "method not allowed");
+      if (url === "/api/schedules/suggest") {
+        const deps = ctx.handler;
+        if (!deps) throw new HttpError(500, "agent unavailable");
+        const { text } = await jsonBody<{ text?: string }>(req);
+        try {
+          return send(res, 200, await suggestSchedule(deps.driver, text ?? "", deps.config.workdir));
+        } catch (err) {
+          throw new HttpError(400, err instanceof Error ? err.message : String(err));
+        }
+      }
       const body = await jsonBody<Partial<NewJob> & { id?: string; enabled?: boolean }>(req);
       try {
         if (url === "/api/schedules") {

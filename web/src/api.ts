@@ -104,6 +104,7 @@ export const api = {
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
   schedules: () => call<Job[]>("/api/schedules"),
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string }) => call<Job[]>("/api/schedules", job),
+  suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
   updateSchedule: (id: string, patch: { enabled?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
