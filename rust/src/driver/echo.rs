@@ -13,8 +13,14 @@ pub struct EchoDriver;
 impl AgentDriver for EchoDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
         if input.text.contains("[Room message") {
+            let me = input.thread_key.rsplit_once('#').map(|(_, p)| format!("@{p}"));
+            let body = input.text.split("[Room message").last().and_then(|t| t.split_once('\n')).map(|(_, b)| b).unwrap_or("");
+            let reply = match me {
+                Some(me) if body.contains(&me) => format!("Echo: {}", body.trim()),
+                _ => PASS.into(),
+            };
             return Ok(AgentTurnResult {
-                reply: PASS.into(),
+                reply,
                 session_ref: Some(format!("echo-{}", input.thread_key)),
                 usage: None,
                 pending: None,
@@ -105,6 +111,23 @@ mod tests {
             .unwrap();
         assert_eq!(out.reply, "Echo: hi");
         assert!(out.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn room_replies_only_when_mentioned() {
+        let turn = |key: &str| AgentTurnInput {
+            thread_key: key.into(),
+            session_ref: None,
+            text: "[Room message, not addressed to you.]
+Ana: @qa check this".into(),
+            workdir: ".".into(),
+            model: None,
+            agent: None,
+            driver: None,
+            answer_questions: true,
+        };
+        assert_eq!(EchoDriver.run_turn(turn("team/t#qa")).await.unwrap().reply, "Echo: Ana: @qa check this");
+        assert_eq!(EchoDriver.run_turn(turn("team/t#architect")).await.unwrap().reply, PASS);
     }
 
     #[tokio::test]
