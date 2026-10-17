@@ -1091,15 +1091,18 @@ pub fn thread_repos(record: Option<&crate::session::SessionRecord>) -> Vec<Strin
 
 async fn set_repos(req: &TurnRequest, deps: &HandlerDeps, repos: &[String], dir: Option<String>, branch: Option<String>) -> Result<(), String> {
     let some = !repos.is_empty();
+    let worktree = dir.filter(|_| some);
+    let moved = deps.store.get(&req.thread_key).and_then(|r| r.worktree) != worktree;
     deps.store
         .update(
             &req.thread_key,
             &req.space_name,
             SessionPatch {
                 repo: Some(some.then(|| repos.join(", "))),
-                worktree: Some(dir.filter(|_| some)),
+                worktree: Some(worktree),
                 branch: Some(branch.filter(|_| some)),
-                session_ref: Some(None),
+                session_ref: moved.then_some(None),
+                persona_sessions: moved.then_some(None),
                 ..Default::default()
             },
         )
@@ -1622,6 +1625,66 @@ mod tests {
             .filter(|r| r.contains("*@"))
             .count();
         assert_eq!(agent_posts, 2);
+    }
+
+    #[tokio::test]
+    async fn sessions_reset_only_when_the_agent_folder_moves() {
+        let dir = tempdir().unwrap();
+        let mut repos = std::collections::HashMap::new();
+        for name in ["api", "web"] {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            for args in [vec!["init", "-q"], vec!["commit", "-q", "--allow-empty", "-m", "i"]] {
+                assert!(std::process::Command::new("git")
+                    .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                    .args(&args)
+                    .current_dir(&path)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            repos.insert(name.to_string(), crate::config::RepoConfig { path: path.to_string_lossy().into_owned(), up: None, base: None });
+        }
+        let base = room_deps(dir.path(), Arc::new(EchoDriver), vec![], None).await;
+        let deps = HandlerDeps {
+            verifier: base.verifier.clone(),
+            driver: base.driver.clone(),
+            chat: base.chat.clone(),
+            store: base.store.clone(),
+            queue: base.queue.clone(),
+            config: std::sync::Mutex::new(HandlerConfig {
+                allowed_spaces: vec!["spaces/team".into()],
+                workdir: dir.path().to_string_lossy().to_string(),
+            }),
+            workspaces: Some(Arc::new(Workspaces::new(dir.path().join("worktrees"), repos))),
+            options: base.options.clone(),
+            media: None,
+        };
+        let seed = || SessionPatch {
+            session_ref: Some(Some("ses_old".into())),
+            persona_sessions: Some(Some(std::collections::HashMap::from([("qa".to_string(), "ses_qa".to_string())]))),
+            ..Default::default()
+        };
+        let run = |text: &str| TurnRequest {
+            thread_key: "team/t1".into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: None,
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+        };
+        let sessions = |d: &HandlerDeps| d.store.get("team/t1").map(|r| (r.session_ref.is_some(), r.persona_sessions.is_some())).unwrap();
+        deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
+        run_command(&run("/repo api"), &deps).await.unwrap();
+        assert_eq!(sessions(&deps), (false, false));
+        deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
+        run_command(&run("/repo web"), &deps).await.unwrap();
+        run_command(&run("/close web"), &deps).await.unwrap();
+        assert_eq!(sessions(&deps), (true, true));
+        run_command(&run("/close"), &deps).await.unwrap();
+        assert_eq!(sessions(&deps), (false, false));
     }
 
     #[tokio::test]
