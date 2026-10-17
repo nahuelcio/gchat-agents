@@ -522,6 +522,14 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                     )
                     .await;
             }
+            if let Some(summary) = record.as_ref().filter(|r| r.session_ref.is_none()).and_then(|r| r.summary.as_deref()) {
+                text = format!("{COMPACTED_HEADER}
+{summary}
+
+---
+
+{text}");
+            }
             text
         };
 
@@ -585,6 +593,12 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                     }
                 }
                 deliver_reply(req, deps, &reply, None, None).await;
+            }
+            let pct = deps.store.get(&req.thread_key).as_ref().and_then(context_percent);
+            if let Some(pct) = pct.filter(|p| options.auto_compact_at > 0 && *p >= options.auto_compact_at as u64) {
+                let note = compact(&req.thread_key, &req.space_name, deps).await.unwrap_or_else(|e| format!("Compaction failed: {e}"));
+                deliver_reply(req, deps, &format!("Context at {pct}% — compacting automatically.
+{note}"), None, None).await;
             }
 
             let room_now = active_personas(
@@ -1024,11 +1038,12 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /context /model /agent /stop /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
         }
+        "compact" => compact(&req.thread_key, &req.space_name, deps).await,
         "clear" => {
             deps.store.delete(&req.thread_key).await?;
             Ok("Session cleared.".into())
@@ -1082,6 +1097,49 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     }
 }
 
+const COMPACT_PROMPT: &str = "Summarize this conversation so a fresh session can continue it: goals, decisions made, current state of the code and worktree, open tasks and open questions. Be concise; no preamble.";
+const COMPACTED_HEADER: &str = "Context from earlier in this thread (compacted):";
+
+async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<String, String> {
+    let record = deps.store.get(thread_key);
+    let Some(session_ref) = record.as_ref().and_then(|r| r.session_ref.clone()) else {
+        return Ok("Nothing to compact yet.".into());
+    };
+    crate::question_gate::cancel_question(thread_key);
+    let before = record.as_ref().and_then(|r| r.context_tokens);
+    let out = deps
+        .driver
+        .run_turn(AgentTurnInput {
+            thread_key: thread_key.to_string(),
+            session_ref: Some(session_ref),
+            text: COMPACT_PROMPT.into(),
+            workdir: record.as_ref().and_then(|r| r.worktree.clone()).unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone()),
+            model: record.as_ref().and_then(|r| r.model.clone()),
+            agent: None,
+            driver: record.as_ref().and_then(|r| r.driver),
+            answer_questions: false,
+        })
+        .await?;
+    let after = out.reply.len().div_ceil(4) as u64;
+    deps.store
+        .update(
+            thread_key,
+            space,
+            SessionPatch {
+                session_ref: Some(None),
+                summary: Some(Some(out.reply)),
+                context_tokens: Some(Some(after)),
+                estimated: Some(Some(true)),
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok(match before {
+        Some(b) => format!("Session compacted: ~{b} → ~{after} tokens. The next message continues from the summary."),
+        None => "Session compacted. The next message continues from the summary.".into(),
+    })
+}
+
 pub fn thread_repos(record: Option<&crate::session::SessionRecord>) -> Vec<String> {
     record
         .and_then(|r| r.repo.as_deref())
@@ -1093,6 +1151,9 @@ async fn set_repos(req: &TurnRequest, deps: &HandlerDeps, repos: &[String], dir:
     let some = !repos.is_empty();
     let worktree = dir.filter(|_| some);
     let moved = deps.store.get(&req.thread_key).and_then(|r| r.worktree) != worktree;
+    if moved {
+        let _ = compact(&req.thread_key, &req.space_name, deps).await;
+    }
     deps.store
         .update(
             &req.thread_key,
@@ -1679,12 +1740,46 @@ mod tests {
         deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
         run_command(&run("/repo api"), &deps).await.unwrap();
         assert_eq!(sessions(&deps), (false, false));
+        assert!(deps.store.get("team/t1").unwrap().summary.is_some());
         deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
         run_command(&run("/repo web"), &deps).await.unwrap();
         run_command(&run("/close web"), &deps).await.unwrap();
         assert_eq!(sessions(&deps), (true, true));
         run_command(&run("/close"), &deps).await.unwrap();
         assert_eq!(sessions(&deps), (false, false));
+    }
+
+    #[tokio::test]
+    async fn compact_seeds_the_next_session_once() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|_, _| "RESUMEN: login con SAML, falta el test".into()));
+        let d = room_deps(dir.path(), driver.clone(), vec![], None).await;
+        d.store
+            .update("team/t1", "spaces/team", SessionPatch { session_ref: Some(Some("ses_old".into())), ..Default::default() })
+            .await
+            .unwrap();
+        let req = |text: &str| TurnRequest {
+            thread_key: "team/t1".into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: Some("Ana".into()),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: Some(Arc::new(tokio::sync::Mutex::new(Vec::new()))),
+        };
+        let note = run_command(&req("/compact"), &d).await.unwrap();
+        assert!(note.contains("Session compacted"));
+        let rec = d.store.get("team/t1").unwrap();
+        assert!(rec.session_ref.is_none());
+        assert!(rec.summary.as_deref().unwrap().contains("SAML"));
+        process_message(req("seguimos"), d.clone()).await.unwrap();
+        process_message(req("y ahora?"), d.clone()).await.unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(calls[0].text.starts_with("Summarize this conversation"));
+        assert!(calls[1].text.contains(COMPACTED_HEADER) && calls[1].text.contains("SAML"));
+        assert!(!calls[2].text.contains(COMPACTED_HEADER));
+        assert!(d.store.get("team/t1").unwrap().summary.is_none());
     }
 
     #[tokio::test]
