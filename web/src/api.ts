@@ -84,8 +84,24 @@ export interface Job {
   createdBy: string;
   nextRunAt?: string;
   lastRunAt?: string;
-  lastStatus?: "ok" | "failed" | "running";
+  lastStatus?: "ok" | "failed" | "running" | "pending" | "approved" | "denied";
   failures: number;
+  trigger: JobTrigger;
+  command?: string;
+  pattern?: string;
+  needsApproval: boolean;
+  pending?: { id: string; at: string; reason: string } | null;
+}
+
+export type JobTrigger = "cron" | "command" | "mention";
+
+export interface Approval {
+  id: string;
+  at: string;
+  reason: string;
+  jobId: string;
+  name: string;
+  prompt: string;
 }
 
 export interface ScheduleLogMessage {
@@ -148,7 +164,10 @@ export const api = {
   share: () => call<{ link: string }>("/api/share"),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
   schedules: () => call<Job[]>("/api/schedules"),
-  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string }) => call<Job[]>("/api/schedules", job),
+  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean }) =>
+    call<Job[]>("/api/schedules", job),
+  approvals: () => call<Approval[]>("/api/approvals"),
+  decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
   updateSchedule: (id: string, patch: { enabled?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),

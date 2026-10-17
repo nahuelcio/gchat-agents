@@ -28,9 +28,30 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_status: Option<String>,
     pub failures: u32,
+    #[serde(default = "cron_trigger")]
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub needs_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingRun>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingRun {
+    pub id: String,
+    pub at: String,
+    pub reason: String,
+}
+
+fn cron_trigger() -> String {
+    "cron".into()
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct NewJob {
     pub name: String,
     pub prompt: String,
@@ -38,6 +59,28 @@ pub struct NewJob {
     pub space: String,
     pub created_by: String,
     pub repo: Option<String>,
+    pub trigger: Option<String>,
+    pub command: Option<String>,
+    pub pattern: Option<String>,
+    pub needs_approval: bool,
+}
+
+impl Job {
+    pub fn fires_on_cron(&self) -> bool {
+        self.trigger == "cron"
+    }
+
+    pub fn runs_in(&self, place: &str) -> bool {
+        self.space == "*" || self.space == place || place.ends_with(&format!("/{}", self.space))
+    }
+
+    fn next_after(&self, now: chrono::DateTime<Local>) -> Result<Option<String>, String> {
+        if self.fires_on_cron() {
+            Ok(Some(next_run(&self.cron, now)?.to_rfc3339()))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 struct CronParts {
@@ -194,8 +237,18 @@ impl ScheduleStore {
     }
 
     pub async fn add(&self, input: NewJob, now: chrono::DateTime<Local>) -> Result<Job, String> {
-        let next = next_run(&input.cron, now)?;
-        let job = Job {
+        let trigger = input.trigger.unwrap_or_else(cron_trigger);
+        let command = input.command.map(|c| c.trim().trim_start_matches('/').to_string()).filter(|c| !c.is_empty());
+        let pattern = input.pattern.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        match trigger.as_str() {
+            "cron" => {}
+            "command" if command.is_some() => {}
+            "mention" if pattern.is_some() => {}
+            "command" => return Err("a command trigger needs the command, e.g. ship".into()),
+            "mention" => return Err("a mention trigger needs the text to look for".into()),
+            other => return Err(format!("unknown trigger {other}")),
+        }
+        let mut job = Job {
             id: Uuid::new_v4().to_string()[..8].to_string(),
             name: input.name,
             prompt: input.prompt,
@@ -205,11 +258,17 @@ impl ScheduleStore {
             enabled: true,
             created_by: input.created_by,
             created_at: now.to_rfc3339(),
-            next_run_at: Some(next.to_rfc3339()),
+            next_run_at: None,
             last_run_at: None,
             last_status: None,
             failures: 0,
+            trigger,
+            command,
+            pattern,
+            needs_approval: input.needs_approval,
+            pending: None,
         };
+        job.next_run_at = job.next_after(now)?;
         self.jobs.lock().unwrap().push(job.clone());
         self.save().await?;
         Ok(job)
@@ -246,8 +305,11 @@ impl ScheduleStore {
             if let Some(v) = patch.next_run_at {
                 next.next_run_at = v;
             } else if cron_changed || (patch.enabled == Some(true) && !current.enabled) {
-                next.next_run_at = Some(next_run(&next.cron, now)?.to_rfc3339());
+                next.next_run_at = next.next_after(now)?;
                 next.failures = 0;
+            }
+            if let Some(v) = patch.pending {
+                next.pending = v;
             }
             jobs[idx] = next.clone();
             next
@@ -278,14 +340,18 @@ pub struct JobPatch {
     pub last_run_at: Option<Option<String>>,
     pub failures: Option<u32>,
     pub next_run_at: Option<Option<String>>,
+    pub pending: Option<Option<PendingRun>>,
 }
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_MS: i64 = 5 * 60_000;
 
+type RunJob = Box<dyn Fn(Job) -> futures::future::BoxFuture<'static, bool> + Send + Sync>;
+
 pub struct Scheduler {
     store: std::sync::Arc<ScheduleStore>,
-    run: Box<dyn Fn(Job) -> futures::future::BoxFuture<'static, bool> + Send + Sync>,
+    run: RunJob,
+    activity: Option<std::sync::Arc<crate::activity::ActivityLog>>,
 }
 
 impl Scheduler {
@@ -296,6 +362,92 @@ impl Scheduler {
         Self {
             store,
             run: Box::new(run),
+            activity: None,
+        }
+    }
+
+    pub fn with_activity(mut self, activity: std::sync::Arc<crate::activity::ActivityLog>) -> Self {
+        self.activity = Some(activity);
+        self
+    }
+
+    async fn note(&self, kind: &str, job: &Job, detail: &str) {
+        if let Some(log) = &self.activity {
+            log.record(kind, &format!("schedule/{}", job.id), job.name.clone(), detail.to_string()).await;
+        }
+    }
+
+    pub fn jobs_for_command(&self, command: &str, place: &str) -> Vec<Job> {
+        self.store
+            .all()
+            .into_iter()
+            .filter(|j| j.enabled && j.trigger == "command" && j.command.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(command)) && j.runs_in(place))
+            .collect()
+    }
+
+    pub fn jobs_for_text(&self, text: &str, place: &str) -> Vec<Job> {
+        let lower = text.to_lowercase();
+        self.store
+            .all()
+            .into_iter()
+            .filter(|j| j.enabled && j.trigger == "mention" && j.pattern.as_deref().is_some_and(|p| lower.contains(&p.to_lowercase())) && j.runs_in(place))
+            .collect()
+    }
+
+    pub fn approvals(&self) -> Vec<Job> {
+        self.store.all().into_iter().filter(|j| j.pending.is_some()).collect()
+    }
+
+    pub async fn trigger(&self, id: &str, reason: &str, now: chrono::DateTime<Local>) -> Result<Job, String> {
+        let job = self.store.get(id).ok_or_else(|| format!("no job {id}"))?;
+        if !job.needs_approval {
+            return self.run_now(id, now).await;
+        }
+        if job.pending.is_some() {
+            return Ok(job);
+        }
+        let pending = PendingRun { id: Uuid::new_v4().to_string()[..6].to_string(), at: now.to_rfc3339(), reason: reason.to_string() };
+        let job = self
+            .store
+            .update(
+                id,
+                JobPatch {
+                    pending: Some(Some(pending.clone())),
+                    last_status: Some(Some("pending".into())),
+                    next_run_at: Some(job.next_after(now)?),
+                    ..Default::default()
+                },
+                now,
+            )
+            .await?;
+        self.note("approval_pending", &job, &format!("{reason} · /approve {0} or /deny {0}", pending.id)).await;
+        Ok(job)
+    }
+
+    pub async fn decide(&self, approval_id: &str, approve: bool, now: chrono::DateTime<Local>) -> Result<Job, String> {
+        let job = self
+            .store
+            .all()
+            .into_iter()
+            .find(|j| j.pending.as_ref().is_some_and(|p| p.id == approval_id))
+            .ok_or_else(|| format!("no pending approval {approval_id}"))?;
+        let cleared = self
+            .store
+            .update(
+                &job.id,
+                JobPatch {
+                    pending: Some(None),
+                    last_status: Some(Some(if approve { "approved" } else { "denied" }.into())),
+                    ..Default::default()
+                },
+                now,
+            )
+            .await?;
+        self.note("approval_decided", &cleared, if approve { "approved" } else { "denied" }).await;
+        if approve {
+            self.run_now(&job.id, now).await
+        } else {
+            Ok(cleared)
         }
     }
 
@@ -306,6 +458,8 @@ impl Scheduler {
             .into_iter()
             .filter(|j| {
                 j.enabled
+                    && j.fires_on_cron()
+                    && j.pending.is_none()
                     && j.last_status.as_deref() != Some("running")
                     && j.next_run_at
                         .as_ref()
@@ -316,7 +470,7 @@ impl Scheduler {
             .map(|j| j.id)
             .collect();
         for id in due {
-            let _ = self.run_now(&id, now).await;
+            let _ = self.trigger(&id, "scheduled time", now).await;
         }
     }
 
@@ -342,7 +496,7 @@ impl Scheduler {
                     JobPatch {
                         last_status: Some(Some("ok".into())),
                         failures: Some(0),
-                        next_run_at: Some(Some(next_run(&job.cron, now)?.to_rfc3339())),
+                        next_run_at: Some(job.next_after(now)?),
                         ..Default::default()
                     },
                     now,
@@ -370,7 +524,7 @@ impl Scheduler {
                     JobPatch {
                         last_status: Some(Some("failed".into())),
                         failures: Some(0),
-                        next_run_at: Some(Some(next_run(&job.cron, now)?.to_rfc3339())),
+                        next_run_at: Some(job.next_after(now)?),
                         ..Default::default()
                     },
                     now,
@@ -385,6 +539,32 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use tempfile::tempdir;
+
+    #[test]
+    fn old_jobs_load_as_cron() {
+        let raw = r#"[{"id":"a1","name":"n","prompt":"p","cron":"0 9 * * *","space":"team-chat","enabled":true,"createdBy":"x","createdAt":"2026-01-01T00:00:00Z","failures":0}]"#;
+        let jobs: Vec<Job> = serde_json::from_str(raw).unwrap();
+        assert_eq!(jobs[0].trigger, "cron");
+        assert!(!jobs[0].needs_approval && jobs[0].pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn mention_jobs_match_text_in_their_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(ScheduleStore::open(dir.path().join("s.json")));
+        store
+            .add(
+                NewJob { name: "deploy".into(), prompt: "p".into(), space: "room1".into(), trigger: Some("mention".into()), pattern: Some("Deploy Now".into()), ..Default::default() },
+                Local::now(),
+            )
+            .await
+            .unwrap();
+        assert!(store.add(NewJob { trigger: Some("command".into()), ..Default::default() }, Local::now()).await.is_err());
+        let scheduler = Scheduler::new(store, |_| futures::FutureExt::boxed(async { true }));
+        assert_eq!(scheduler.jobs_for_text("ok, deploy now please", "share/room1").len(), 1);
+        assert!(scheduler.jobs_for_text("ok, deploy now please", "share/other").is_empty());
+        assert!(scheduler.jobs_for_text("nothing here", "share/room1").is_empty());
+    }
 
     #[test]
     fn next_run_hourly() {
@@ -403,6 +583,10 @@ mod tests {
         store
             .add(
                 NewJob {
+                    trigger: None,
+                    command: None,
+                    pattern: None,
+                    needs_approval: false,
                     name: "n".into(),
                     prompt: "p".into(),
                     cron: "0 9 * * *".into(),

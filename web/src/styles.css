@@ -702,3 +702,7 @@ details.card:not([open]) > summary:is(.card-title, .card-head)::after { transfor
 .search-results button { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 8px; border: 0; border-radius: var(--radius-sm); background: transparent; font: inherit; color: inherit; cursor: pointer; }
 .search-results button:hover { background: var(--accent-soft); }
 .search-results li.muted { padding: 8px; }
+.banner.approval { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.approval-actions, .approval { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill.warn { color: var(--warn, #b45309); border-color: currentColor; }
+.inline.check { display: flex; gap: 8px; align-items: center; }

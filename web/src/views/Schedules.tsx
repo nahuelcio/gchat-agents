@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { agentTint, BOT_NAME } from "../agent-color";
-import { ago, api, duration, until, type Health, type Job, type ScheduleLogMessage } from "../api";
+import { ago, api, duration, until, type Health, type Job, type JobTrigger, type ScheduleLogMessage } from "../api";
 import type { ViewProps } from "../App";
+
+const TRIGGERS: { value: JobTrigger; label: string }[] = [
+  { value: "cron", label: "On a schedule" },
+  { value: "command", label: "When someone writes /command" },
+  { value: "mention", label: "When a message contains…" },
+];
 
 const PRESETS = [
   { label: "Every hour", cron: "0 * * * *" },
@@ -15,7 +21,9 @@ function status(job: Job): { label: string; tone: string } {
   if (job.lastStatus === "running") return { label: "Running", tone: "info" };
   if (job.lastStatus === "failed") return { label: job.failures ? `Failed · retry ${job.failures} of 3` : "Failed", tone: "bad" };
   if (job.lastStatus === "ok") return { label: "Succeeded", tone: "ok" };
-  return { label: "Scheduled", tone: "accent" };
+  if (job.pending) return { label: "Waiting for approval", tone: "warn" };
+  if (job.lastStatus === "denied") return { label: "Denied", tone: "" };
+  return { label: job.trigger === "cron" ? "Scheduled" : "Listening", tone: "accent" };
 }
 
 /** Not a Chat space: the run is only recorded in the job log (see schedule-run.ts). */
@@ -27,7 +35,16 @@ export function Schedules({ settings, notify }: ViewProps) {
   const [open, setOpen] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [aiDraft, setAiDraft] = useState("");
-  const [form, setForm] = useState({ prompt: "", cron: PRESETS[1]!.cron, space: settings.allowedSpaces[0] ?? TEAM_ONLY, repo: "" });
+  const [form, setForm] = useState({
+    prompt: "",
+    cron: PRESETS[1]!.cron,
+    space: settings.allowedSpaces[0] ?? TEAM_ONLY,
+    repo: "",
+    trigger: "cron" as JobTrigger,
+    command: "",
+    pattern: "",
+    needsApproval: false,
+  });
   const [logId, setLogId] = useState<string>();
   const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
 
@@ -130,7 +147,17 @@ export function Schedules({ settings, notify }: ViewProps) {
           className="card form"
           onSubmit={(e) => {
             e.preventDefault();
-            void act(api.addSchedule({ prompt: form.prompt, cron: form.cron, space: form.space, ...(form.repo && { repo: form.repo }) }), "Job created").then(() => {
+            const job = {
+              prompt: form.prompt,
+              cron: form.trigger === "cron" ? form.cron : "",
+              space: form.space,
+              trigger: form.trigger,
+              needsApproval: form.needsApproval,
+              ...(form.repo && { repo: form.repo }),
+              ...(form.trigger === "command" && { command: form.command }),
+              ...(form.trigger === "mention" && { pattern: form.pattern }),
+            };
+            void act(api.addSchedule(job), "Job created").then(() => {
               setOpen(false);
               setAiDraft("");
               setForm({ ...form, prompt: "" });
@@ -164,6 +191,29 @@ export function Schedules({ settings, notify }: ViewProps) {
             <textarea rows={2} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />
           </label>
           <fieldset className="field">
+            <legend>Runs</legend>
+            <div className="chips">
+              {TRIGGERS.map((t) => (
+                <button key={t.value} type="button" className={`chip ${form.trigger === t.value ? "on" : ""}`} aria-pressed={form.trigger === t.value} onClick={() => setForm({ ...form, trigger: t.value, space: t.value === "cron" ? form.space : TEAM_ONLY })}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {form.trigger === "command" && (
+              <label className="inline">
+                <span className="muted small">Command, without the slash</span>
+                <input className="mono" value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} placeholder="ship" required />
+              </label>
+            )}
+            {form.trigger === "mention" && (
+              <label className="inline">
+                <span className="muted small">Runs when a message contains this text</span>
+                <input value={form.pattern} onChange={(e) => setForm({ ...form, pattern: e.target.value })} placeholder="deploy now" required />
+              </label>
+            )}
+          </fieldset>
+          {form.trigger === "cron" && (
+          <fieldset className="field">
             <legend>When</legend>
             <div className="chips">
               {PRESETS.map((p) => (
@@ -177,11 +227,16 @@ export function Schedules({ settings, notify }: ViewProps) {
               <input className="mono" value={form.cron} onChange={(e) => setForm({ ...form, cron: e.target.value })} required />
             </label>
           </fieldset>
+          )}
+          <label className="inline check">
+            <input type="checkbox" checked={form.needsApproval} onChange={(e) => setForm({ ...form, needsApproval: e.target.checked })} />
+            <span>Ask for approval before each run</span>
+          </label>
           <div className="grid-2">
             <label className="field">
-              <span>Post results to</span>
+              <span>{form.trigger === "cron" ? "Post results to" : "Listens in"}</span>
               <select value={form.space} onChange={(e) => setForm({ ...form, space: e.target.value })} required>
-                <option value={TEAM_ONLY}>Only this app (job log)</option>
+                <option value={TEAM_ONLY}>{form.trigger === "cron" ? "Only this app (job log)" : "Team chat rooms"}</option>
                 {settings.allowedSpaces.map((s) => (
                   <option key={s} value={s}>
                     Google Chat · {s}
@@ -231,8 +286,28 @@ export function Schedules({ settings, notify }: ViewProps) {
                     <span className={`pill ${s.tone}`}>{s.label}</span>
                   </div>
                   <div>
-                    {j.when} <code className="muted">{j.cron}</code>
+                    {j.trigger === "command" ? (
+                      <>When someone writes <code>/{j.command}</code></>
+                    ) : j.trigger === "mention" ? (
+                      <>When a message contains “{j.pattern}”</>
+                    ) : (
+                      <>
+                        {j.when} <code className="muted">{j.cron}</code>
+                      </>
+                    )}
+                    {j.needsApproval && <span className="pill"> needs approval</span>}
                   </div>
+                  {j.pending && (
+                    <div className="approval">
+                      <span className="small">Waiting for approval ({j.pending.reason})</span>
+                      <button type="button" className="btn small primary" onClick={() => void act(api.decideApproval(j.pending!.id, true).then(api.schedules), "Approved")}>
+                        Approve
+                      </button>
+                      <button type="button" className="btn small" onClick={() => void act(api.decideApproval(j.pending!.id, false).then(api.schedules), "Denied")}>
+                        Deny
+                      </button>
+                    </div>
+                  )}
                   <div className="muted small">
                     {j.createdBy === "control plane" ? "Created here" : `Created by ${j.createdBy}`} · {j.space.startsWith("spaces/") ? j.space : "this app only"}
                     {j.repo ? ` · ${j.repo}` : ""}

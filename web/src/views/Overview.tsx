@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, until, type ActivityEvent, type Job, type Thread } from "../api";
+import { ago, api, until, type ActivityEvent, type Approval, type Job, type Thread } from "../api";
 import type { ViewProps } from "../App";
 
 const ACTIVITY_FILTERS = {
@@ -13,6 +13,7 @@ export function Overview({ notify }: ViewProps) {
   const [threads, setThreads] = useState<Thread[]>();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>();
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [filter, setFilter] = useState<keyof typeof ACTIVITY_FILTERS>("All");
   const [logs, setLogs] = useState<{ slug: string; text: string }>();
   const [endpoint, setEndpoint] = useState<string>();
@@ -28,6 +29,7 @@ export function Overview({ notify }: ViewProps) {
       api.threads().then(setThreads, () => {});
       api.schedules().then(setJobs, () => {});
       api.activity().then(setActivity, () => {});
+      api.approvals().then(setApprovals, () => {});
     };
     load();
     const id = setInterval(load, 3000);
@@ -79,6 +81,47 @@ export function Overview({ notify }: ViewProps) {
           </div>
         </section>
       )}
+
+      {approvals.map((a) => (
+        <section key={a.id} className="banner approval" aria-label="Pending approval">
+          <div>
+            <strong>{a.name}</strong> is waiting for approval <span className="muted">({a.reason}, {ago(a.at)})</span>
+            <div className="muted small">{a.prompt}</div>
+          </div>
+          <div className="approval-actions">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() =>
+                void api.decideApproval(a.id, true).then(
+                  () => {
+                    setApprovals((list) => list.filter((x) => x.id !== a.id));
+                    notify(`${a.name} approved`);
+                  },
+                  (e: Error) => notify(e.message, true),
+                )
+              }
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() =>
+                void api.decideApproval(a.id, false).then(
+                  () => {
+                    setApprovals((list) => list.filter((x) => x.id !== a.id));
+                    notify(`${a.name} denied`);
+                  },
+                  (e: Error) => notify(e.message, true),
+                )
+              }
+            >
+              Deny
+            </button>
+          </div>
+        </section>
+      ))}
 
       <div className="stats">
         <div className="stat">

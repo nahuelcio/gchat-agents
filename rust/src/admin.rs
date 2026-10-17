@@ -35,6 +35,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/schedules/run", post(post_schedules_run))
         .route("/api/schedules/delete", post(post_schedules_delete))
         .route("/api/schedules/log", get(get_schedules_log))
+        .route("/api/approvals", get(get_approvals))
+        .route("/api/approvals/decide", post(post_approvals_decide))
         .route("/api/schedules/suggest", post(post_schedules_suggest))
         .route("/api/share", get(get_share))
         .route("/api/share/rotate", post(post_share_rotate))
@@ -209,12 +211,17 @@ struct ScheduleBody {
     space: Option<String>,
     repo: Option<String>,
     enabled: Option<bool>,
+    trigger: Option<String>,
+    command: Option<String>,
+    pattern: Option<String>,
+    needs_approval: Option<bool>,
 }
 
 async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<ScheduleBody>) -> Response {
     let prompt = body.prompt.unwrap_or_default();
     let cron = body.cron.unwrap_or_default();
-    if prompt.trim().is_empty() || cron.is_empty() {
+    let on_cron = body.trigger.as_deref().is_none_or(|t| t == "cron");
+    if prompt.trim().is_empty() || (on_cron && cron.is_empty()) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "prompt and cron are required" }))).into_response();
     }
     let name = body
@@ -231,6 +238,10 @@ async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<Sch
                 space: body.space.unwrap_or_else(|| "team-chat".into()),
                 created_by: "control plane".into(),
                 repo: body.repo,
+                trigger: body.trigger,
+                command: body.command,
+                pattern: body.pattern,
+                needs_approval: body.needs_approval.unwrap_or(false),
             },
             chrono::Local::now(),
         )
@@ -289,6 +300,35 @@ async fn post_schedules_delete(State(state): State<Arc<AppState>>, Json(body): J
 #[derive(Deserialize)]
 struct IdQuery {
     id: Option<String>,
+}
+
+async fn get_approvals(State(state): State<Arc<AppState>>) -> Response {
+    let list: Vec<Value> = state
+        .scheduler
+        .approvals()
+        .into_iter()
+        .filter_map(|j| {
+            let p = j.pending.clone()?;
+            Some(json!({ "id": p.id, "at": p.at, "reason": p.reason, "jobId": j.id, "name": j.name, "prompt": j.prompt }))
+        })
+        .collect();
+    Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+struct DecideBody {
+    id: Option<String>,
+    approve: Option<bool>,
+}
+
+async fn post_approvals_decide(State(state): State<Arc<AppState>>, Json(body): Json<DecideBody>) -> Response {
+    let (Some(id), Some(approve)) = (body.id, body.approve) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "id and approve are required" }))).into_response();
+    };
+    match state.scheduler.decide(&id, approve, chrono::Local::now()).await {
+        Ok(job) => Json(job).into_response(),
+        Err(err) => (StatusCode::NOT_FOUND, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 async fn get_schedules_log(State(state): State<Arc<AppState>>, Query(q): Query<IdQuery>) -> Response {

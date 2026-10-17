@@ -122,6 +122,7 @@ pub struct HandlerDeps {
     pub config: std::sync::Mutex<HandlerConfig>,
     pub workspaces: Option<Arc<Workspaces>>,
     pub activity: Option<Arc<crate::activity::ActivityLog>>,
+    pub scheduler: std::sync::OnceLock<Arc<crate::schedules::Scheduler>>,
     pub options: Arc<dyn Fn() -> TurnOptions + Send + Sync>,
     pub media: Option<Arc<crate::media::MediaStore>>,
 }
@@ -318,6 +319,14 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
                 let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
                 deliver_reply(&req, &deps, &reply, None, None).await;
                 return Ok(true);
+            }
+            if let Some(scheduler) = deps.scheduler.get() {
+                let mut jobs = scheduler.jobs_for_text(&req.text, &req.space_name);
+                jobs.extend(scheduler.jobs_for_text(&req.text, &req.thread_key));
+                let notes = fire_jobs(&deps, jobs, "a message matched").await;
+                if !notes.is_empty() {
+                    deliver_reply(&req, &deps, &notes.join("\n"), None, None).await;
+                }
             }
             let members = deps
                 .store
@@ -1047,7 +1056,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
@@ -1102,6 +1111,12 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             Ok("Agent updated.".into())
         }
         "repo" | "status" | "up" | "down" | "logs" | "close" => repo_command(cmd, &args, req, deps).await,
+        "approve" | "deny" => {
+            let scheduler = deps.scheduler.get().ok_or("Schedules are not enabled on this bridge.")?;
+            let id = args.first().ok_or_else(|| format!("Usage: /{cmd} <id>"))?;
+            let job = scheduler.decide(id, cmd == "approve", chrono::Local::now()).await?;
+            Ok(if cmd == "approve" { format!("Approved: {} ran ({}).", job.name, job.last_status.unwrap_or_default()) } else { format!("Denied: {} will not run.", job.name) })
+        }
         "agents" => {
             let record = deps.store.get(&req.thread_key);
             let members = crate::team::effective_members(record.as_ref(), &(deps.options)().personas);
@@ -1118,8 +1133,39 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             crate::team::apply_member_op(deps, &req.thread_key, op, crate::team::TeamMemberInput::Agent { persona: persona.clone() }).await?;
             Ok(if op == "add" { format!("@{persona} joined the room.") } else { format!("@{persona} left the room.") })
         }
-        _ => Err(format!("unknown command /{cmd}")),
+        _ => {
+            let jobs = deps.scheduler.get().map(|s| s.jobs_for_command(cmd, &req.space_name).into_iter().chain(s.jobs_for_command(cmd, &req.thread_key)).collect::<Vec<_>>()).unwrap_or_default();
+            if jobs.is_empty() {
+                return Err(format!("unknown command /{cmd}"));
+            }
+            Ok(fire_jobs(deps, jobs, &format!("/{cmd} in chat")).await.join("\n"))
+        }
     }
+}
+
+pub async fn fire_jobs(deps: &HandlerDeps, mut jobs: Vec<crate::schedules::Job>, reason: &str) -> Vec<String> {
+    jobs.sort_by(|a, b| a.id.cmp(&b.id));
+    jobs.dedup_by(|a, b| a.id == b.id);
+    let Some(scheduler) = deps.scheduler.get().cloned() else { return Vec::new() };
+    let mut out = Vec::new();
+    for job in jobs {
+        if job.needs_approval {
+            match scheduler.trigger(&job.id, reason, chrono::Local::now()).await {
+                Ok(j) => {
+                    let id = j.pending.map(|p| p.id).unwrap_or_default();
+                    out.push(format!("{} needs approval: /approve {id} or /deny {id}", j.name));
+                }
+                Err(e) => out.push(format!("{} could not start: {e}", job.name)),
+            }
+        } else {
+            let (scheduler, id, reason) = (scheduler.clone(), job.id.clone(), reason.to_string());
+            tokio::spawn(async move {
+                let _ = scheduler.trigger(&id, &reason, chrono::Local::now()).await;
+            });
+            out.push(format!("Running {}.", job.name));
+        }
+    }
+    out
 }
 
 const COMPACT_PROMPT: &str = "Summarize this conversation so a fresh session can continue it: goals, decisions made, current state of the code and worktree, open tasks and open questions. Be concise; no preamble.";
@@ -1433,6 +1479,7 @@ mod tests {
             }),
             workspaces: None,
             activity: None,
+            scheduler: std::sync::OnceLock::new(),
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1487,6 +1534,7 @@ mod tests {
             }),
             workspaces: None,
             activity: None,
+            scheduler: std::sync::OnceLock::new(),
             options: Arc::new(move || TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1532,6 +1580,7 @@ mod tests {
             }),
             workspaces: None,
             activity: None,
+            scheduler: std::sync::OnceLock::new(),
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1580,6 +1629,7 @@ mod tests {
             }),
             workspaces: None,
             activity: None,
+            scheduler: std::sync::OnceLock::new(),
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
@@ -1785,6 +1835,7 @@ mod tests {
             }),
             workspaces: Some(Arc::new(Workspaces::new(dir.path().join("worktrees"), repos))),
             activity: None,
+            scheduler: std::sync::OnceLock::new(),
             options: base.options.clone(),
             media: None,
         };

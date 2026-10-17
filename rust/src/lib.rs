@@ -148,6 +148,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         }),
         workspaces: Some(workspaces.clone()),
         activity: Some(activity.clone()),
+        scheduler: std::sync::OnceLock::new(),
         options: Arc::new(move || settings_to_options(&settings_for_opts.get())),
         media: Some(media.clone()),
     });
@@ -162,6 +163,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     }
 
     let activity_for_run = activity.clone();
+    let transcripts_for_run = transcripts.clone();
     let schedules_for_run = schedules.clone();
     let driver_for_run = driver;
     let workdir = config.workdir.to_string_lossy().to_string();
@@ -170,7 +172,8 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         let workdir = workdir.clone();
         let store = schedules_for_run.clone();
         let activity = activity_for_run.clone();
-        let (key, name) = (format!("schedule/{}", job.id), job.name.clone());
+        let transcripts = transcripts_for_run.clone();
+        let (key, name, prompt) = (format!("schedule/{}", job.id), job.name.clone(), job.prompt.clone());
         async move {
             let _ = store;
             let result = driver
@@ -185,6 +188,12 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     answer_questions: false,
                 })
                 .await;
+            let reply = match &result {
+                Ok(out) => out.reply.clone(),
+                Err(err) => format!("Failed: {err}"),
+            };
+            let entry = |author: &str, text: String, bot: bool| crate::transcripts::TranscriptMessage { author: author.into(), text, bot, at: None, questions: None, attachments: None };
+            let _ = transcripts.append(&key, vec![entry("schedule", prompt, false), entry(crate::personas::BOT_NAME, reply, true)]).await;
             match result {
                 Ok(_) => {
                     activity.record("schedule_ok", &key, name, "").await;
@@ -198,7 +207,8 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
             }
         }
         .boxed()
-    }));
+    }).with_activity(activity.clone()));
+    let _ = handler.scheduler.set(scheduler.clone());
 
     let web_dir = find_web_dir();
     let state = Arc::new(AppState {

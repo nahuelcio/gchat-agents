@@ -256,3 +256,63 @@ async fn search_requires_two_characters_and_finds_messages() {
     assert!(!hits.is_empty());
     assert!(hits.iter().all(|h| h["threadKey"] == "share/s1"));
 }
+
+async fn job_by_command(admin: u16, command: &str) -> Value {
+    let (_, jobs) = get_json(admin, "/api/schedules").await;
+    jobs.as_array().unwrap().iter().find(|j| j["command"] == command).unwrap().clone()
+}
+
+async fn wait_status(admin: u16, command: &str, status: &str) -> Value {
+    for _ in 0..50 {
+        let job = job_by_command(admin, command).await;
+        if job["lastStatus"] == status {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{command} never reached {status}: {}", job_by_command(admin, command).await);
+}
+
+#[tokio::test]
+async fn command_jobs_run_and_approval_gates_them() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    for (command, approval) in [("ship", false), ("release", true)] {
+        let (status, _) = post_json(
+            admin,
+            "/api/schedules",
+            json!({ "prompt": format!("do {command}"), "trigger": "command", "command": command, "space": "*", "needsApproval": approval }),
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+    post_json(admin, "/api/team/send", json!({ "thread": "wf", "name": "Ana", "text": "hola, nada de ship" })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(job_by_command(admin, "ship").await["lastStatus"].is_null());
+
+    post_json(admin, "/api/team/send", json!({ "thread": "wf", "name": "Ana", "text": "/ship" })).await;
+    let ship = wait_status(admin, "ship", "ok").await;
+    let (_, log) = get_json(admin, &format!("/api/schedules/log?id={}", ship["id"].as_str().unwrap())).await;
+    assert_eq!(log["messages"].as_array().unwrap().len(), 2);
+
+    post_json(admin, "/api/team/send", json!({ "thread": "wf", "name": "Ana", "text": "/release" })).await;
+    let release = wait_status(admin, "release", "pending").await;
+    let release_id = release["id"].as_str().unwrap().to_string();
+    let (_, approvals) = get_json(admin, "/api/approvals").await;
+    let pending = approvals.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    post_json(admin, "/api/approvals/decide", json!({ "id": pending, "approve": false })).await;
+    wait_status(admin, "release", "denied").await;
+    let (_, log) = get_json(admin, &format!("/api/schedules/log?id={release_id}")).await;
+    assert!(log["messages"].as_array().unwrap().is_empty());
+
+    post_json(admin, "/api/team/send", json!({ "thread": "wf", "name": "Ana", "text": "/release" })).await;
+    wait_status(admin, "release", "pending").await;
+    let (_, approvals) = get_json(admin, "/api/approvals").await;
+    let pending = approvals.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    post_json(admin, "/api/team/send", json!({ "thread": "wf", "name": "Ana", "text": format!("/approve {pending}") })).await;
+    wait_status(admin, "release", "ok").await;
+    let (_, log) = get_json(admin, &format!("/api/schedules/log?id={release_id}")).await;
+    assert_eq!(log["messages"].as_array().unwrap().len(), 2);
+    let (_, events) = get_json(admin, "/api/activity?kind=approval_pending,approval_decided").await;
+    assert_eq!(events.as_array().unwrap().len(), 4);
+}
