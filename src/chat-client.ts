@@ -5,6 +5,16 @@ import { GoogleAuth } from "google-auth-library";
 export interface PostMessageBody {
   text: string;
   thread?: { name?: string; threadKey?: string };
+  /** Google Chat cards. Present when the agent asked a question with clickable options. */
+  cardsV2?: {
+    cardId: string;
+    card: {
+      header?: { title?: string; subtitle?: string };
+      sections?: {
+        widgets?: Record<string, unknown>[];
+      }[];
+    };
+  }[];
 }
 
 export interface ChatClient {

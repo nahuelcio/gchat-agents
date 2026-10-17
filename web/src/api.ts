@@ -142,11 +142,19 @@ export function duration(sec: number): string {
 
 // --- team chat: one UI, two transports (owner on the control plane, guests on the public link) ---
 
+export interface AgentQuestion {
+  header: string;
+  question: string;
+  options: { label: string; description?: string }[];
+  multiple?: boolean;
+}
+
 export interface TeamMessage {
   author: string;
   text: string;
   bot: boolean;
   at?: string;
+  questions?: AgentQuestion[];
 }
 
 export interface TeamThreadState {

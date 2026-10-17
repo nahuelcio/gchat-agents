@@ -223,6 +223,9 @@ td { padding: 14px 20px; border-top: 1px solid var(--line-2); vertical-align: mi
 .message-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .message-text { white-space: pre-wrap; word-break: break-word; }
 .message-footer { margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--line-2); font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--muted); }
+.ask { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask .chip { min-height: 30px; padding: 0 12px; }
 .working { margin: 0 0 0 46px; }
 .composer-wrap { padding: 0 24px 24px; display: flex; flex-direction: column; gap: 10px; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 6px; }

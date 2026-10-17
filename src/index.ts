@@ -21,6 +21,7 @@ import { threadSlug, Workspaces } from "./workspace.js";
 import { ensureTunnel } from "./tunnel.js";
 import { ShareToken } from "./share.js";
 import { TranscriptStore } from "./transcripts.js";
+import { questionCards } from "./questions.js";
 
 const config = loadConfig();
 
@@ -93,9 +94,16 @@ async function runJob(job: Job): Promise<boolean> {
       text: job.prompt,
       sender: `Schedule "${job.name}"`,
       // Jobs made from the team chat have no Chat space to post to: the run still happens and is recorded.
-      reply: async (text) => {
-        if (job.space.startsWith("spaces/")) await deps.chat.postMessage(job.space, { text, thread: { threadKey: `schedule-${job.id}` } });
+      reply: async (text, meta) => {
+        if (job.space.startsWith("spaces/")) {
+          await deps.chat.postMessage(job.space, {
+            text,
+            thread: { threadKey: `schedule-${job.id}` },
+            ...(meta?.questions?.length && { cardsV2: questionCards(meta.questions) }),
+          });
+        }
       },
+      answerQuestions: false,
     },
     deps,
   );

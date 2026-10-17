@@ -1,3 +1,18 @@
+/** One clarifying question from OpenCode (`multiple`) or Claude (`multiSelect`, normalized). */
+export interface AgentQuestion {
+  header: string;
+  question: string;
+  options: { label: string; description?: string }[];
+  multiple?: boolean;
+}
+
+/** A CLI process paused on AskUserQuestion / the question tool. `resume` feeds the chat reply back in. */
+export interface PendingAgent {
+  questions: AgentQuestion[];
+  resume(answer: string): Promise<AgentTurnResult>;
+  cancel(): void;
+}
+
 export interface AgentTurnInput {
   threadKey: string;
   /** Opencode session id from a previous turn, to continue the same conversation. */
@@ -8,6 +23,8 @@ export interface AgentTurnInput {
   model?: string;
   /** Per-thread agent override (from /agent); omitted = the configured one. */
   driver?: "opencode" | "claude";
+  /** When false (scheduled jobs), clarifying questions are declined instead of parked. */
+  answerQuestions?: boolean;
 }
 
 export interface ContextUsage {
@@ -22,6 +39,8 @@ export interface AgentTurnResult {
   sessionRef?: string;
   /** Reported by agents that expose it (claude); omitted when unknown. */
   usage?: ContextUsage;
+  /** Set when the CLI is waiting on the user. The reply is the question text. */
+  pending?: PendingAgent;
 }
 
 export interface AgentDriver {

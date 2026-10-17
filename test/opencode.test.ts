@@ -114,6 +114,25 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     ).rejects.toThrow("opencode timed out after 150ms");
   }, 5000);
 
+  it("parks when a question event goes quiet and feeds the answer back on stdin", async () => {
+    const answerFile = join(dir, "answer.txt");
+    const bin = await fakeBin(
+      "oc-ask.sh",
+      `#!/bin/sh\n` +
+        `echo '{"type":"question","sessionID":"ses_q","questions":[{"question":"Which library?","header":"Library","options":[{"label":"date-fns","description":"small"},{"label":"luxon","description":"tz"}]}]}'\n` +
+        `read line\n` +
+        `echo "$line" > ${JSON.stringify(answerFile)}\n` +
+        `echo '{"type":"text","sessionID":"ses_q","part":{"type":"text","text":"noted"}}'\n`,
+    );
+    const driver = new OpenCodeDriver({ bin, timeoutMs: 10_000 });
+    const parked = await driver.runTurn({ threadKey: "t", text: "pick", workdir: dir });
+    expect(parked.reply).toContain("Which library?");
+    expect(parked.pending?.questions).toHaveLength(1);
+    const done = await parked.pending!.resume("luxon");
+    expect(done.reply).toContain("noted");
+    expect(await readFile(answerFile, "utf8")).toContain("luxon");
+  });
+
   it("reports a missing binary clearly", async () => {
     const driver = new OpenCodeDriver({ bin: join(dir, "no-such-bin"), timeoutMs: 10_000 });
     await expect(driver.runTurn({ threadKey: "t", text: "x", workdir: dir })).rejects.toThrow(

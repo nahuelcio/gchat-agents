@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ago, api, type TeamThreadState, type TeamThreadSummary, type TeamTransport } from "../api";
+import { ago, api, type AgentQuestion, type TeamThreadState, type TeamThreadSummary, type TeamTransport } from "../api";
 import { Icon } from "../App";
 
 const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/context", "/compact", "/model ", "/schedules"];
@@ -23,6 +23,66 @@ function store(key: string, value: unknown): void {
 }
 
 const newId = () => `t-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+/** Options under a bot question. One question sends on click; several wait until each has a pick. */
+function AgentQuestions({
+  questions,
+  disabled,
+  onAnswer,
+}: {
+  questions: AgentQuestion[];
+  disabled: boolean;
+  onAnswer: (text: string) => void;
+}) {
+  const [picked, setPicked] = useState<Record<number, string[]>>({});
+  const single = questions.length === 1 && !questions[0]?.multiple;
+
+  function choose(index: number, label: string, multiple?: boolean) {
+    if (single) {
+      onAnswer(label);
+      return;
+    }
+    setPicked((prev) => {
+      const cur = prev[index] ?? [];
+      const next = multiple ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label];
+      return { ...prev, [index]: next };
+    });
+  }
+
+  const ready = questions.every((q, i) => (picked[i]?.length ?? 0) > 0);
+
+  return (
+    <div className="ask">
+      {questions.map((q, i) => (
+        <div key={q.question} className="ask-q">
+          {!single && <div className="strong">{q.header}</div>}
+          <div className="ask-options">
+            {q.options.map((o) => {
+              const on = picked[i]?.includes(o.label);
+              return (
+                <button
+                  key={o.label}
+                  type="button"
+                  className={`chip ${on ? "on" : ""}`}
+                  disabled={disabled}
+                  title={o.description}
+                  onClick={() => choose(i, o.label, q.multiple)}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      {!single && (
+        <button type="button" className="btn small" disabled={disabled || !ready} onClick={() => onAnswer(questions.map((q, i) => (picked[i] ?? []).join(", ")).join("\n"))}>
+          Send answers
+        </button>
+      )}
+    </div>
+  );
+}
 
 /** Splits the bridge's context footer off a reply so it renders as metadata. */
 function splitFooter(text: string): { text: string; footer?: string } {
@@ -306,7 +366,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               Say something, or start with <code>/help</code>.{!transport.guest && <> Use <code>/repo &lt;name&gt;</code> to give this thread a worktree.</>}
             </p>
           )}
-          {state?.messages.map((m, i) => {
+          {state?.messages.map((m, i, all) => {
             const body = m.bot ? splitFooter(m.text) : { text: m.text };
             const mine = !m.bot && m.author === name;
             return (
@@ -328,6 +388,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   </div>
                   <div className="message-text">{body.text}</div>
                   {body.footer && <div className="message-footer">{body.footer}</div>}
+                  {m.questions && m.questions.length > 0 && !all.slice(i + 1).some((later) => !later.bot) && (
+                    <AgentQuestions questions={m.questions} disabled={sending} onAnswer={(text) => void send(text)} />
+                  )}
                 </div>
               </div>
             );

@@ -3,9 +3,11 @@ import type { TurnQueue } from "./queue.js";
 import { describeCron, type ScheduleStore } from "./schedules.js";
 import type { SessionRecord, SessionStore } from "./store.js";
 import { chunkText, extractPrompt } from "./text.js";
-import type { AgentDriver } from "./driver/types.js";
+import type { AgentDriver, AgentQuestion, AgentTurnResult } from "./driver/types.js";
 import type { TokenVerifier } from "./verify.js";
 import { threadSlug, type Workspaces } from "./workspace.js";
+import { questionCards, continuation } from "./questions.js";
+import { cancelQuestion, holdQuestion, takeQuestion } from "./question-gate.js";
 
 /** Google Chat app event, reduced to the fields this service reads. */
 export interface ChatEvent {
@@ -19,6 +21,12 @@ export interface ChatEvent {
     sender?: { displayName?: string };
   };
   user?: { displayName?: string };
+  /** Set on CARD_CLICKED when someone taps an option on a question card. */
+  action?: { actionMethodName?: string; parameters?: { key?: string; value?: string }[] };
+}
+
+export interface ReplyMeta {
+  questions?: AgentQuestion[];
 }
 
 export interface HandlerConfig {
@@ -67,9 +75,11 @@ export interface TurnRequest {
   spaceName: string;
   text: string;
   sender?: string;
-  reply: (text: string) => Promise<void>;
+  reply: (text: string, meta?: ReplyMeta) => Promise<void>;
   /** Restrict which /commands may run (team chat guests); omitted = all. */
   allowCommands?: ReadonlySet<string>;
+  /** False for scheduled jobs: a question there has nobody to click it. Default true. */
+  answerQuestions?: boolean;
 }
 
 const REPLY_LIMIT = 3800;
@@ -117,10 +127,20 @@ async function postReply(
   spaceName: string,
   thread: PostMessageBody["thread"],
   text: string,
+  questions?: AgentQuestion[],
 ): Promise<void> {
+  if (questions?.length) {
+    await chat.postMessage(spaceName, { text: text.slice(0, REPLY_LIMIT), thread, cardsV2: questionCards(questions) });
+    return;
+  }
   for (const chunk of chunkText(text, REPLY_LIMIT)) {
     await chat.postMessage(spaceName, { text: chunk, thread });
   }
+}
+
+function cardAnswer(event: ChatEvent): string | undefined {
+  if (event.type !== "CARD_CLICKED") return undefined;
+  return event.action?.parameters?.find((p) => p.key === "answer")?.value?.trim();
 }
 
 /**
@@ -154,11 +174,15 @@ export async function handleEvent(
     return { status: 200, body: { ok: true }, done };
   }
 
-  if (event.type !== "MESSAGE" || !event.message) {
+  const clicked = cardAnswer(event);
+  if (event.type !== "MESSAGE" && !clicked) {
+    return { status: 200, body: { ok: true }, done: settled };
+  }
+  if (!event.message) {
     return { status: 200, body: { ok: true }, done: settled };
   }
 
-  const text = extractPrompt(event.message);
+  const text = clicked ?? extractPrompt(event.message);
   // Only real thread identities: falling back to message.name would give every
   // malformed event a fresh session and an unthreaded reply.
   const threadKey = event.message.thread?.name ?? event.message.thread?.threadKey;
@@ -178,7 +202,7 @@ export async function handleEvent(
       spaceName,
       text,
       sender: event.message.sender?.displayName ?? event.user?.displayName,
-      reply: (msg) => postReply(deps.chat, spaceName, thread, msg),
+      reply: (msg, meta) => postReply(deps.chat, spaceName, thread, msg, meta?.questions),
     },
     deps,
   ).then(() => undefined);
@@ -209,25 +233,49 @@ export function processMessage(req: TurnRequest, deps: HandlerDeps): Promise<{ o
 async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boolean }> {
   const { threadKey, spaceName } = req;
   const record = deps.store.get(threadKey);
-  // Shared threads: the agent must know which teammate is talking.
-  let text = req.sender ? `${req.sender}: ${req.text}` : req.text;
-  if (record?.summary && !record.sessionRef) {
-    text = `Context from earlier in this thread (compacted):\n${record.summary}\n\n---\n\n${text}`;
-  }
-  let result;
+  const parked = takeQuestion(threadKey);
+  let text = req.text;
+  let result: AgentTurnResult;
   try {
-    result = await deps.driver.runTurn({
-      threadKey,
-      sessionRef: record?.sessionRef,
-      text,
-      workdir: record?.worktree ?? deps.config.workdir,
-      model: record?.model,
-      driver: record?.driver,
-    });
+    if (parked) {
+      result = await parked.resume(req.text);
+    } else {
+      if (record?.pendingQuestions?.length) {
+        text = continuation(record.pendingQuestions, req.text, req.sender);
+      } else {
+        // Shared threads: the agent must know which teammate is talking.
+        text = req.sender ? `${req.sender}: ${req.text}` : req.text;
+        if (record?.summary && !record.sessionRef) {
+          text = `Context from earlier in this thread (compacted):\n${record.summary}\n\n---\n\n${text}`;
+        }
+      }
+      result = await deps.driver.runTurn({
+        threadKey,
+        sessionRef: record?.sessionRef,
+        text,
+        workdir: record?.worktree ?? deps.config.workdir,
+        model: record?.model,
+        driver: record?.driver,
+        answerQuestions: req.answerQuestions !== false,
+      });
+    }
   } catch (err) {
     console.error(`[turn ${threadKey}] failed:`, err);
+    await deps.store.update(threadKey, spaceName, { pendingQuestions: undefined }).catch(() => {});
     await req.reply(`Agent failed: ${errorMessage(err)}`);
     return { ok: false };
+  }
+
+  if (result.pending) {
+    holdQuestion(threadKey, result.pending);
+    await deps.store.update(threadKey, spaceName, {
+      ...(result.sessionRef && { sessionRef: result.sessionRef }),
+      pendingQuestions: result.pending.questions,
+    }).catch((err: unknown) => {
+      console.error(`[store ${threadKey}] persist failed:`, errorMessage(err));
+    });
+    await req.reply(result.reply, { questions: result.pending.questions });
+    return { ok: true };
   }
 
   // claude reports real usage; otherwise estimate from text that went through (~4 chars/token).
@@ -243,6 +291,7 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
     .update(threadKey, spaceName, {
       ...(result.sessionRef && { sessionRef: result.sessionRef }),
       summary: undefined,
+      pendingQuestions: undefined,
       ...usage,
       turns,
     })
@@ -309,6 +358,7 @@ async function compact(threadKey: string, spaceName: string, deps: HandlerDeps):
   const record = deps.store.get(threadKey);
   if (!record?.sessionRef) return "Nothing to compact yet.";
   const before = record.contextTokens;
+  cancelQuestion(threadKey);
   const result = await deps.driver.runTurn({
     threadKey,
     sessionRef: record.sessionRef,
@@ -316,6 +366,7 @@ async function compact(threadKey: string, spaceName: string, deps: HandlerDeps):
     workdir: record.worktree ?? deps.config.workdir,
     model: record.model,
     driver: record.driver,
+    answerQuestions: false,
   });
   const after = Math.ceil(result.reply.length / 4);
   await deps.store.update(threadKey, spaceName, {
@@ -343,7 +394,8 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
     case "context":
       return record ? contextLine(record, options).slice(2) : "No session in this thread yet.";
     case "clear":
-      await deps.store.update(threadKey, spaceName, { sessionRef: undefined, summary: undefined, contextTokens: 0, turns: 0 });
+      cancelQuestion(threadKey);
+      await deps.store.update(threadKey, spaceName, { sessionRef: undefined, summary: undefined, contextTokens: 0, turns: 0, pendingQuestions: undefined });
       return "Started a fresh session for this thread. The worktree and branch are untouched.";
     case "compact":
       return compact(threadKey, spaceName, deps);
@@ -357,7 +409,8 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
       if (arg !== "opencode" && arg !== "claude" && arg !== "default") return "Usage: /agent opencode|claude|default";
       const driver = arg === "default" ? undefined : arg;
       // Sessions belong to one agent: switching starts fresh (and drops a model meant for the other agent).
-      await deps.store.update(threadKey, spaceName, { driver, model: undefined, sessionRef: undefined, contextTokens: 0, turns: 0 });
+      cancelQuestion(threadKey);
+      await deps.store.update(threadKey, spaceName, { driver, model: undefined, sessionRef: undefined, contextTokens: 0, turns: 0, pendingQuestions: undefined });
       return driver ? `This thread now talks to ${driver === "claude" ? "Claude Code" : "OpenCode"} (fresh session).` : "This thread is back on the configured agent (fresh session).";
     }
     case "schedule":

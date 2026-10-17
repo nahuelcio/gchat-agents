@@ -1,4 +1,5 @@
 import { processMessage, type HandlerDeps } from "./handler.js";
+import { cancelQuestion } from "./question-gate.js";
 import type { TranscriptStore } from "./transcripts.js";
 import { threadSlug } from "./workspace.js";
 
@@ -24,9 +25,9 @@ export async function teamSend(
       spaceName: "team-chat",
       text: req.text,
       sender: req.name,
-      reply: async (r) => {
+      reply: async (r, meta) => {
         replies.push(r);
-        await transcripts.append(threadKey, [{ author: "gchat-agents", text: r, bot: true }]);
+        await transcripts.append(threadKey, [{ author: "gchat-agents", text: r, bot: true, ...(meta?.questions && { questions: meta.questions }) }]);
       },
       ...(req.allowCommands && { allowCommands: req.allowCommands }),
     },
@@ -56,6 +57,7 @@ export function teamThread(deps: HandlerDeps, transcripts: TranscriptStore, thre
 export function teamDelete(deps: HandlerDeps, transcripts: TranscriptStore, thread: string): Promise<{ branchKept?: string }> {
   const threadKey = `${TEAM_PREFIX}${thread}`;
   return deps.queue.run(threadKey, async () => {
+    cancelQuestion(threadKey);
     const record = deps.store.get(threadKey);
     if (record?.worktree && record.repo && deps.workspaces) {
       deps.workspaces.down(threadSlug(threadKey));

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentDriver, AgentTurnInput, AgentTurnResult } from "../src/driver/types.js";
 import { EchoDriver } from "../src/driver/echo.js";
 import { handleEvent, type ChatEvent, type HandlerDeps } from "../src/handler.js";
+import { clearQuestions } from "../src/question-gate.js";
 import { TurnQueue } from "../src/queue.js";
 import { SessionStore } from "../src/store.js";
 import type { PostMessageBody } from "../src/chat-client.js";
@@ -98,6 +99,7 @@ function makeDeps(
 
 let globalDir: string;
 beforeEach(async () => {
+  clearQuestions();
   globalDir = await mkdtemp(join(tmpdir(), "gchat-handler-"));
 });
 
@@ -472,6 +474,50 @@ describe("handleEvent", () => {
       await (await handleEvent("Bearer t", say("hi"), deps)).done;
       expect(driver.calls.at(-1)).toMatchObject({ driver: "claude", sessionRef: undefined });
       expect(chat.posts.at(-1)?.body.text).toContain("— claude · opus");
+    });
+
+    it("posts a question card and sends the tapped option back to the agent", async () => {
+      const questions = [
+        {
+          header: "Library",
+          question: "Which library?",
+          options: [
+            { label: "date-fns", description: "small" },
+            { label: "luxon", description: "tz" },
+          ],
+        },
+      ];
+      const answers: string[] = [];
+      const driver: AgentDriver = {
+        async runTurn() {
+          return {
+            reply: "Which library?\n1. date-fns — small",
+            sessionRef: "ses_q",
+            pending: {
+              questions,
+              cancel() {},
+              resume: async (answer) => {
+                answers.push(answer);
+                return { reply: `picked ${answer}`, sessionRef: "ses_q" };
+              },
+            },
+          };
+        },
+      };
+      const { deps, chat } = makeDeps({ driver });
+      await (await handleEvent("Bearer t", messageEvent(), deps)).done;
+      expect(chat.posts[0]?.body.text).toContain("Which library?");
+      expect(chat.posts[0]?.body.cardsV2?.[0]?.cardId).toBe("agent-question");
+      const click: ChatEvent = {
+        type: "CARD_CLICKED",
+        space: { name: "spaces/OK" },
+        user: { displayName: "Ana" },
+        message: { thread: { threadKey: "thread-1" } },
+        action: { actionMethodName: "answerQuestion", parameters: [{ key: "answer", value: "date-fns" }] },
+      };
+      await (await handleEvent("Bearer t", click, deps)).done;
+      expect(answers).toEqual(["date-fns"]);
+      expect(chat.posts.at(-1)?.body.text).toContain("picked date-fns");
     });
 
     it("refuses commands outside the allowlist without running them", async () => {

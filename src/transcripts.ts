@@ -1,12 +1,15 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentQuestion } from "./driver/types.js";
 
 export interface TranscriptMessage {
   author: string;
   text: string;
   bot: boolean;
   at?: string;
+  /** Set on the bot message that is waiting for the thread to pick an option. */
+  questions?: AgentQuestion[];
 }
 
 /**

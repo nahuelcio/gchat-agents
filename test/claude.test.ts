@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ClaudeDriver, parseClaudeOutput } from "../src/driver/claude.js";
+import { ClaudeDriver, interpretClaudeLine, parseClaudeOutput } from "../src/driver/claude.js";
 
 describe("parseClaudeOutput", () => {
   it("extracts reply and session id from a success result", () => {
@@ -57,6 +57,39 @@ describe("parseClaudeOutput", () => {
   });
 });
 
+describe("interpretClaudeLine", () => {
+  it("pulls AskUserQuestion out of a control request and ignores other tools", () => {
+    const question = interpretClaudeLine(
+      JSON.stringify({
+        type: "control_request",
+        request_id: "r1",
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "AskUserQuestion",
+          input: {
+            questions: [
+              {
+                question: "Which library?",
+                header: "Library",
+                options: [
+                  { label: "date-fns", description: "small" },
+                  { label: "luxon", description: "tz" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(question).toMatchObject({ kind: "question", requestId: "r1" });
+    expect(interpretClaudeLine(JSON.stringify({ type: "control_request", request_id: "r2", request: { subtype: "can_use_tool", tool_name: "Bash", input: {} } }))).toEqual({
+      kind: "permission",
+      requestId: "r2",
+    });
+  });
+});
+
 describe("ClaudeDriver argv", () => {
   let dir: string;
   beforeAll(async () => {
@@ -81,7 +114,16 @@ describe("ClaudeDriver argv", () => {
     const result = await driver.runTurn({ threadKey: "t", text: "hello", workdir: dir });
 
     const args = (await readFile(argsFile, "utf8")).split(/\s+/).filter(Boolean);
-    expect(args).toEqual(["-p", "--output-format", "json", "--", "hello"]);
+    expect(args).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+      "--permission-prompts",
+      "host",
+    ]);
     expect(result).toEqual({
       reply: "hi",
       sessionRef: "3113400e-a4f2-4bae-9eae-94df1490de60",
@@ -114,23 +156,49 @@ describe("ClaudeDriver argv", () => {
     expect(lines[0]?.split(/\s+/)).toEqual([
       "-p",
       "--output-format",
-      "json",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+      "--permission-prompts",
+      "host",
       "--resume",
       "3113400e-a4f2-4bae-9eae-94df1490de60",
       "--model",
       "claude-sonnet-4-5",
-      "--",
-      "a",
     ]);
     expect(lines[1]?.split(/\s+/)).toEqual([
       "-p",
       "--output-format",
-      "json",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+      "--permission-prompts",
+      "host",
       "--model",
       "claude-sonnet-4-5",
-      "--",
-      "b",
     ]);
+  });
+
+  it("parks on AskUserQuestion and continues when the thread answers", async () => {
+    const answerFile = join(dir, "answer.txt");
+    const bin = await fakeBin(
+      "claude-ask.sh",
+      `#!/bin/sh\nread line\n` +
+        `echo '{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which library?","header":"Library","options":[{"label":"date-fns","description":"small"},{"label":"luxon","description":"tz"}],"multiSelect":false}]}}}'\n` +
+        `while read line; do\n` +
+        `  case "$line" in\n` +
+        `    *control_response*) echo "$line" > ${JSON.stringify(answerFile)}; echo '{"type":"result","result":"Using it","session_id":"3113400e-a4f2-4bae-9eae-94df1490de60","is_error":false}'; exit 0;;\n` +
+        `  esac\n` +
+        `done\n`,
+    );
+    const driver = new ClaudeDriver({ bin, timeoutMs: 10_000 });
+    const parked = await driver.runTurn({ threadKey: "t", text: "pick one", workdir: dir });
+    expect(parked.pending?.questions[0]?.question).toBe("Which library?");
+    const done = await parked.pending!.resume("1");
+    expect(done.reply).toBe("Using it");
+    expect(await readFile(answerFile, "utf8")).toContain("date-fns");
   });
 
   it("surfaces is_error results as turn errors", async () => {

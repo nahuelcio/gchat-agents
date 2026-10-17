@@ -1,5 +1,6 @@
-import type { AgentDriver, AgentTurnInput, AgentTurnResult, ContextUsage } from "./types.js";
-import { runCaptured, type CapturedRun } from "./spawn-capture.js";
+import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, ContextUsage, PendingAgent } from "./types.js";
+import { spawnLive, type LiveProcess } from "./live.js";
+import { answersFromText, formatQuestions, normalizeQuestions } from "../questions.js";
 
 export interface ClaudeDriverOptions {
   bin: string;
@@ -73,11 +74,49 @@ export function parseClaudeOutput(stdout: string): ParsedClaudeOutput {
   };
 }
 
+export type ClaudeStreamEvent =
+  | { kind: "ignore" }
+  | { kind: "result"; parsed: ParsedClaudeOutput }
+  | { kind: "question"; requestId: string; questions: AgentQuestion[] }
+  | { kind: "permission"; requestId: string };
+
+/** One NDJSON line from `claude -p --output-format stream-json`. */
+export function interpretClaudeLine(line: string): ClaudeStreamEvent {
+  const trimmed = line.trim();
+  if (!trimmed) return { kind: "ignore" };
+  let obj: {
+    type?: string;
+    request_id?: string;
+    request?: { subtype?: string; tool_name?: string; input?: { questions?: unknown } };
+  };
+  try {
+    obj = JSON.parse(trimmed) as typeof obj;
+  } catch {
+    return { kind: "ignore" };
+  }
+  if (obj.type === "result") return { kind: "result", parsed: parseClaudeOutput(trimmed) };
+  if (obj.type === "control_request" && obj.request?.subtype === "can_use_tool" && obj.request_id) {
+    if (obj.request.tool_name === "AskUserQuestion") {
+      const questions = normalizeQuestions(obj.request.input?.questions);
+      if (questions.length) return { kind: "question", requestId: obj.request_id, questions };
+    }
+    return { kind: "permission", requestId: obj.request_id };
+  }
+  return { kind: "ignore" };
+}
+
+function controlResponse(requestId: string, response: Record<string, unknown>): string {
+  return JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: requestId, response } });
+}
+
+function userMessage(text: string): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: text } });
+}
+
 /**
- * Runs one agent turn by spawning the real claude CLI:
- *   claude -p --output-format json [--resume <uuid>] [--model <m>] -- <text>
- * Permission prompts are auto-denied in headless mode — same safe posture as
- * the opencode driver.
+ * Runs one agent turn by spawning the real claude CLI with stream-json so an
+ * AskUserQuestion can be shown in chat and answered on stdin. Every other
+ * permission prompt is denied — chat does not grant write or exec.
  */
 export class ClaudeDriver implements AgentDriver {
   private bin: string;
@@ -91,27 +130,72 @@ export class ClaudeDriver implements AgentDriver {
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
-    const args = ["-p", "--output-format", "json"];
+    const args = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-prompts", "host"];
     const sessionRef = UUID_RE.test(input.sessionRef ?? "") ? input.sessionRef : undefined;
     if (sessionRef) args.push("--resume", sessionRef);
     const model = input.model ?? this.model;
     if (model) args.push("--model", model);
-    // "--" ends flag parsing: text starting with '-' would otherwise be eaten
-    // as CLI flags (claude v2.1.296 verified to honor the separator).
-    args.push("--", input.text);
-
-    let result: CapturedRun;
+    const live = spawnLive(this.bin, args, input.workdir, this.timeoutMs);
+    live.write(userMessage(input.text));
     try {
-      result = await runCaptured(this.bin, args, input.workdir, this.timeoutMs);
+      return await this.pump(live, input, sessionRef);
     } catch (err) {
-      throw new Error(`could not start ${this.bin}: ${err instanceof Error ? err.message : String(err)}`);
+      if (live.startError()) {
+        throw new Error(`could not start ${this.bin}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      throw err;
     }
+  }
 
-    const parsed = parseClaudeOutput(result.stdout);
-    if (parsed.error) throw new Error(parsed.error);
-    if (result.timedOut) throw new Error(`claude timed out after ${this.timeoutMs}ms`);
-    if (result.code !== 0) throw new Error(`claude exited with code ${result.code}`);
-    if (!parsed.reply) throw new Error("claude returned no reply text");
-    return { reply: parsed.reply, sessionRef: parsed.sessionId ?? sessionRef, ...(parsed.usage && { usage: parsed.usage }) };
+  private async pump(live: LiveProcess, input: AgentTurnInput, sessionRef?: string): Promise<AgentTurnResult> {
+    let reply = "";
+    let usage: ContextUsage | undefined;
+    for (;;) {
+      const line = await live.readLine();
+      if (line === "idle") continue;
+      if (line === null) {
+        if (live.timedOut()) throw new Error(`claude timed out after ${this.timeoutMs}ms`);
+        if (live.startError()) throw live.startError();
+        const code = live.exitCode();
+        if (code !== 0 && code !== null) throw new Error(`claude exited with code ${code}`);
+        if (!reply) throw new Error("claude returned no reply text");
+        return { reply, sessionRef, ...(usage && { usage }) };
+      }
+      const event = interpretClaudeLine(line);
+      if (event.kind === "permission" || (event.kind === "question" && input.answerQuestions === false)) {
+        const requestId = event.kind === "permission" ? event.requestId : event.requestId;
+        live.write(controlResponse(requestId, { behavior: "deny", message: "Denied from chat. Only clarifying questions are answered here." }));
+        continue;
+      }
+      if (event.kind === "question") {
+        live.pauseTimeout();
+        const questions = event.questions;
+        const pending: PendingAgent = {
+          questions,
+          cancel: () => live.kill(),
+          resume: async (answer: string) => {
+            live.armTimeout();
+            live.write(
+              controlResponse(event.requestId, {
+                behavior: "allow",
+                updatedInput: { questions, answers: answersFromText(questions, answer) },
+              }),
+            );
+            return this.pump(live, input, sessionRef);
+          },
+        };
+        return { reply: formatQuestions(questions), sessionRef, pending };
+      }
+      if (event.kind === "result") {
+        if (event.parsed.error) throw new Error(event.parsed.error);
+        reply = event.parsed.reply;
+        usage = event.parsed.usage;
+        sessionRef = event.parsed.sessionId ?? sessionRef;
+        live.pauseTimeout();
+        live.endInput();
+        if (!reply) throw new Error("claude returned no reply text");
+        return { reply, sessionRef, ...(usage && { usage }) };
+      }
+    }
   }
 }

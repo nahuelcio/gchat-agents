@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { rename, unlink, writeFile } from "node:fs/promises";
+import type { AgentQuestion } from "./driver/types.js";
 
 export interface SessionRecord {
   sessionRef?: string;
@@ -21,6 +22,8 @@ export interface SessionRecord {
   contextWindow?: number;
   estimated?: boolean;
   turns?: number;
+  /** Clarifying questions the agent is waiting on. Cleared once the thread answers. */
+  pendingQuestions?: AgentQuestion[];
 }
 
 /** threadKey -> session record, persisted as JSON with atomic writes (tmp + rename). */
