@@ -104,6 +104,7 @@ const HELP = [
   "/down — stop the app",
   "/logs — last lines of the app output",
   "/status — repo, branch, worktree, app, context",
+  "/wi <id>|clear — Azure DevOps work item for this thread",
   "/close — stop the app and remove the worktree (the branch is kept)",
   "",
   "Session commands:",
@@ -382,6 +383,7 @@ function modelLabel(r: SessionRecord, options: TurnOptions): string {
 export function contextLine(r: SessionRecord, options: TurnOptions): string {
   const model = modelLabel(r, options);
   const where = r.repo ? `${r.repo}@${r.branch}` : "chat only";
+  const wi = r.workItemId ? `WI #${r.workItemId}` : undefined;
   const pct = contextPercent(r);
   const tokens = r.contextTokens ?? 0;
   const ctx =
@@ -390,7 +392,7 @@ export function contextLine(r: SessionRecord, options: TurnOptions): string {
       : r.estimated
         ? `~${formatTokens(tokens)} tokens exchanged` // opencode: chat text only, not its system prompt
         : `context ${formatTokens(tokens)} tokens`;
-  return `— ${model} · ${where} · ${ctx}`;
+  return `— ${[model, where, wi, ctx].filter(Boolean).join(" · ")}`;
 }
 
 /** Asks the agent for a summary, then starts a fresh session seeded with it on the next turn. */
@@ -453,6 +455,18 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
       await deps.store.update(threadKey, spaceName, { driver, model: undefined, sessionRef: undefined, contextTokens: 0, turns: 0, pendingQuestions: undefined });
       return driver ? `This thread now talks to ${driver === "claude" ? "Claude Code" : "OpenCode"} (fresh session).` : "This thread is back on the configured agent (fresh session).";
     }
+    case "wi":
+    case "workitem": {
+      if (!arg || arg === "clear" || arg === "none") {
+        if (!record?.workItemId) return "No work item on this thread. /wi <id> to set one.";
+        await deps.store.update(threadKey, spaceName, { workItemId: undefined });
+        return "Work item cleared for this thread.";
+      }
+      const id = Number(arg.replace(/^#/, ""));
+      if (!Number.isInteger(id) || id <= 0) return "Usage: /wi <id> or /wi clear";
+      await deps.store.update(threadKey, spaceName, { workItemId: id });
+      return `This thread is on work item #${id}.`;
+    }
     case "schedule":
     case "schedules":
     case "unschedule":
@@ -478,9 +492,12 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
         `Repo: ${record.repo}`,
         `Branch: ${record.branch}`,
         `Worktree: ${record.worktree}`,
+        record.workItemId ? `Work item: #${record.workItemId}` : undefined,
         `App: ${ws.isUp(slug) ? `running on :${ws.port(slug)}` : "stopped"}`,
         ctx,
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     }
   }
 

@@ -15,6 +15,8 @@ export interface SessionRecord {
   model?: string;
   /** Per-thread agent set with /agent. */
   driver?: "opencode" | "claude";
+  /** Azure DevOps work item id set with /wi. */
+  workItemId?: number;
   /** Summary from /compact, prepended to the next turn of the fresh session. */
   summary?: string;
   /** Context size after the last turn; `estimated` when the agent does not report it. */

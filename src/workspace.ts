@@ -20,6 +20,55 @@ interface RunningApp {
   port: number;
 }
 
+export interface GitChangeFile {
+  path: string;
+  /** Two-char porcelain code, e.g. "M ", " M", "??". */
+  status: string;
+}
+
+export interface GitChangeSummary {
+  clean: boolean;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  files: GitChangeFile[];
+}
+
+const CHANGE_FILE_LIMIT = 12;
+
+/** Parses `git status --porcelain` into counts + a short file list. */
+export async function gitChanges(worktree: string): Promise<GitChangeSummary | null> {
+  if (!existsSync(worktree)) return null;
+  let stdout: string;
+  try {
+    ({ stdout } = await run("git", ["-C", worktree, "status", "--porcelain", "-uall"], { timeout: 8_000, encoding: "utf8" }));
+  } catch {
+    return null;
+  }
+  const files: GitChangeFile[] = [];
+  let staged = 0;
+  let unstaged = 0;
+  let untracked = 0;
+  for (const line of stdout.split("\n")) {
+    if (line.length < 3) continue;
+    const status = line.slice(0, 2);
+    const path = line.slice(3).replace(/^"(.*)"$/, "$1").split(" -> ").pop() ?? line.slice(3);
+    files.push({ path, status });
+    if (status === "??") untracked++;
+    else {
+      if (status[0] && status[0] !== " " && status[0] !== "?") staged++;
+      if (status[1] && status[1] !== " " && status[1] !== "?") unstaged++;
+    }
+  }
+  return {
+    clean: files.length === 0,
+    staged,
+    unstaged,
+    untracked,
+    files: files.slice(0, CHANGE_FILE_LIMIT),
+  };
+}
+
 /** Filesystem-safe id for a Chat thread: last path segment, lowercased, [a-z0-9-]. */
 export function threadSlug(threadKey: string): string {
   const last = threadKey.split("/").pop() ?? threadKey;
@@ -152,6 +201,14 @@ export class Workspaces {
 
   killAll(): void {
     for (const key of [...this.apps.keys()]) this.down(key);
+  }
+
+  /**
+   * Short porcelain summary for the team-chat context panel.
+   * Returns null when the path is not a git worktree.
+   */
+  async changes(worktree: string): Promise<GitChangeSummary | null> {
+    return gitChanges(worktree);
   }
 
   logs(key: string, lines = 40): string {

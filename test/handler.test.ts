@@ -437,6 +437,15 @@ describe("handleEvent", () => {
       expect(driver.calls[1]?.model).toBeUndefined();
     });
 
+    it("/wi sets and clears the Azure work item on the thread", async () => {
+      const { deps, chat, store } = makeDeps();
+      await (await handleEvent("Bearer t", say("/wi 12345"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("#12345");
+      expect(store.get("t")?.workItemId).toBe(12345);
+      await (await handleEvent("Bearer t", say("/wi clear"), deps)).done;
+      expect(store.get("t")?.workItemId).toBeUndefined();
+    });
+
     it("/clear drops the session so the next turn starts fresh", async () => {
       const driver = new FakeDriver();
       driver.sessionRef = "ses_1";

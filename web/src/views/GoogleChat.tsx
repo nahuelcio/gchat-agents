@@ -76,8 +76,8 @@ export function GoogleChatCard({ settings, save, notify }: ViewProps) {
   const done = connected && tested;
 
   return (
-    <section className="card" aria-labelledby="gchat-title">
-      <div className="card-head">
+    <details className="card" aria-labelledby="gchat-title">
+      <summary className="card-head">
         <div className="card-title">
           <h2 id="gchat-title">Google Chat</h2>
           <p className="muted small">
@@ -89,7 +89,7 @@ export function GoogleChatCard({ settings, save, notify }: ViewProps) {
           </p>
         </div>
         <span className={`pill ${done ? "ok" : connected ? "accent" : ""}`}>{done ? "Connected" : connected ? "Key loaded" : "Not connected"}</span>
-      </div>
+      </summary>
 
       <ol className="steps">
         <Step n={1} title="Enable the Google Chat API" state={done ? "done" : "manual"}>
@@ -188,6 +188,6 @@ export function GoogleChatCard({ settings, save, notify }: ViewProps) {
           {!connected && <p className="muted small">Load the key in step 2 first.</p>}
         </Step>
       </ol>
-    </section>
+    </details>
   );
 }

@@ -131,7 +131,7 @@ function OwnerApp() {
           </div>
         )}
       </nav>
-      <main className="content">
+      <main className={`content${view === "team" ? "" : " content-narrow"}`}>
         {!props && <div className="skeleton" aria-busy="true" />}
         {props && view === "overview" && <Overview {...props} />}
         {props && view === "team" && (

@@ -174,11 +174,33 @@ export interface TeamAttachmentInput {
   name?: string;
 }
 
+export interface TeamThreadWorkItem {
+  id: number;
+  title?: string;
+  state?: string;
+  type?: string;
+  url?: string;
+}
+
+export interface TeamThreadChanges {
+  clean: boolean;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  files: { path: string; status: string }[];
+}
+
 export interface TeamThreadState {
   messages: TeamMessage[];
   agent: "opencode" | "claude" | null;
+  model?: string | null;
   repo?: string | null;
   branch?: string | null;
+  worktree?: string | null;
+  context?: string | null;
+  app?: { running: boolean; port?: number };
+  workItem?: TeamThreadWorkItem | null;
+  changes?: TeamThreadChanges | null;
   busy: boolean;
 }
 

@@ -65,13 +65,13 @@ function AgentCard({ settings, save }: ViewProps) {
   const others = agents?.filter((a) => a.installed && !a.supported) ?? [];
 
   return (
-    <section className="card">
-      <div className="card-title">
+    <details className="card" open>
+      <summary className="card-title">
         <h2>Agent</h2>
         <p className="muted small">
           Detected on this machine{others.length ? `. Also installed, no driver yet: ${others.map((a) => a.name).join(", ")}` : ""}.
         </p>
-      </div>
+      </summary>
       {!agents && <p className="muted">Detecting…</p>}
       <div className="grid-2">
         {agents
@@ -166,7 +166,7 @@ function AgentCard({ settings, save }: ViewProps) {
           <button className="btn primary">Save</button>
         </form>
       )}
-    </section>
+    </details>
   );
 }
 
@@ -409,11 +409,11 @@ function ModelBrowser({
 
 function ContextCard({ settings, save }: ViewProps) {
   return (
-    <section className="card">
-      <div className="card-title">
+    <details className="card" open>
+      <summary className="card-title">
         <h2>Context in Chat</h2>
         <p className="muted small">A footer under agent replies: model, repo and branch, and how full the session is. Claude reports exact usage; OpenCode is estimated (~).</p>
-      </div>
+      </summary>
       <fieldset className="chips">
         <legend className="sr-only">Show the context footer</legend>
         {FOOTER_OPTIONS.map((o) => (
@@ -432,7 +432,7 @@ function ContextCard({ settings, save }: ViewProps) {
         />
         <span>Compact automatically at 85% and say so in the thread</span>
       </label>
-    </section>
+    </details>
   );
 }
 
@@ -508,13 +508,13 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
   const entries = Object.entries(settings.repos);
 
   return (
-    <section className="card">
-      <div className="card-title">
+    <details className="card" open>
+      <summary className="card-title">
         <h2>Repos</h2>
         <p className="muted small">
           {ado?.connected ? `Azure DevOps · ${ado.org}, from your ado CLI setup.` : ado ? "Azure DevOps not configured on this machine — run ado init." : " "}
         </p>
-      </div>
+      </summary>
       {entries.length === 0 && <p className="empty">No repos yet. Add one from Azure DevOps, then use /repo &lt;name&gt; in a thread.</p>}
       {entries.map(([name, r]) => (
         <RepoRow
@@ -562,18 +562,18 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           </button>
         </form>
       )}
-    </section>
+    </details>
   );
 }
 
 function SpacesCard({ settings, save }: ViewProps) {
   const [space, setSpace] = useState("");
   return (
-    <section className="card">
-      <div className="card-title">
+    <details className="card" open>
+      <summary className="card-title">
         <h2>Spaces</h2>
         <p className="muted small">Only these Chat spaces reach the agent.</p>
-      </div>
+      </summary>
       {settings.allowedSpaces.length === 0 && <p className="empty warn-text">No spaces allowed — every Chat event is ignored.</p>}
       <div className="chips">
         {settings.allowedSpaces.map((s) => (
@@ -599,6 +599,6 @@ function SpacesCard({ settings, save }: ViewProps) {
           <input id="space-new" className="mono pill-input" value={space} onChange={(e) => setSpace(e.target.value)} placeholder="spaces/XXXX" required />
         </form>
       </div>
-    </section>
+    </details>
   );
 }

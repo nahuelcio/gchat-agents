@@ -1,8 +1,9 @@
-import { processMessage, type HandlerDeps } from "./handler.js";
+import { contextLine, processMessage, type HandlerDeps } from "./handler.js";
+import { adoWorkItem, type AdoAuth, type AdoWorkItem, type FetchFn } from "./integrations.js";
 import { attachmentPromptLine, toMessageAttachment, type MessageAttachment } from "./media.js";
 import { cancelQuestion } from "./question-gate.js";
 import type { TranscriptStore } from "./transcripts.js";
-import { threadSlug } from "./workspace.js";
+import { threadSlug, type GitChangeSummary } from "./workspace.js";
 
 /** Team chat threads live under this key prefix (sessions, transcripts). */
 export const TEAM_PREFIX = "share/";
@@ -92,15 +93,77 @@ export async function teamSend(
   return { ok, replies };
 }
 
-/** History + live state of one team thread, for the chat view. */
-export function teamThread(deps: HandlerDeps, transcripts: TranscriptStore, thread: string) {
+export interface TeamThreadWorkItem {
+  id: number;
+  title?: string;
+  state?: string;
+  type?: string;
+  url?: string;
+}
+
+export interface TeamThreadContext {
+  messages: ReturnType<TranscriptStore["get"]>;
+  agent: "opencode" | "claude" | null;
+  model?: string | null;
+  repo?: string | null;
+  branch?: string | null;
+  worktree?: string | null;
+  context?: string | null;
+  app?: { running: boolean; port?: number };
+  workItem?: TeamThreadWorkItem | null;
+  changes?: GitChangeSummary | null;
+  busy: boolean;
+}
+
+export interface TeamThreadExtras {
+  ado?: AdoAuth;
+  fetch?: FetchFn;
+}
+
+/** Digits in a branch name that look like an Azure work item id (e.g. 12345-fix, feature/AB#12345). */
+export function workItemFromBranch(branch?: string): number | undefined {
+  if (!branch) return undefined;
+  // No leading zeros: avoids false hits on chat/team-0001 style slugs.
+  const match = branch.match(/(?:^|[/_-])(?:AB#)?([1-9]\d{3,6})(?:[-_]|$)/i) ?? branch.match(/#([1-9]\d{3,6})\b/);
+  if (!match) return undefined;
+  const id = Number(match[1]);
+  return Number.isInteger(id) && id > 0 ? id : undefined;
+}
+
+/** History + live state of one team thread, for the chat view (incl. side panel). */
+export async function teamThread(
+  deps: HandlerDeps,
+  transcripts: TranscriptStore,
+  thread: string,
+  extras: TeamThreadExtras = {},
+): Promise<TeamThreadContext> {
   const threadKey = `${TEAM_PREFIX}${thread}`;
   const record = deps.store.get(threadKey);
+  const options = deps.options?.();
+  const slug = threadSlug(threadKey);
+  const ws = deps.workspaces;
+  const workItemId = record?.workItemId ?? workItemFromBranch(record?.branch);
+  let workItem: TeamThreadWorkItem | null = workItemId ? { id: workItemId } : null;
+  if (workItemId && extras.ado) {
+    try {
+      const wi: AdoWorkItem = await adoWorkItem(extras.ado, workItemId, extras.fetch);
+      workItem = { id: wi.id, title: wi.title, state: wi.state, type: wi.type, url: wi.url };
+    } catch {
+      // Keep the bare id when Azure is unreachable or the item is gone.
+    }
+  }
+  const changes = record?.worktree && ws ? await ws.changes(record.worktree) : null;
   return {
     messages: transcripts.get(threadKey),
     agent: record?.driver ?? null,
+    model: record?.model ?? null,
     repo: record?.repo ?? null,
     branch: record?.branch ?? null,
+    worktree: record?.worktree ?? null,
+    context: record && options ? contextLine(record, options).slice(2) : null,
+    app: { running: ws?.isUp(slug) ?? false, ...(ws?.port(slug) !== undefined && { port: ws.port(slug) }) },
+    workItem,
+    changes,
     busy: deps.queue.busy(threadKey),
   };
 }

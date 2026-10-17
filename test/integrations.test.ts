@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { adoProjects, adoRepos, cloneRepo, detectAdo, type FetchFn } from "../src/integrations.js";
+import { adoProjects, adoRepos, adoWorkItem, cloneRepo, detectAdo, type FetchFn } from "../src/integrations.js";
 
 function fakeFetch(routes: Record<string, unknown>, seen: { url: string; auth?: string }[] = []): FetchFn {
   return async (url, init) => {
@@ -35,6 +35,27 @@ describe("Azure DevOps", () => {
       { id: "r1", name: "frontend", remoteUrl: "https://acme@dev.azure.com/acme/Web%20App/_git/frontend", defaultBranch: "main" },
     ]);
     expect(seen.every((s) => s.auth === basic)).toBe(true);
+  });
+
+  it("fetches a work item title, state and html link", async () => {
+    const fetch = fakeFetch({
+      "https://dev.azure.com/acme/_apis/wit/workitems/42?api-version=7.1": {
+        id: 42,
+        fields: {
+          "System.Title": "Fix export",
+          "System.State": "Active",
+          "System.WorkItemType": "Bug",
+        },
+        _links: { html: { href: "https://dev.azure.com/acme/_workitems/edit/42" } },
+      },
+    });
+    expect(await adoWorkItem(ado, 42, fetch)).toEqual({
+      id: 42,
+      title: "Fix export",
+      state: "Active",
+      type: "Bug",
+      url: "https://dev.azure.com/acme/_workitems/edit/42",
+    });
   });
 });
 

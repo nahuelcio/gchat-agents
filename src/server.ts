@@ -70,7 +70,7 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
       send(res, 400, { error: "bad thread id" });
       return;
     }
-    send(res, 200, teamThread(deps, share.transcripts, thread));
+    send(res, 200, await teamThread(deps, share.transcripts, thread));
     return;
   }
   if (req.method === "POST" && url === "/play/api/send") {

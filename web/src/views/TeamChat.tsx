@@ -12,7 +12,7 @@ import {
 import { Icon } from "../App";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
-const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/context", "/compact", "/model ", "/schedules"];
+const OWNER_SUGGESTIONS = ["/help", "/repo ", "/up", "/status", "/wi ", "/context", "/compact", "/model ", "/schedules"];
 const GUEST_SUGGESTIONS = ["/help", "/context", "/compact", "/clear", "/model "];
 const IMAGE_PART =
   /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
@@ -510,6 +510,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           </span>
         </header>
 
+        <div className="play-main">
+        <div className="play-stream">
         <div className="messages">
           {!activeId && <p className="empty">Start a thread with +.</p>}
           {activeId && state?.messages.length === 0 && (
@@ -667,8 +669,125 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             </form>
           </div>
         )}
+        </div>
+
+        {activeId && <ThreadContextPanel state={state} guest={transport.guest} />}
+        </div>
       </section>
     </div>
+  );
+}
+
+function changeSummary(changes: NonNullable<TeamThreadState["changes"]>): string {
+  if (changes.clean) return "Clean working tree";
+  const parts: string[] = [];
+  if (changes.staged) parts.push(`${changes.staged} staged`);
+  if (changes.unstaged) parts.push(`${changes.unstaged} modified`);
+  if (changes.untracked) parts.push(`${changes.untracked} untracked`);
+  return parts.join(" · ") || `${changes.files.length} changes`;
+}
+
+function ThreadContextPanel({ state, guest }: { state?: TeamThreadState; guest: boolean }) {
+  const wi = state?.workItem;
+  const changes = state?.changes;
+  return (
+    <aside className="play-context" aria-label="Thread context">
+      <h2>Context</h2>
+      <dl>
+        <div>
+          <dt>Repo</dt>
+          <dd>{state?.repo ? <code>{state.repo}</code> : <span className="muted">Chat only</span>}</dd>
+        </div>
+        {state?.branch && (
+          <div>
+            <dt>Branch</dt>
+            <dd>
+              <code>{state.branch}</code>
+            </dd>
+          </div>
+        )}
+        {state?.worktree && (
+          <div>
+            <dt>Worktree</dt>
+            <dd>
+              <code className="path">{state.worktree}</code>
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt>Agent</dt>
+          <dd>{state?.agent ?? "default"}{state?.model ? ` · ${state.model}` : ""}</dd>
+        </div>
+        {state?.context && (
+          <div>
+            <dt>Session</dt>
+            <dd className="mono muted small">{state.context}</dd>
+          </div>
+        )}
+        {state?.repo && (
+          <div>
+            <dt>App</dt>
+            <dd>
+              {state.app?.running && state.app.port ? (
+                <a className="pill ok" href={`http://localhost:${state.app.port}`} target="_blank" rel="noreferrer">
+                  <span className="dot" aria-hidden="true" />
+                  :{state.app.port}
+                </a>
+              ) : (
+                <span className="pill">Stopped</span>
+              )}
+            </dd>
+          </div>
+        )}
+      </dl>
+
+      <h2>Work item</h2>
+      {wi ? (
+        <div className="play-wi">
+          <div className="strong">
+            {wi.url ? (
+              <a href={wi.url} target="_blank" rel="noreferrer">
+                #{wi.id}
+              </a>
+            ) : (
+              <>#{wi.id}</>
+            )}
+            {wi.type ? ` · ${wi.type}` : ""}
+          </div>
+          {wi.title && <p>{wi.title}</p>}
+          {wi.state && <span className="pill">{wi.state}</span>}
+        </div>
+      ) : (
+        <p className="muted small">
+          {guest ? "No work item on this thread." : (
+            <>
+              None. Set one with <code>/wi &lt;id&gt;</code>.
+            </>
+          )}
+        </p>
+      )}
+
+      <h2>Changes</h2>
+      {!state?.worktree ? (
+        <p className="muted small">No worktree yet.</p>
+      ) : !changes ? (
+        <p className="muted small">Could not read git status.</p>
+      ) : (
+        <>
+          <p className={`small ${changes.clean ? "muted" : "strong"}`}>{changeSummary(changes)}</p>
+          {changes.files.length > 0 && (
+            <ul className="play-changes">
+              {changes.files.map((f) => (
+                <li key={`${f.status}:${f.path}`}>
+                  <code className="status">{f.status}</code>
+                  <code className="path">{f.path}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </aside>
   );
 }
 

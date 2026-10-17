@@ -59,6 +59,30 @@ export async function adoRepos(
   }));
 }
 
+export interface AdoWorkItem {
+  id: number;
+  title: string;
+  state: string;
+  type: string;
+  url: string;
+}
+
+/** Looks up one work item by id (org-wide). Failures bubble as Error. */
+export async function adoWorkItem(ado: AdoAuth, id: number, fetchFn: FetchFn = fetch): Promise<AdoWorkItem> {
+  const body = await getJson<{
+    id: number;
+    fields: Record<string, string>;
+    _links?: { html?: { href?: string } };
+  }>(fetchFn, `https://dev.azure.com/${ado.org}/_apis/wit/workitems/${id}?api-version=7.1`, adoAuth(ado.pat));
+  return {
+    id: body.id,
+    title: body.fields["System.Title"] ?? "",
+    state: body.fields["System.State"] ?? "",
+    type: body.fields["System.WorkItemType"] ?? "Work Item",
+    url: body._links?.html?.href ?? `https://dev.azure.com/${ado.org}/_workitems/edit/${id}`,
+  };
+}
+
 /**
  * Clones with the PAT sent as an HTTP header, then stores that header in the clone's
  * local git config so the agent can fetch/push from worktrees. The remote URL stays clean.

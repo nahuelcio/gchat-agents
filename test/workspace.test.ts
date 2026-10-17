@@ -4,7 +4,8 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { threadSlug, Workspaces } from "../src/workspace.js";
+import { gitChanges, threadSlug, Workspaces } from "../src/workspace.js";
+import { workItemFromBranch } from "../src/team.js";
 
 let dir: string;
 let repo: string;
@@ -33,6 +34,24 @@ function until(check: () => boolean, ms = 3000): Promise<void> {
 describe("threadSlug", () => {
   it("uses the last segment of a thread name, sanitized", () => {
     expect(threadSlug("spaces/AAA/threads/Xy_9.z")).toBe("xy-9-z");
+  });
+});
+
+describe("workItemFromBranch", () => {
+  it("pulls a work item id out of common branch shapes", () => {
+    expect(workItemFromBranch("12345-fix-export")).toBe(12345);
+    expect(workItemFromBranch("feature/AB#98765-login")).toBe(98765);
+    expect(workItemFromBranch("chat/team-0001")).toBeUndefined();
+  });
+});
+
+describe("gitChanges", () => {
+  it("summarizes porcelain status for a dirty worktree", async () => {
+    await writeFile(join(repo, "dirty.txt"), "x\n");
+    const summary = await gitChanges(repo);
+    expect(summary?.clean).toBe(false);
+    expect(summary?.untracked).toBeGreaterThanOrEqual(1);
+    expect(summary?.files.some((f) => f.path === "dirty.txt")).toBe(true);
   });
 });
 

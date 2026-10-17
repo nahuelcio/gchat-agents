@@ -156,7 +156,14 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
       const thread = method === "GET" ? (parsed.searchParams.get("thread") ?? "") : "";
       if (url === "/api/team/thread" && method === "GET") {
         if (!THREAD_ID.test(thread)) throw new HttpError(400, "bad thread id");
-        return send(res, 200, teamThread(deps, transcripts, thread));
+        const ado = ctx.detectAdo?.();
+        return send(
+          res,
+          200,
+          await teamThread(deps, transcripts, thread, {
+            ...(ado && { ado: { org: ado.org, pat: ado.pat }, fetch: fetchFn }),
+          }),
+        );
       }
       if (url === "/api/team/send" && method === "POST") {
         const body = await jsonBody<{ thread?: string; text?: string; name?: string; attachments?: TeamAttachmentInput[] }>(req);
