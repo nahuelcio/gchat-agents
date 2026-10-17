@@ -539,6 +539,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
             text
         };
 
+        let _speaking = Speaking::start(&req.thread_key, BOT_NAME);
         deps.driver
             .run_turn(AgentTurnInput {
                 thread_key: req.thread_key.clone(),
@@ -790,6 +791,7 @@ async fn persona_round(
             .as_ref()
             .and_then(|r| r.worktree.clone())
             .unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone());
+        let talking = Speaking::start(&req.thread_key, &format!("@{}", item.persona.name));
         let result = deps
             .driver
             .run_turn(AgentTurnInput {
@@ -809,6 +811,7 @@ async fn persona_round(
                 answer_questions: false,
             })
             .await;
+        drop(talking);
         let reply = match result {
             Ok(out) => {
                 let reply = strip_self_prefix(&out.reply, &item.persona);
@@ -1044,7 +1047,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
@@ -1099,6 +1102,22 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             Ok("Agent updated.".into())
         }
         "repo" | "status" | "up" | "down" | "logs" | "close" => repo_command(cmd, &args, req, deps).await,
+        "agents" => {
+            let record = deps.store.get(&req.thread_key);
+            let members = crate::team::effective_members(record.as_ref(), &(deps.options)().personas);
+            let lines: Vec<String> = crate::team::presence(&members, &speaking(&req.thread_key), false, record.as_ref().and_then(|r| r.room_seen.as_ref()))
+                .into_iter()
+                .map(|p| format!("{} · {}", p.name, p.status))
+                .collect();
+            Ok(lines.join("
+"))
+        }
+        "invite" | "kick" => {
+            let persona = args.first().ok_or_else(|| format!("Usage: /{cmd} <agent>"))?.trim_start_matches('@').to_string();
+            let op = if cmd == "invite" { "add" } else { "remove" };
+            crate::team::apply_member_op(deps, &req.thread_key, op, crate::team::TeamMemberInput::Agent { persona: persona.clone() }).await?;
+            Ok(if op == "add" { format!("@{persona} joined the room.") } else { format!("@{persona} left the room.") })
+        }
         _ => Err(format!("unknown command /{cmd}")),
     }
 }
@@ -1144,6 +1163,31 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
         Some(b) => format!("Session compacted: ~{b} → ~{after} tokens. The next message continues from the summary."),
         None => "Session compacted. The next message continues from the summary.".into(),
     })
+}
+
+static SPEAKING: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+pub struct Speaking(String, String);
+
+impl Speaking {
+    pub fn start(thread_key: &str, who: &str) -> Self {
+        let entry = (thread_key.to_string(), who.to_string());
+        SPEAKING.lock().unwrap().push(entry.clone());
+        Speaking(entry.0, entry.1)
+    }
+}
+
+impl Drop for Speaking {
+    fn drop(&mut self) {
+        let mut list = SPEAKING.lock().unwrap();
+        if let Some(i) = list.iter().position(|(k, w)| k == &self.0 && w == &self.1) {
+            list.remove(i);
+        }
+    }
+}
+
+pub fn speaking(thread_key: &str) -> Vec<String> {
+    SPEAKING.lock().unwrap().iter().filter(|(k, _)| k == thread_key).map(|(_, w)| w.clone()).collect()
 }
 
 pub async fn note(deps: &HandlerDeps, kind: &str, thread_key: &str, title: impl Into<String>, detail: impl Into<String>) {

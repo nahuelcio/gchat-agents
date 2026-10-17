@@ -38,6 +38,37 @@ pub struct TeamThreadState {
     pub members: Option<Vec<RoomMember>>,
     pub kicked: Vec<String>,
     pub answering: Vec<String>,
+    pub presence: Vec<Presence>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Presence {
+    pub id: String,
+    pub name: String,
+    pub status: &'static str,
+    pub last_seen_n: Option<u64>,
+}
+
+pub fn presence(members: &[RoomMember], speaking: &[String], waiting: bool, seen: Option<&std::collections::HashMap<String, u64>>) -> Vec<Presence> {
+    let seen_by = |who: &str| seen.and_then(|m| m.get(who).copied());
+    let status = |who: &str, waits: bool| match () {
+        _ if speaking.iter().any(|s| s == who) => "speaking",
+        _ if waits => "waiting",
+        _ => "idle",
+    };
+    let host = crate::handler::BOT_NAME;
+    let mut out = vec![Presence { id: "host".into(), name: host.into(), status: status(host, waiting), last_seen_n: seen_by(host) }];
+    for m in members {
+        out.push(match m {
+            RoomMember::Agent { id, persona, .. } => {
+                let who = format!("@{persona}");
+                Presence { id: id.clone(), status: status(&who, false), last_seen_n: seen_by(&who), name: who }
+            }
+            RoomMember::Human { id, name, .. } => Presence { id: id.clone(), name: name.clone(), status: "idle", last_seen_n: None },
+        });
+    }
+    out
 }
 
 #[derive(Debug, Serialize)]
@@ -150,21 +181,24 @@ pub async fn team_members(
     if op != "add" && op != "remove" {
         return Err("op must be \"add\" or \"remove\"".into());
     }
-    let thread_key = format!("{TEAM_PREFIX}{thread}");
+    apply_member_op(&deps, &format!("{TEAM_PREFIX}{thread}"), op, member).await
+}
+
+pub fn effective_members(record: Option<&crate::session::SessionRecord>, catalog: &[crate::settings::Persona]) -> Vec<RoomMember> {
+    record.and_then(|r| r.members.clone()).unwrap_or_else(|| {
+        if record.is_some() {
+            catalog.iter().fold(Vec::new(), |m, p| with_agent(&m, &p.name))
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+pub async fn apply_member_op(deps: &HandlerDeps, thread_key: &str, op: &str, member: TeamMemberInput) -> Result<Vec<RoomMember>, String> {
+    let thread_key = thread_key.to_string();
     let catalog = (deps.options)().personas;
     let record = deps.store.get(&thread_key);
-    let mut members = record
-        .as_ref()
-        .and_then(|r| r.members.clone())
-        .unwrap_or_else(|| {
-            if record.is_some() {
-                catalog
-                    .iter()
-                    .fold(Vec::new(), |m, p| with_agent(&m, &p.name))
-            } else {
-                Vec::new()
-            }
-        });
+    let mut members = effective_members(record.as_ref(), &catalog);
     let label = match &member {
         TeamMemberInput::Agent { persona } => format!("@{}", persona.trim_start_matches('@')),
         TeamMemberInput::Human { name } => name.trim().to_string(),
@@ -235,7 +269,7 @@ pub async fn team_members(
         )
         .await?;
     let kind = if op == "add" { "member_add" } else { "member_remove" };
-    crate::handler::note(&deps, kind, &thread_key, label, "").await;
+    crate::handler::note(deps, kind, &thread_key, label, "").await;
     Ok(members)
 }
 
@@ -257,6 +291,7 @@ pub async fn team_thread(
     let record = deps.store.get(&thread_key);
     let options = (deps.options)();
     let slug = crate::workspace::slug_for(&thread_key);
+    let talking = crate::handler::speaking(&thread_key);
     let ws = deps.workspaces.as_ref();
     let changes = if let (Some(ws), Some(wt)) = (ws, record.as_ref().and_then(|r| r.worktree.as_deref())) {
         ws.changes_in(wt).await
@@ -290,7 +325,13 @@ pub async fn team_thread(
         busy: deps.queue.busy(&thread_key).await,
         members: record.as_ref().and_then(|r| r.members.clone()),
         kicked: record.as_ref().and_then(|r| r.kicked.clone()).unwrap_or_default(),
-        answering: vec![],
+        answering: talking.iter().filter_map(|w| w.strip_prefix('@')).map(String::from).collect(),
+        presence: presence(
+            &effective_members(record.as_ref(), &options.personas),
+            &talking,
+            record.as_ref().and_then(|r| r.pending_questions.as_ref()).is_some_and(|q| !q.is_empty()),
+            record.as_ref().and_then(|r| r.room_seen.as_ref()),
+        ),
     })
 }
 
@@ -313,4 +354,27 @@ pub async fn team_delete(
     deps.store.delete(&thread_key).await?;
     transcripts.remove(&thread_key).await?;
     Ok(serde_json::json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    #[test]
+    fn derives_speaking_waiting_idle_and_seen() {
+        let members = vec![
+            RoomMember::Agent { id: "agent:qa".into(), persona: "qa".into(), joined_at: "x".into() },
+            RoomMember::Agent { id: "agent:dev".into(), persona: "dev".into(), joined_at: "x".into() },
+            RoomMember::Human { id: "human:ana".into(), name: "Ana".into(), joined_at: "x".into() },
+        ];
+        let seen = std::collections::HashMap::from([("@qa".to_string(), 7u64), (crate::handler::BOT_NAME.to_string(), 9u64)]);
+        let p = presence(&members, &["@qa".to_string()], true, Some(&seen));
+        let by = |n: &str| p.iter().find(|x| x.name == n).unwrap();
+        assert_eq!(by(crate::handler::BOT_NAME).status, "waiting");
+        assert_eq!(by(crate::handler::BOT_NAME).last_seen_n, Some(9));
+        assert_eq!(by("@qa").status, "speaking");
+        assert_eq!(by("@qa").last_seen_n, Some(7));
+        assert_eq!(by("@dev").status, "idle");
+        assert_eq!(by("Ana").status, "idle");
+    }
 }
