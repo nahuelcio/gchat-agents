@@ -114,7 +114,7 @@ fn parse_run_line(line: &str) -> RunLine {
 impl AgentDriver for OpenCodeDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
         let live = self.spawn(&input);
-        live.end_input();
+        live.send_and_close(&self.prompt(&input));
         self.pump(live, &input, String::new()).await
     }
 }
@@ -138,14 +138,14 @@ impl OpenCodeDriver {
             args.push("--agent".into());
             args.push(agent.clone());
         }
-        let mut text = input.text.clone();
-        if self.switchboard.is_some() {
-            text.push_str("\n\n");
-            text.push_str(&switchboard_thread_note(&input.thread_key));
-        }
-        args.push("--".into());
-        args.push(text);
         spawn_live(&self.bin, &args, &input.workdir, self.timeout_ms)
+    }
+
+    fn prompt(&self, input: &AgentTurnInput) -> String {
+        match self.switchboard {
+            Some(_) => format!("{}\n\n{}", input.text, switchboard_thread_note(&input.thread_key)),
+            None => input.text.clone(),
+        }
     }
 
     async fn pump(
@@ -378,8 +378,8 @@ mod tests {
             format!(
                 r#"#!/usr/bin/env node
 import fs from 'node:fs';
-fs.appendFileSync({args_path:?}, process.argv.slice(2).join(' ') + '\n');
-const joined = process.argv.slice(2).join(' ');
+const joined = fs.readFileSync(0, 'utf8');
+fs.appendFileSync({args_path:?}, joined + '\n');
 if (joined.includes('Which library?')) {{
   console.log(JSON.stringify({{
     type: 'text',

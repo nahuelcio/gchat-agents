@@ -113,6 +113,17 @@ impl LiveProcess {
         });
     }
 
+    pub fn send_and_close(&self, text: &str) {
+        let payload = text.to_string();
+        let inner = self.inner.clone();
+        tokio::spawn(async move {
+            if let Some(mut stdin) = inner.stdin.lock().await.take() {
+                let _ = stdin.write_all(payload.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            }
+        });
+    }
+
     pub fn end_input(&self) {
         let inner = self.inner.clone();
         tokio::spawn(async move {
