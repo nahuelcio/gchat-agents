@@ -30,6 +30,16 @@ export interface Persona {
   respondTo?: "anyone" | "people";
 }
 
+export interface ActivityEvent {
+  id: string;
+  at: string;
+  kind: string;
+  threadKey: string;
+  title: string;
+  detail: string;
+  href: string;
+}
+
 export interface Thread {
   key: string;
   slug: string;
@@ -117,6 +127,7 @@ export const api = {
   settings: () => call<Settings>("/api/settings"),
   save: (patch: Partial<Settings>) => call<Settings>("/api/settings", patch, "PUT"),
   threads: () => call<Thread[]>("/api/threads"),
+  activity: (limit = 50) => call<ActivityEvent[]>(`/api/activity?limit=${limit}`),
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),
   stop: (slug: string) => call("/api/threads/down", { slug }),
   agents: () => call<Agent[]>("/api/agents"),

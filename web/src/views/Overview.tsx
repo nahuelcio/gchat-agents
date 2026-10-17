@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
-import { ago, api, until, type Job, type Thread } from "../api";
+import { ago, api, until, type ActivityEvent, type Job, type Thread } from "../api";
 import type { ViewProps } from "../App";
+
+const ACTIVITY_FILTERS = {
+  All: () => true,
+  Failures: (e: ActivityEvent) => e.kind.endsWith("_fail"),
+  Schedules: (e: ActivityEvent) => e.kind.startsWith("schedule_") || e.kind.startsWith("approval_"),
+  Rooms: (e: ActivityEvent) => e.kind.startsWith("member_") || e.kind.startsWith("turn_") || e.kind === "repo_attach",
+};
 
 export function Overview({ notify }: ViewProps) {
   const [threads, setThreads] = useState<Thread[]>();
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [activity, setActivity] = useState<ActivityEvent[]>();
+  const [filter, setFilter] = useState<keyof typeof ACTIVITY_FILTERS>("All");
   const [logs, setLogs] = useState<{ slug: string; text: string }>();
   const [endpoint, setEndpoint] = useState<string>();
   const [chatConnected, setChatConnected] = useState(true);
@@ -18,6 +27,7 @@ export function Overview({ notify }: ViewProps) {
     const load = () => {
       api.threads().then(setThreads, () => {});
       api.schedules().then(setJobs, () => {});
+      api.activity().then(setActivity, () => {});
     };
     load();
     const id = setInterval(load, 3000);
@@ -86,6 +96,32 @@ export function Overview({ notify }: ViewProps) {
           {next && <small>{next.name}</small>}
         </div>
       </div>
+
+      <section className="card flush" aria-label="Activity">
+        <div className="card-head">
+          <h2>Activity</h2>
+          <fieldset className="chips">
+            <legend className="sr-only">Filter activity</legend>
+            {(Object.keys(ACTIVITY_FILTERS) as (keyof typeof ACTIVITY_FILTERS)[]).map((f) => (
+              <label key={f} className={`chip ${filter === f ? "on" : ""}`}>
+                <input type="radio" name="activity" checked={filter === f} onChange={() => setFilter(f)} />
+                {f}
+              </label>
+            ))}
+          </fieldset>
+        </div>
+        {activity && activity.filter(ACTIVITY_FILTERS[filter]).length === 0 && <p className="empty">Nothing yet. Open the team chat or wait for a schedule.</p>}
+        <ul className="activity">
+          {activity?.filter(ACTIVITY_FILTERS[filter]).map((e) => (
+            <li key={e.id} className={`activity-row ${e.kind.endsWith("_fail") ? "bad" : ""}`}>
+              <span className="muted small activity-when">{ago(e.at)}</span>
+              <span className="badge">{e.kind.replace("_", " ")}</span>
+              <a href={e.href} className="activity-title">{e.title || e.kind}</a>
+              {e.detail && <span className="muted small activity-detail">{e.detail}</span>}
+            </li>
+          ))}
+        </ul>
+      </section>
 
       <section className="card flush">
         <div className="card-head">
