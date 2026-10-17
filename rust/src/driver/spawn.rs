@@ -358,7 +358,22 @@ fn kill_tree(child: &mut Child) {
     let _ = child.start_kill();
 }
 
+pub fn resolve_bin(bin: &str) -> String {
+    if !cfg!(windows) || Path::new(bin).extension().is_some() || bin.contains(['/', '\\']) {
+        return bin.to_string();
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .flat_map(|dir| exts.split(';').map(move |ext| dir.join(format!("{bin}{ext}"))))
+        .find(|candidate| candidate.is_file())
+        .map(|found| found.to_string_lossy().into_owned())
+        .unwrap_or_else(|| bin.to_string())
+}
+
 fn resolve_command(bin: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
+    let resolved = resolve_bin(bin);
+    let bin = resolved.as_str();
     let path = Path::new(bin);
     if path.is_file() {
         if let Some(interp) = shebang_interpreter(path) {

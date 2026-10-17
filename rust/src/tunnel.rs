@@ -18,7 +18,7 @@ impl std::fmt::Display for RunError {
 }
 
 pub async fn default_run(bin: String, args: Vec<String>) -> Result<String, RunError> {
-    let mut child = Command::new(&bin)
+    let mut child = Command::new(crate::driver::spawn::resolve_bin(&bin))
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

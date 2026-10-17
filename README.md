@@ -59,7 +59,7 @@ npm start
 
 That builds the control-plane UI and runs the Rust binary. Open `http://127.0.0.1:8081`.
 
-Echo driver (no agent CLI needed):
+Dev (backend + UI hot reload + tunnel), or `npm run dev:echo` without an agent CLI:
 
 ```
 npm run dev

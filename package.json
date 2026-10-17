@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "npm run -s build:web && cargo run --manifest-path rust/Cargo.toml --release",
-    "dev": "cargo run --manifest-path rust/Cargo.toml -- --driver echo",
+    "dev": "node scripts/dev.mjs",
+    "dev:echo": "node scripts/dev.mjs --driver echo",
     "start:dev": "npm run -s dev",
     "build": "npm run -s build:web && cargo build --manifest-path rust/Cargo.toml --release",
     "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",

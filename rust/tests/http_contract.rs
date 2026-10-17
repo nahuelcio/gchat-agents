@@ -159,7 +159,7 @@ async fn healthz_and_admin_contract() {
     assert_eq!(status, 200);
     assert!(body.as_array().is_some());
 
-    let (status, body) = put_json(
+    let (status, _) = put_json(
         admin_port,
         "/api/settings",
         json!({ "personas": [{ "name": "qa", "prompt": "You are QA" }] }),

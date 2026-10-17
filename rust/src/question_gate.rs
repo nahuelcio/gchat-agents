@@ -36,14 +36,6 @@ pub fn cancel_question(thread_key: &str) {
     }
 }
 
-pub fn clear_questions() {
-    if let Some(m) = map().as_mut() {
-        for (_, p) in m.drain() {
-            p.cancel();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,7 +44,7 @@ mod tests {
 
     #[tokio::test]
     async fn hold_and_take() {
-        clear_questions();
+        cancel_question("t1");
         hold_question(
             "t1",
             PendingAgent::new(
@@ -76,6 +68,6 @@ mod tests {
         assert!(!has_question("t1"));
         let out = p.resume("a".into()).await.unwrap();
         assert_eq!(out.reply, "ok");
-        clear_questions();
+        cancel_question("t1");
     }
 }

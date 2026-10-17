@@ -1131,7 +1131,7 @@ mod tests {
     use crate::driver::types::AgentTurnResult;
     use crate::driver::EchoDriver;
     use crate::google::RecordingChat;
-    use crate::question_gate::clear_questions;
+    use crate::question_gate::cancel_question;
     use crate::session::RoomMember;
     use crate::verify::AcceptAllVerifier;
     use async_trait::async_trait;
@@ -1150,8 +1150,10 @@ mod tests {
         }
     }
 
+    type Plan = Box<dyn Fn(&str, usize) -> String + Send + Sync>;
+
     struct ScriptedDriver {
-        plan: Box<dyn Fn(&str, usize) -> String + Send + Sync>,
+        plan: Plan,
         calls: Mutex<Vec<AgentTurnInput>>,
     }
 
@@ -1285,7 +1287,7 @@ mod tests {
 
     #[tokio::test]
     async fn queues_agent_turn() {
-        clear_questions();
+        cancel_question("spaces/x/threads/t");
         let dir = tempdir().unwrap();
         let store = Arc::new(SessionStore::open(dir.path().join("sessions.json")));
         let chat = Arc::new(RecordingChat::new());
@@ -1333,7 +1335,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_user_question_flow() {
-        clear_questions();
+        cancel_question("spaces/x/threads/q");
         let dir = tempdir().unwrap();
         let chat = Arc::new(RecordingChat::new());
         let d = Arc::new(HandlerDeps {
@@ -1391,7 +1393,7 @@ mod tests {
         let posts = chat.posts.lock().unwrap().clone();
         assert!(posts.len() >= 2);
         assert!(posts.last().unwrap().1.text.contains("answered"));
-        clear_questions();
+        cancel_question("spaces/x/threads/q");
     }
 
     #[tokio::test]
