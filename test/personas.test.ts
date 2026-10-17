@@ -304,3 +304,27 @@ describe("parallel rooms", () => {
     expect(driver.calls.some((c) => c.threadKey.endsWith("#qa"))).toBe(false);
   });
 });
+
+describe("members that change during a turn", () => {
+  it("an agent invited during the host's turn can answer the host's question in that same message", async () => {
+    const designer: Persona = { name: "designer", prompt: "" };
+    let deps: HandlerDeps;
+    const driver = new ScriptedDriver((who) => {
+      if (who === "default") {
+        void deps.store.update("team/t1", "team-chat", {
+          members: [
+            { kind: "human", id: "human:ana", name: "Ana", joinedAt: "x" },
+            { kind: "agent", id: "agent:designer", persona: "designer", joinedAt: "x" },
+          ],
+        });
+        return "Listo, volvió. @designer ¿confirmás lo de los colores?";
+      }
+      return "Confirmado.";
+    });
+    deps = await depsFor(driver, [designer]);
+    await deps.store.update("team/t1", "team-chat", { members: [{ kind: "human", id: "human:ana", name: "Ana", joinedAt: "x" }], kicked: ["designer"] });
+    const authors: (string | undefined)[] = [];
+    await processMessage({ threadKey: "team/t1", spaceName: "team-chat", text: "agregá a @designer", sender: "Ana", reply: async (_r, m) => void authors.push(m?.author) }, deps);
+    expect(authors).toContain("designer");
+  });
+});

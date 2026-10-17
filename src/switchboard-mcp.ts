@@ -147,7 +147,7 @@ export function opencodeMcpConfig(serverPath: string, threadKey: string, adminUr
         type: "local",
         enabled: true,
         command: [process.execPath, serverPath],
-        env: mcpEnv(threadKey, adminUrl),
+        environment: mcpEnv(threadKey, adminUrl),
       },
     },
   });

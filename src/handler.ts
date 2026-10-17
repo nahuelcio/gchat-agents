@@ -424,15 +424,16 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
   await req.reply(result.reply + footer);
 
   // Host @asked someone, or the human asked about room agents ("qué opinas de architect") → keep talking with them.
-  const asked = askedPersonas(result.reply, personas);
-  const topics = consultTopics(req.text, personas);
+  const roomNow = activePersonas(deps.options?.().personas ?? [], deps.store.get(threadKey)?.members);
+  const asked = askedPersonas(result.reply, roomNow);
+  const topics = consultTopics(req.text, roomNow);
   const invite = asked.length ? asked : topics;
   if (invite.length) {
     await personaRound(
       { ...req, text: asked.length ? result.reply : req.text, sender: asked.length ? BOT_NAME : req.sender },
       deps,
       invite,
-      personas,
+      roomNow,
       asked.length ? { ask: true } : { hostReply: result.reply },
     );
   }
