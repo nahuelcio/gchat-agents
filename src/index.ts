@@ -38,7 +38,13 @@ if (config.tunnel) {
   publicUrl = await ensureTunnel(config.port);
   console.info(`public endpoint: ${publicUrl}/google/chat  (paste this as the Chat app's HTTP endpoint URL)`);
 }
-const tokenAudience = config.tokenAudience ?? (publicUrl && `${publicUrl}/google/chat`);
+let tokenAudience = config.tokenAudience ?? (publicUrl && `${publicUrl}/google/chat`);
+if (!tokenAudience && !config.tunnel) {
+  tokenAudience = `http://127.0.0.1:${config.port}/google/chat`;
+  console.warn(
+    "GOOGLE_TOKEN_AUDIENCE not set with TUNNEL=off; using loopback audience. Google Chat needs the real public URL in GOOGLE_TOKEN_AUDIENCE.",
+  );
+}
 if (!tokenAudience) throw new Error("Set GOOGLE_TOKEN_AUDIENCE, or leave TUNNEL on so it is derived from the tunnel URL");
 
 // Env is the seed; whatever the control plane saved in config.json wins.

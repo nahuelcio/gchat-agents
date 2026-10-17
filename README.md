@@ -89,7 +89,8 @@ This endpoint **triggers an agent that executes code on this machine**. Take it 
 ```
 npm install
 npm run build          # tsc + control plane UI (vite)
-npm run dev:web        # UI with hot reload, proxied to a running bridge on :8081
+npm run dev            # backend watch + control plane UI hot reload (open :5173)
+npm run dev:web        # UI only (needs bridge already on :8081)
 npm test               # vitest
 npm run smoke -- --driver echo   # end-to-end without Google or opencode
 ```
