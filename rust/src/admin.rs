@@ -630,6 +630,7 @@ async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<Tea
         &thread,
         &text,
         &name.chars().take(40).collect::<String>(),
+        None,
     )
     .await
     {
@@ -639,16 +640,17 @@ async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<Tea
 }
 
 #[derive(Deserialize)]
-struct TeamThreadBody {
+pub struct TeamThreadBody {
     thread: Option<String>,
     archived: Option<bool>,
 }
 
-async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
+pub async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
     let thread = body.thread.unwrap_or_default();
     if !thread_id_ok(&thread) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
     }
+    crate::personas::request_stop(&format!("{TEAM_PREFIX}{thread}"));
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -720,7 +722,7 @@ async fn post_team_members(State(state): State<Arc<AppState>>, Json(body): Json<
     }
 }
 
-async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some((bytes, content_type, name)) = state.media.read(&id).await else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };

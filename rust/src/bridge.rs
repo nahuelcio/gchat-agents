@@ -12,12 +12,109 @@ use crate::state::AppState;
 use crate::static_files::serve_static;
 
 pub fn bridge_router(state: Arc<AppState>) -> Router {
+    let play = Router::new()
+        .route("/play/api/thread", get(play_thread))
+        .route("/play/api/send", post(play_send))
+        .route("/play/api/stop", post(crate::admin::post_team_stop))
+        .route("/play/api/agents", get(play_agents))
+        .route("/play/api/personas", get(play_personas))
+        .route("/play/api/media/{id}", get(crate::admin::get_media))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), require_share_token));
     Router::new()
+        .merge(play)
         .route("/healthz", get(healthz))
         .route("/google/chat", post(google_chat))
         .fallback(bridge_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
+}
+
+async fn require_share_token(State(state): State<Arc<AppState>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(String::from);
+    let access = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("access=")))
+        .map(percent_decode);
+    if !state.share.lock().await.check(bearer.or(access).as_deref()) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "invalid or expired share link" }))).into_response();
+    }
+    next.run(req).await
+}
+
+fn percent_decode(v: &str) -> String {
+    let bytes = v.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match (bytes[i], bytes.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok())) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[derive(serde::Deserialize)]
+struct ThreadQuery {
+    thread: Option<String>,
+}
+
+async fn play_thread(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<ThreadQuery>) -> Response {
+    match crate::team::team_thread(state.handler.clone(), state.transcripts.clone(), q.thread.as_deref().unwrap_or("")).await {
+        Ok(t) => Json(t).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PlaySend {
+    thread: Option<String>,
+    text: Option<String>,
+    name: Option<String>,
+}
+
+async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend>) -> Response {
+    let name: String = body.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Guest".into()).chars().take(40).collect();
+    match crate::team::team_send(
+        state.handler.clone(),
+        state.transcripts.clone(),
+        body.thread.as_deref().unwrap_or(""),
+        body.text.as_deref().unwrap_or(""),
+        &name,
+        Some(crate::team::GUEST_COMMANDS),
+    )
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn play_agents(State(state): State<Arc<AppState>>) -> Response {
+    let agents: Vec<_> = crate::agents::detect_agents(&state.opencode_bin, &state.claude_bin)
+        .await
+        .into_iter()
+        .filter(|a| a.supported && a.installed)
+        .map(|a| json!({ "id": a.id, "name": a.name, "ready": a.ready }))
+        .collect();
+    Json(agents).into_response()
+}
+
+async fn play_personas(State(state): State<Arc<AppState>>) -> Response {
+    let names: Vec<_> = state.settings.get().personas.into_iter().map(|p| json!({ "name": p.name })).collect();
+    Json(names).into_response()
 }
 
 async fn healthz() -> Response {

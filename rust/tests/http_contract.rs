@@ -335,3 +335,42 @@ async fn json_cli_matches_the_admin_api() {
     let down = switchboard::cli::send("http://127.0.0.1:1", switchboard::cli::plan(&args, None).unwrap()).await;
     assert_eq!(down.unwrap_err(), "control plane is not running");
 }
+
+#[tokio::test]
+async fn guests_chat_through_the_share_link_with_limited_commands() {
+    let dir = tempdir().unwrap();
+    let (bridge, _admin, state) = start_servers(dir.path().to_path_buf()).await;
+    let token = state.share.lock().await.value().to_string();
+    let client = reqwest::Client::new();
+    let url = |p: &str| format!("http://127.0.0.1:{bridge}{p}");
+    let no_token = client.get(url("/play/api/thread?thread=g1")).send().await.unwrap();
+    assert_eq!(no_token.status().as_u16(), 401);
+    let bad = client.get(url("/play/api/thread?thread=g1")).bearer_auth("nope").send().await.unwrap();
+    assert_eq!(bad.status().as_u16(), 401);
+
+    let send = |text: &str| client.post(url("/play/api/send")).bearer_auth(&token).json(&json!({ "thread": "g1", "text": text, "name": "Invitada" })).send();
+    let blocked = send("/repo api").await.unwrap();
+    assert_eq!(blocked.status().as_u16(), 400);
+    assert!(blocked.json::<Value>().await.unwrap()["error"].as_str().unwrap().contains("not available on the shared link"));
+    assert_eq!(send("hola desde afuera").await.unwrap().status().as_u16(), 200);
+    assert_eq!(send("/help").await.unwrap().status().as_u16(), 200);
+
+    let mut texts = Vec::new();
+    for _ in 0..50 {
+        let thread: Value = client.get(url("/play/api/thread?thread=g1")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+        texts = thread["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap_or("").to_string()).collect();
+        if texts.iter().any(|t| t.contains("Echo")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(texts.iter().any(|t| t == "hola desde afuera"), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("Echo")), "{texts:?}");
+
+    let media = client.get(url(&format!("/play/api/media/missing?access={token}"))).send().await.unwrap();
+    assert_eq!(media.status().as_u16(), 404);
+    let personas = client.get(url("/play/api/personas")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(personas.status().as_u16(), 200);
+    let stop = client.post(url("/play/api/stop")).bearer_auth(&token).json(&json!({ "thread": "g1" })).send().await.unwrap();
+    assert_eq!(stop.status().as_u16(), 200);
+}

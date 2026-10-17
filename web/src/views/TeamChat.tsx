@@ -210,6 +210,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("switchboard.guest-threads", []) : []));
   const [activeId, setActiveId] = useState<string | undefined>(initialThread);
   const [state, setState] = useState<TeamThreadState>();
+  const [loadError, setLoadError] = useState<string>();
   const [draft, setDraft] = useState("");
   const [caret, setCaret] = useState(0);
   const [mentionHi, setMentionHi] = useState(0);
@@ -395,13 +396,14 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
       transport.thread(activeId).then(
         (s) => {
           if (!alive) return;
+          setLoadError(undefined);
           setState(s);
           if (transport.guest) {
             const title = s.messages.find((m) => !m.bot)?.text.slice(0, 60);
             if (title) setThreads((list) => list.map((t) => (t.id === activeId ? { ...t, title, count: s.messages.length } : t)));
           }
         },
-        () => {},
+        (err: Error) => alive && setLoadError(err.message),
       );
     void load();
     const id = setInterval(load, 3000);
@@ -631,6 +633,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         <div className="play-main">
         <div className="play-stream">
         <div className="messages">
+          {loadError && <p className="empty error" role="alert">{loadError}</p>}
           {!activeId && <p className="empty">Start a thread with +.</p>}
           {activeId && state?.messages.length === 0 && (
             <p className="empty">

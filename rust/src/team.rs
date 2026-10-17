@@ -79,12 +79,15 @@ pub struct AppState {
     pub port: Option<u16>,
 }
 
+pub const GUEST_COMMANDS: &[&str] = &["help", "context", "compact", "clear", "model", "agent"];
+
 pub async fn team_send(
     deps: Arc<HandlerDeps>,
     transcripts: Arc<TranscriptStore>,
     thread: &str,
     text: &str,
     name: &str,
+    allowed_commands: Option<&[&str]>,
 ) -> Result<serde_json::Value, String> {
     if !thread_id_ok(thread) {
         return Err("bad thread id".into());
@@ -92,6 +95,12 @@ pub async fn team_send(
     let text = text.trim();
     if text.is_empty() {
         return Err("thread and text or an image are required".into());
+    }
+    if let (Some(allowed), Some(cmd)) = (allowed_commands, text.strip_prefix('/')) {
+        let cmd = cmd.split_whitespace().next().unwrap_or("");
+        if !allowed.contains(&cmd) {
+            return Err(format!("/{cmd} is not available on the shared link"));
+        }
     }
     let thread_key = format!("{TEAM_PREFIX}{thread}");
     transcripts

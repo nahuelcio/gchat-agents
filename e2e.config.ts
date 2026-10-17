@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
 
-const dataDir = mkdtempSync(join(tmpdir(), "switchboard-e2e-"));
+const dataDir = process.env.E2E_DATA_DIR ?? (process.env.E2E_DATA_DIR = mkdtempSync(join(tmpdir(), "switchboard-e2e-")));
 const driver = process.env.E2E_DRIVER ?? "echo";
 const bin = join("rust", "target", "debug", process.platform === "win32" ? "switchboard.exe" : "switchboard");
 
