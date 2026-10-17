@@ -79,7 +79,7 @@ describe("OpenCodeDriver (spawned against a fake CLI)", () => {
     expect(args).toEqual(["run", "--format", "json", "--", "hello"]);
   });
 
-  it("uses the background service and tells a new session which Switchboard thread it is in", async () => {
+  it("uses the background service and tells every turn which Switchboard thread it is in", async () => {
     const argsFile = join(dir, "args-sb.txt");
     const bin = await fakeBin(
       "oc-sb.sh",
@@ -95,7 +95,7 @@ echo "$@" > ${JSON.stringify(argsFile)}
     expect(first).not.toContain("--standalone");
     expect(first).toContain("[Switchboard thread: share/r1.");
     await driver.runTurn({ threadKey: "share/r1", sessionRef: "ses_sb", text: "again", workdir: dir });
-    expect(await readFile(argsFile, "utf8")).not.toContain("Switchboard thread");
+    expect(await readFile(argsFile, "utf8")).toContain("[Switchboard thread: share/r1.");
   });
 
   it("exits when the CLI waits on stdin EOF after printing the reply", async () => {

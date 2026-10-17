@@ -136,8 +136,8 @@ export class OpenCodeDriver implements AgentDriver {
     if (agent) args.push("--agent", agent);
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
-    const thread = this.switchboard && !sessionRef ? `${switchboardThreadNote(input.threadKey)}\n\n` : "";
-    args.push("--", thread + input.text);
+    const thread = this.switchboard ? `\n\n${switchboardThreadNote(input.threadKey)}` : "";
+    args.push("--", input.text + thread);
     return spawnLive(this.bin, args, input.workdir, this.timeoutMs);
   }
 
