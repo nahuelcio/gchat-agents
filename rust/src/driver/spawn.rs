@@ -362,13 +362,24 @@ pub fn resolve_bin(bin: &str) -> String {
     if !cfg!(windows) || Path::new(bin).extension().is_some() || bin.contains(['/', '\\']) {
         return bin.to_string();
     }
-    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
     let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .flat_map(|dir| exts.split(';').map(move |ext| dir.join(format!("{bin}{ext}"))))
+    let dirs: Vec<_> = std::env::split_paths(&path).collect();
+    [".exe", ".cmd"]
+        .iter()
+        .flat_map(|ext| dirs.iter().map(move |dir| dir.join(format!("{bin}{ext}"))))
         .find(|candidate| candidate.is_file())
-        .map(|found| found.to_string_lossy().into_owned())
+        .map(|found| npm_shim_target(&found).unwrap_or(found).to_string_lossy().into_owned())
         .unwrap_or_else(|| bin.to_string())
+}
+
+fn npm_shim_target(shim: &Path) -> Option<std::path::PathBuf> {
+    if !shim.extension()?.eq_ignore_ascii_case("cmd") {
+        return None;
+    }
+    let text = std::fs::read_to_string(shim).ok()?;
+    let rel = text.rsplit("\"%dp0%\\").next()?.split('"').next()?;
+    let target = shim.parent()?.join(rel);
+    target.is_file().then_some(target)
 }
 
 fn resolve_command(bin: &str, args: &[String]) -> Result<(String, Vec<String>), String> {
@@ -406,6 +417,17 @@ fn shebang_interpreter(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn npm_shim_points_to_real_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("node_modules").join("tool.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        let shim = dir.path().join("tool.cmd");
+        std::fs::write(&shim, "@ECHO off\r\n\"%dp0%\\node_modules\\tool.exe\"   %*\r\n").unwrap();
+        assert_eq!(npm_shim_target(&shim), Some(exe));
+    }
 
     #[tokio::test]
     async fn captures_fixture_echo() {
