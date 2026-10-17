@@ -50,6 +50,19 @@ Details that the drivers handle for you:
 
 ### 2. Run it
 
+**Without cloning (prebuilt binary, UI included):**
+
+```
+irm https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.ps1 | iex   # Windows
+curl -fsSL https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.sh | sh   # Linux / macOS
+```
+
+While the repo is private, run the script from a machine with `gh auth login` done (it downloads through `gh`). Releases are built by `.github/workflows/release.yml` on every `v*` tag.
+
+The public tunnel is picked in Settings › Public tunnel (`auto` uses cloudflared on Windows, downloaded on first use; opentunnel elsewhere). `TUNNEL` in `.env` overrides it.
+
+**From the repo:**
+
 **Windows (PowerShell or cmd), from the repo root:**
 
 ```

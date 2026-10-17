@@ -36,7 +36,7 @@ pub struct RepoConfig {
 pub struct Config {
     pub port: u16,
     pub token_audience: Option<String>,
-    pub tunnel: bool,
+    pub tunnel: Option<crate::tunnel::TunnelMode>,
     pub service_account_json: Option<String>,
     pub allowed_spaces: Vec<String>,
     pub agent_driver: AgentDriverKind,
@@ -90,7 +90,7 @@ pub fn load_config() -> Result<Config, String> {
     Ok(Config {
         port: env_str("PORT").and_then(|s| s.parse().ok()).unwrap_or(8080),
         token_audience: env_str("GOOGLE_TOKEN_AUDIENCE"),
-        tunnel: env_str("TUNNEL").as_deref() != Some("off"),
+        tunnel: env_str("TUNNEL").and_then(|v| crate::tunnel::TunnelMode::parse(&v)),
         service_account_json: env_str("GOOGLE_SERVICE_ACCOUNT_JSON"),
         allowed_spaces,
         agent_driver: AgentDriverKind::parse(env_str("AGENT_DRIVER").as_deref().unwrap_or("opencode"))?,

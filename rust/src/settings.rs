@@ -1,3 +1,4 @@
+use crate::tunnel::TunnelMode;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -44,6 +45,8 @@ pub struct Settings {
     pub context_footer: ContextFooter,
     pub auto_compact_at: u32,
     pub personas: Vec<Persona>,
+    #[serde(default)]
+    pub tunnel: TunnelMode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -108,6 +111,7 @@ impl SettingsStore {
                 .unwrap_or(ContextFooter::Every5),
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
             personas: saved.personas.or(defaults.personas).unwrap_or_default(),
+            tunnel: saved.tunnel.unwrap_or_default(),
         };
         Self {
             file_path,
@@ -151,6 +155,9 @@ impl SettingsStore {
             if let Some(v) = patch.personas {
                 current.personas = v;
             }
+            if let Some(v) = patch.tunnel {
+                current.tunnel = v;
+            }
             validate(&current)?;
             current
         };
@@ -175,6 +182,7 @@ struct PartialSettings {
     context_footer: Option<ContextFooter>,
     auto_compact_at: Option<u32>,
     personas: Option<Vec<Persona>>,
+    tunnel: Option<TunnelMode>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -188,6 +196,7 @@ pub struct SettingsPatch {
     pub context_footer: Option<ContextFooter>,
     pub auto_compact_at: Option<u32>,
     pub personas: Option<Vec<Persona>>,
+    pub tunnel: Option<TunnelMode>,
 }
 
 fn validate(s: &Settings) -> Result<(), String> {

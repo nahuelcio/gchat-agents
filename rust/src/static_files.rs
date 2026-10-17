@@ -6,50 +6,54 @@ use axum::response::IntoResponse;
 
 const CSP: &str = "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com";
 
+const NOT_BUILT: &str = "UI not built. Run: npm run build:web";
+
+#[derive(rust_embed::Embed)]
+#[folder = "../web/dist"]
+struct Embedded;
+
 pub async fn serve_static(web_dir: Option<&Path>, url: &str) -> Response<Body> {
-    let Some(root) = web_dir else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "UI not built. Run: npm run build:web").into_response();
-    };
-    let root = match root.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, "UI not built. Run: npm run build:web").into_response();
-        }
-    };
-    let rel = if url == "/" {
-        "index.html".to_string()
-    } else {
-        url.trim_start_matches('/').to_string()
-    };
-    let candidate = root.join(&rel);
-    let file = resolve_under(&root, &candidate).or_else(|| {
-        if rel.starts_with("assets/") {
-            None
-        } else {
-            Some(root.join("index.html"))
-        }
-    });
+    let rel = if url == "/" { "index.html" } else { url.trim_start_matches('/') };
+    let spa_fallback = !rel.starts_with("assets/");
+    match web_dir.and_then(|d| d.canonicalize().ok()) {
+        Some(root) => serve_disk(&root, rel, spa_fallback).await,
+        None => serve_embedded(rel, spa_fallback),
+    }
+}
+
+async fn serve_disk(root: &Path, rel: &str, spa_fallback: bool) -> Response<Body> {
+    let file = resolve_under(root, &root.join(rel)).or_else(|| spa_fallback.then(|| root.join("index.html")));
     let Some(file) = file else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     match tokio::fs::read(&file).await {
-        Ok(bytes) => {
-            let mime = mime_guess::from_path(&file).first_or_octet_stream();
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime.essence_str())
-                .header(header::CONTENT_SECURITY_POLICY, CSP)
-                .body(Body::from(bytes))
-                .unwrap()
-        }
-        Err(_) => {
-            if file.ends_with("index.html") {
-                (StatusCode::SERVICE_UNAVAILABLE, "UI not built. Run: npm run build:web").into_response()
-            } else {
-                (StatusCode::NOT_FOUND, "not found").into_response()
-            }
-        }
+        Ok(bytes) => file_response(&file.to_string_lossy(), bytes),
+        Err(_) if file.ends_with("index.html") => (StatusCode::SERVICE_UNAVAILABLE, NOT_BUILT).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+fn serve_embedded(rel: &str, spa_fallback: bool) -> Response<Body> {
+    if let Some(file) = Embedded::get(rel) {
+        return file_response(rel, file.data.into_owned());
+    }
+    if !spa_fallback {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match Embedded::get("index.html") {
+        Some(file) => file_response("index.html", file.data.into_owned()),
+        None => (StatusCode::SERVICE_UNAVAILABLE, NOT_BUILT).into_response(),
+    }
+}
+
+fn file_response(name: &str, bytes: Vec<u8>) -> Response<Body> {
+    let mime = mime_guess::from_path(name).first_or_octet_stream();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime.essence_str())
+        .header(header::CONTENT_SECURITY_POLICY, CSP)
+        .body(Body::from(bytes))
+        .unwrap()
 }
 
 fn resolve_under(root: &Path, candidate: &Path) -> Option<PathBuf> {

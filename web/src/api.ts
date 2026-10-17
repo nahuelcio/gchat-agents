@@ -6,6 +6,8 @@ export interface RepoConfig {
 
 export type ContextFooter = "every" | "every5" | "above60" | "never";
 
+export type TunnelMode = "auto" | "opentunnel" | "cloudflared" | "off";
+
 export interface Settings {
   agentDriver: "opencode" | "claude";
   models: { opencode?: string; claude?: string };
@@ -14,6 +16,7 @@ export interface Settings {
   allowedSpaces: string[];
   contextFooter: ContextFooter;
   autoCompactAt: number;
+  tunnel: TunnelMode;
   personas: Persona[];
 }
 

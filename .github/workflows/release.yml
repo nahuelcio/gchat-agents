@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: switchboard-windows-x64.exe, bin: switchboard.exe }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, asset: switchboard-linux-x64, bin: switchboard }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: switchboard-linux-arm64, bin: switchboard }
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: switchboard-macos-arm64, bin: switchboard }
+          - { os: macos-13, target: x86_64-apple-darwin, asset: switchboard-macos-x64, bin: switchboard }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run build:web
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+      - shell: bash
+        run: cp rust/target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: switchboard-*
+          generate_release_notes: true

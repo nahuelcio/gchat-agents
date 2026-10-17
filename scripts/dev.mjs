@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,15 +10,6 @@ const bridgePort = process.env.PORT ?? "8080";
 const driverArgs = process.argv.slice(2);
 
 const env = { ...process.env };
-const tunnelWorks = () => spawnSync("opentunnel", ["--version"], { stdio: "ignore", shell: true }).status === 0;
-if (env.TUNNEL !== "off" && !tunnelWorks()) {
-  console.warn("[dev] opentunnel not working (npm i -g opentunnel): running with TUNNEL=off");
-  env.TUNNEL = "off";
-}
-if (env.TUNNEL === "off" && !env.GOOGLE_TOKEN_AUDIENCE?.trim()) {
-  env.GOOGLE_TOKEN_AUDIENCE = `http://127.0.0.1:${bridgePort}/google/chat`;
-}
-
 const children = [];
 
 function run(label, cmd, args) {
@@ -43,7 +34,6 @@ console.info("");
 console.info(`  UI (hot reload):   http://127.0.0.1:${webPort}`);
 console.info(`  control plane:     http://127.0.0.1:${adminPort}`);
 console.info(`  bridge (Chat):     http://127.0.0.1:${bridgePort}`);
-console.info(`  tunnel:            ${env.TUNNEL === "off" ? "off" : "on"}`);
 console.info("");
 
 run("backend", "cargo", ["run", "--manifest-path", "rust/Cargo.toml", "--", ...driverArgs]);

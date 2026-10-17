@@ -118,7 +118,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         }
     };
 
-    if config.token_audience.is_none() && !config.tunnel {
+    if config.token_audience.is_none() {
         config.token_audience = Some(format!("http://127.0.0.1:{}/google/chat", config.port));
     }
 
@@ -225,22 +225,27 @@ fn find_web_dir() -> Option<PathBuf> {
 
 pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     let mut config = load_config()?;
-    let public_url = if config.tunnel {
-        tracing::info!("connecting tunnel (opentunnel)…");
-        let url = crate::tunnel::ensure_tunnel(config.port).await?;
+    let mode = config.tunnel.unwrap_or_else(|| {
+        SettingsStore::open(config.data_dir.join("config.json"), Default::default()).get().tunnel
+    });
+    let public_url = match crate::tunnel::open_tunnel(mode, config.port, &config.data_dir).await {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::warn!("tunnel unavailable: {err}");
+            None
+        }
+    };
+    if let Some(url) = &public_url {
         tracing::info!("public endpoint: {url}/google/chat");
         if config.token_audience.is_none() {
             config.token_audience = Some(format!("{url}/google/chat"));
         }
-        Some(url)
-    } else {
-        None
-    };
+    }
     if config.token_audience.is_none() {
         config.token_audience = Some(format!("http://127.0.0.1:{}/google/chat", config.port));
         if !config.skip_token_verify {
             tracing::warn!(
-                "GOOGLE_TOKEN_AUDIENCE not set with TUNNEL=off; using loopback audience"
+                "no public URL and GOOGLE_TOKEN_AUDIENCE not set; using loopback audience"
             );
         }
     }

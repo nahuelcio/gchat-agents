@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type TunnelMode } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -18,6 +18,13 @@ const COMPACT_OPTIONS = [
   { value: 95, label: "95%" },
 ];
 
+const TUNNEL_OPTIONS: { value: TunnelMode; label: string; hint: string }[] = [
+  { value: "auto", label: "Auto", hint: "cloudflared on Windows, opentunnel elsewhere (cloudflared as fallback)." },
+  { value: "opentunnel", label: "opentunnel", hint: "Stable URL across restarts. Linux and macOS only (npm i -g opentunnel)." },
+  { value: "cloudflared", label: "cloudflared", hint: "Works everywhere and downloads itself. The URL changes on every restart." },
+  { value: "off", label: "Off", hint: "No public URL: team chat works, Google Chat needs GOOGLE_TOKEN_AUDIENCE." },
+];
+
 export function SettingsView(props: ViewProps) {
   return (
     <>
@@ -31,6 +38,7 @@ export function SettingsView(props: ViewProps) {
       <AgentCard {...props} />
       <PersonasCard {...props} />
       <ContextCard {...props} />
+      <TunnelCard {...props} />
       <ReposCard {...props} />
       <SpacesCard {...props} />
     </>
@@ -568,6 +576,31 @@ function PersonasCard({ settings, save }: ViewProps) {
           </div>
         </>
       )}
+    </details>
+  );
+}
+
+function TunnelCard({ settings, save }: ViewProps) {
+  const current = TUNNEL_OPTIONS.find((o) => o.value === settings.tunnel) ?? TUNNEL_OPTIONS[0];
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Public tunnel</h2>
+        <p className="muted small">How Google Chat reaches this machine. Applies on the next restart; TUNNEL in .env overrides it.</p>
+      </summary>
+      <div className="field">
+        <span>Provider</span>
+        <fieldset className="chips">
+          <legend className="sr-only">Tunnel provider</legend>
+          {TUNNEL_OPTIONS.map((o) => (
+            <label key={o.value} className={`chip ${current.value === o.value ? "on" : ""}`} title={o.hint}>
+              <input type="radio" name="tunnel" checked={current.value === o.value} onChange={() => void save({ tunnel: o.value }, `Tunnel: ${o.label} (restart to apply)`)} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">{current.hint}</span>
+      </div>
     </details>
   );
 }

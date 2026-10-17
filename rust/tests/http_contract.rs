@@ -14,7 +14,7 @@ async fn start_servers(data_dir: std::path::PathBuf) -> (u16, u16, Arc<switchboa
     let config = Config {
         port: 0,
         token_audience: Some("http://test/google/chat".into()),
-        tunnel: false,
+        tunnel: Some(switchboard::tunnel::TunnelMode::Off),
         service_account_json: None,
         allowed_spaces: vec!["spaces/test".into()],
         agent_driver: AgentDriverKind::Opencode,
