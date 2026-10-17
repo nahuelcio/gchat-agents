@@ -90,7 +90,7 @@ Then open `http://127.0.0.1:8081` to pick the agent, add repos and allow spaces.
 | `TUNNEL` | `on` (default) exposes the bridge with opentunnel at startup; `off` to bring your own HTTPS front |
 | `GOOGLE_TOKEN_AUDIENCE` | Expected token audience. Default with the tunnel on: `<tunnel URL>/google/chat`. Required with `TUNNEL=off` (endpoint URL or project number, matching the Chat app setting) |
 | `PORT` / `ADMIN_PORT` | Bridge port (default 8080) / control plane port, loopback only (default 8081) |
-| `AGENT_WORKDIR` | Where chat-only threads run the agent (default `data/workspace`; threads with `/repo` use their worktree) |
+| `AGENT_WORKDIR` | Where chat-only threads run the agent (default `data/workspace`). `/repo a b c` gives a thread one worktree per repo under one folder; `/status`, `/up [repo]`, `/down`, `/logs`, `/close [repo]` manage them |
 | `DATA_DIR` | Settings, sessions, schedules, worktrees, clones (default `./data`) |
 | `AGENT_TURN_TIMEOUT_MS` | Max turn duration (default 600000) |
 

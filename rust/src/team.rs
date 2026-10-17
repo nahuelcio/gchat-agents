@@ -253,7 +253,7 @@ pub async fn team_thread(
     let slug = crate::workspace::slug_for(&thread_key);
     let ws = deps.workspaces.as_ref();
     let changes = if let (Some(ws), Some(wt)) = (ws, record.as_ref().and_then(|r| r.worktree.as_deref())) {
-        ws.changes(wt).await
+        ws.changes_in(wt).await
     } else {
         None
     };
@@ -295,12 +295,10 @@ pub async fn team_delete(
 ) -> Result<serde_json::Value, String> {
     let thread_key = format!("{TEAM_PREFIX}{thread}");
     if let Some(record) = deps.store.get(&thread_key) {
-        if let (Some(ws), Some(repo), Some(wt)) =
-            (deps.workspaces.as_ref(), record.repo.as_deref(), record.worktree.as_deref())
-        {
+        if let (Some(ws), Some(wt)) = (deps.workspaces.as_ref(), record.worktree.as_deref()) {
             let slug = crate::workspace::slug_for(&thread_key);
             ws.down(&slug);
-            let _ = ws.remove(repo, wt).await;
+            let _ = ws.remove_thread(wt).await;
             deps.store.delete(&thread_key).await?;
             transcripts.remove(&thread_key).await?;
             return Ok(serde_json::json!({ "ok": true, "branchKept": record.branch }));

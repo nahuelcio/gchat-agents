@@ -93,7 +93,9 @@ impl Workspaces {
             .cloned()
             .ok_or_else(|| format!("unknown repo {repo_name}"))?;
         let branch = format!("switchboard/{slug}");
-        let worktree = self.root.join(slug).to_string_lossy().to_string();
+        let dir = self.thread_dir(slug);
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        let worktree = dir.join(repo_name).to_string_lossy().to_string();
         let base = repo.base.clone().unwrap_or_else(|| "HEAD".into());
         let status = Command::new("git")
             .args(["-C", &repo.path, "worktree", "add", "-B", &branch, &worktree, &base])
@@ -108,14 +110,55 @@ impl Workspaces {
         Ok((worktree, branch))
     }
 
-    pub async fn remove(&self, _repo_name: &str, worktree: &str) -> Result<(), String> {
-        let status = Command::new("git")
+    pub fn thread_dir(&self, slug: &str) -> PathBuf {
+        self.root.join(slug)
+    }
+
+    pub async fn remove_thread(&self, dir: &str) -> Result<(), String> {
+        for repo in repo_dirs(Path::new(dir)) {
+            let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.remove(&name, &repo.to_string_lossy()).await?;
+        }
+        remove_dir(dir).await;
+        Ok(())
+    }
+
+    pub async fn changes_in(&self, dir: &str) -> Option<GitChangeSummary> {
+        if Path::new(dir).join(".git").exists() {
+            return self.changes(dir).await;
+        }
+        let mut all = GitChangeSummary { clean: true, staged: 0, unstaged: 0, untracked: 0, files: Vec::new() };
+        for repo in repo_dirs(Path::new(dir)) {
+            let name = repo.file_name()?.to_string_lossy().into_owned();
+            let Some(one) = self.changes(&repo.to_string_lossy()).await else { continue };
+            all.staged += one.staged;
+            all.unstaged += one.unstaged;
+            all.untracked += one.untracked;
+            all.files.extend(one.files.into_iter().map(|f| GitChangeFile { path: format!("{name}/{}", f.path), status: f.status }));
+        }
+        all.clean = all.files.is_empty();
+        Some(all)
+    }
+
+    pub async fn remove(&self, repo_name: &str, worktree: &str) -> Result<(), String> {
+        let repo = self.repos.lock().unwrap().get(repo_name).map(|r| r.path.clone());
+        let mut cmd = Command::new("git");
+        if let Some(path) = &repo {
+            cmd.args(["-C", path]);
+        }
+        let removed = cmd
             .args(["worktree", "remove", "--force", worktree])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .await
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            let _ = tokio::fs::remove_dir_all(worktree).await;
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !removed {
+            remove_dir(worktree).await;
+            if let Some(path) = &repo {
+                let _ = Command::new("git").args(["-C", path, "worktree", "prune"]).status().await;
+            }
         }
         Ok(())
     }
@@ -134,12 +177,14 @@ impl Workspaces {
         let cmd = repo.up.ok_or_else(|| format!("repo {repo_name} has no up command"))?;
         let port = free_port().await?;
         let rendered = cmd.replace("{port}", &port.to_string());
+        let log = std::fs::File::create(self.root.join(format!("{key}.log"))).map_err(|e| e.to_string())?;
+        let err = log.try_clone().map_err(|e| e.to_string())?;
         #[cfg(windows)]
         let mut child = Command::new("cmd")
             .args(["/C", &rendered])
             .current_dir(worktree)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(log)
+            .stderr(err)
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -147,8 +192,8 @@ impl Workspaces {
         let mut child = Command::new("sh")
             .args(["-c", &rendered])
             .current_dir(worktree)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(log)
+            .stderr(err)
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -199,6 +244,24 @@ impl Workspaces {
     }
 }
 
+async fn remove_dir(dir: &str) {
+    for _ in 0..20 {
+        if tokio::fs::remove_dir_all(dir).await.is_ok() || !Path::new(dir).exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn repo_dirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.join(".git").exists()).collect();
+    out.sort();
+    out
+}
+
 pub fn slug_for(thread_key: &str) -> String {
     thread_slug(thread_key)
 }
@@ -213,6 +276,48 @@ async fn free_port() -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "safe.directory=*"])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn repo(root: &Path, name: &str) -> RepoConfig {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("README.md"), name).unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-qm", "init"]);
+        RepoConfig { path: dir.to_string_lossy().into_owned(), up: None, base: None }
+    }
+
+    #[tokio::test]
+    async fn one_thread_folder_holds_many_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repos = HashMap::from([("api".to_string(), repo(tmp.path(), "api")), ("web".to_string(), repo(tmp.path(), "web"))]);
+        let ws = Workspaces::new(tmp.path().join("worktrees"), repos);
+        let (api, _) = ws.create("api", "t1").await.unwrap();
+        let (web, branch) = ws.create("web", "t1").await.unwrap();
+        let dir = ws.thread_dir("t1");
+        assert_eq!(Path::new(&api), dir.join("api"));
+        assert_eq!(Path::new(&web), dir.join("web"));
+        assert_eq!(branch, "switchboard/t1");
+        std::fs::write(dir.join("web").join("new.txt"), "x").unwrap();
+        let changes = ws.changes_in(&dir.to_string_lossy()).await.unwrap();
+        assert_eq!(changes.untracked, 1);
+        assert_eq!(changes.files[0].path, "web/new.txt");
+        ws.remove_thread(&dir.to_string_lossy()).await.unwrap();
+        assert!(!dir.exists());
+        let list = std::process::Command::new("git").args(["-C", &tmp.path().join("api").to_string_lossy(), "worktree", "list"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&list.stdout).lines().count(), 1);
+    }
 
     #[test]
     fn slug_stable() {

@@ -12,6 +12,7 @@ use crate::personas::{
     strip_self_prefix, take_stop, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
 };
 pub use crate::personas::BOT_NAME;
+use crate::workspace::slug_for;
 use crate::question_gate::{has_question, hold_question, take_question};
 use crate::questions::{continuation, question_cards};
 use crate::queue::TurnQueue;
@@ -1023,7 +1024,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /context /model /agent /repo /stop".into()),
+        "help" => Ok("Commands: /help /clear /context /model /agent /stop /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
@@ -1076,9 +1077,107 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
                 .await?;
             Ok("Agent updated.".into())
         }
-        "repo" => Ok("Repo commands need workspaces; use the control plane.".into()),
+        "repo" | "status" | "up" | "down" | "logs" | "close" => repo_command(cmd, &args, req, deps).await,
         _ => Err(format!("unknown command /{cmd}")),
     }
+}
+
+pub fn thread_repos(record: Option<&crate::session::SessionRecord>) -> Vec<String> {
+    record
+        .and_then(|r| r.repo.as_deref())
+        .map(|s| s.split(", ").filter(|x| !x.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+async fn set_repos(req: &TurnRequest, deps: &HandlerDeps, repos: &[String], dir: Option<String>, branch: Option<String>) -> Result<(), String> {
+    let some = !repos.is_empty();
+    deps.store
+        .update(
+            &req.thread_key,
+            &req.space_name,
+            SessionPatch {
+                repo: Some(some.then(|| repos.join(", "))),
+                worktree: Some(dir.filter(|_| some)),
+                branch: Some(branch.filter(|_| some)),
+                session_ref: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+}
+
+async fn repo_command(cmd: &str, args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> Result<String, String> {
+    let ws = deps.workspaces.clone().ok_or("No repos configured on this bridge.")?;
+    let slug = slug_for(&req.thread_key);
+    let record = deps.store.get(&req.thread_key);
+    let mut repos = thread_repos(record.as_ref());
+    let dir = ws.thread_dir(&slug).to_string_lossy().into_owned();
+    let branch = format!("switchboard/{slug}");
+    let worktree = record.as_ref().and_then(|r| r.worktree.clone());
+    match cmd {
+        "repo" if args.is_empty() => Ok(format!(
+            "Usage: /repo <name> [name...]. Configured: {}. This thread: {}",
+            ws.repo_names().join(", "),
+            if repos.is_empty() { "none".into() } else { repos.join(", ") }
+        )),
+        "repo" => {
+            for name in args.iter().map(|a| a.to_string()).filter(|a| !repos.contains(a)).collect::<Vec<_>>() {
+                ws.create(&name, &slug).await?;
+                repos.push(name);
+            }
+            set_repos(req, deps, &repos, Some(dir.clone()), Some(branch.clone())).await?;
+            Ok(format!("Worktrees ready in {dir}: {}
+Branch: {branch}
+The agent now works there for this thread.", repos.join(", ")))
+        }
+        "status" => Ok(match worktree {
+            None => "No repos for this thread. Use /repo <name...>.".into(),
+            Some(wt) => format!(
+                "Repos: {}
+Branch: {}
+Folder: {wt}
+App: {}",
+                repos.join(", "),
+                record.as_ref().and_then(|r| r.branch.clone()).unwrap_or_default(),
+                ws.port(&slug).map(|p| format!("running on :{p}")).unwrap_or_else(|| "stopped".into())
+            ),
+        }),
+        _ if repos.is_empty() => Err("No repos for this thread yet. Use /repo <name...> first.".into()),
+        "up" => {
+            let repo = args.first().map(|a| a.to_string()).unwrap_or_else(|| repos[0].clone());
+            if !repos.contains(&repo) {
+                return Err(format!("{repo} is not in this thread ({})", repos.join(", ")));
+            }
+            let path = repo_path(worktree.as_deref().unwrap_or(&dir), &repo);
+            let port = ws.up(&slug, &repo, &path).await?;
+            Ok(format!("{repo} starting on http://localhost:{port} — /logs to follow it."))
+        }
+        "down" => Ok(if ws.down(&slug) { "App stopped.".into() } else { "The app is not running.".into() }),
+        "logs" => Ok(Some(ws.logs(&slug, 200)).filter(|l| !l.is_empty()).unwrap_or_else(|| "(no output yet)".into())),
+        _ => {
+            let wt = worktree.unwrap_or(dir);
+            match args.first() {
+                Some(name) if repos.iter().any(|r| r == name) => {
+                    ws.remove(name, &repo_path(&wt, name)).await?;
+                    repos.retain(|r| r != name);
+                    set_repos(req, deps, &repos, Some(wt), Some(branch)).await?;
+                    Ok(format!("Worktree for {name} removed. The branch stays in the repo."))
+                }
+                Some(name) => Err(format!("{name} is not in this thread ({})", repos.join(", "))),
+                None => {
+                    ws.down(&slug);
+                    ws.remove_thread(&wt).await?;
+                    set_repos(req, deps, &[], None, None).await?;
+                    Ok("Worktrees removed. Branches stay in their repos.".into())
+                }
+            }
+        }
+    }
+}
+
+fn repo_path(dir: &str, repo: &str) -> String {
+    let nested = std::path::Path::new(dir).join(repo);
+    if nested.exists() { nested.to_string_lossy().into_owned() } else { dir.to_string() }
 }
 
 fn context_percent(r: &crate::session::SessionRecord) -> Option<u64> {

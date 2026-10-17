@@ -179,6 +179,7 @@ interface Props {
 
 export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos, personas: personasProp }: Props) {
   const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
   const [nameDraft, setNameDraft] = useState("");
@@ -420,13 +421,14 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   /** Owners pick where the thread works first; guests (no repos) start chat-only. */
-  function newThread(repo?: string) {
+  function newThread(chosen: string[] = []) {
     const id = newId();
     setPicking(false);
-    setThreads((list) => [{ id, title: repo ? `Work in ${repo}` : "New thread", count: 0 }, ...list]);
+    setPicked([]);
+    setThreads((list) => [{ id, title: chosen.length ? `Work in ${chosen.join(", ")}` : "New thread", count: 0 }, ...list]);
     setActiveId(id);
     setState({ messages: [], agent: null, busy: false });
-    if (repo) void send(`/repo ${repo}`, id);
+    if (chosen.length) void send(`/repo ${chosen.join(" ")}`, id);
   }
 
   async function archive() {
@@ -522,11 +524,19 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               <span className="muted small">No repo, an empty workspace</span>
             </button>
             {repos?.map((r) => (
-              <button key={r.name} onClick={() => newThread(r.name)}>
+              <label key={r.name} className={`repo-option ${picked.includes(r.name) ? "on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={picked.includes(r.name)}
+                  onChange={() => setPicked((list) => (list.includes(r.name) ? list.filter((x) => x !== r.name) : [...list, r.name]))}
+                />
                 <span className="strong">{r.name}</span>
                 <span className="muted small">New worktree from {r.base ?? "HEAD"}</span>
-              </button>
+              </label>
             ))}
+            <button className="btn primary" disabled={!picked.length} onClick={() => newThread(picked)}>
+              {picked.length > 1 ? `Start in ${picked.length} repos` : "Start in this repo"}
+            </button>
           </div>
         )}
         {shareSlot}
