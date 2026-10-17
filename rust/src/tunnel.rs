@@ -88,7 +88,10 @@ async fn cloudflared_bin(data_dir: &Path) -> Result<PathBuf, String> {
     }
     let asset = cloudflared_asset().ok_or("cloudflared is not installed: brew install cloudflared")?;
     tracing::info!("downloading cloudflared…");
-    let bytes = reqwest::get(format!("https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}"))
+    let bytes = reqwest::Client::new()
+        .get(format!("https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}"))
+        .timeout(Duration::from_secs(180))
+        .send()
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("cloudflared download failed: {e}"))?

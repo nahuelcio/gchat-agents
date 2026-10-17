@@ -12,6 +12,7 @@ const JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 #[async_trait]
 pub trait TokenVerifier: Send + Sync {
     async fn verify(&self, auth_header: Option<&str>) -> Result<(), String>;
+    fn set_audience(&self, _audience: String) {}
 }
 
 pub struct AcceptAllVerifier;
@@ -126,32 +127,38 @@ impl CertSource for GoogleJwksSource {
 }
 
 pub struct GoogleTokenVerifier {
-    pub audience: String,
-    pub certs: std::sync::Arc<dyn CertSource>,
+    audience: std::sync::RwLock<String>,
+    certs: std::sync::Arc<dyn CertSource>,
 }
 
 impl GoogleTokenVerifier {
     pub fn new(audience: String) -> Self {
-        Self {
-            audience,
-            certs: std::sync::Arc::new(GoogleJwksSource::new()),
-        }
+        Self::with_certs(audience, std::sync::Arc::new(GoogleJwksSource::new()))
+    }
+
+    pub fn with_certs(audience: String, certs: std::sync::Arc<dyn CertSource>) -> Self {
+        Self { audience: std::sync::RwLock::new(audience), certs }
     }
 }
 
 #[async_trait]
 impl TokenVerifier for GoogleTokenVerifier {
+    fn set_audience(&self, audience: String) {
+        *self.audience.write().unwrap() = audience;
+    }
+
     async fn verify(&self, auth_header: Option<&str>) -> Result<(), String> {
+        let audience = self.audience.read().unwrap().clone();
         let token = extract_bearer(auth_header)?;
         let header = decode_header(&token).map_err(|e| e.to_string())?;
         let kid = header.kid.ok_or_else(|| "token missing kid".to_string())?;
         let key = self.certs.key_for_kid(&kid).await?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.validate_exp = true;
-        validation.set_audience(std::slice::from_ref(&self.audience));
+        validation.set_audience(std::slice::from_ref(&audience));
         let data = decode::<ChatClaims>(&token, &key, &validation).map_err(|e| e.to_string())?;
         let claims = data.claims;
-        if audience_mode(&self.audience) == "url" {
+        if audience_mode(&audience) == "url" {
             if claims.email.as_deref() != Some(CHAT_SYSTEM_ACCOUNT) {
                 return Err("token not issued by Google Chat".into());
             }
@@ -179,10 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_bearer_rejected() {
-        let v = GoogleTokenVerifier {
-            audience: "https://example.com/google/chat".into(),
-            certs: Arc::new(FixedPem(TEST_PUB.into())),
-        };
+        let v = GoogleTokenVerifier::with_certs("https://example.com/google/chat".into(), Arc::new(FixedPem(TEST_PUB.into())));
         assert!(v.verify(None).await.is_err());
     }
 
@@ -220,12 +224,13 @@ mod tests {
             &rsa,
         )
         .unwrap();
-        let v = GoogleTokenVerifier {
-            audience: "https://example.com/google/chat".into(),
-            certs: Arc::new(FixedPem(TEST_PUB.into())),
-        };
+        let v = GoogleTokenVerifier::with_certs("https://example.com/google/chat".into(), Arc::new(FixedPem(TEST_PUB.into())));
         v.verify(Some(&format!("Bearer {token}"))).await.unwrap();
         assert!(v.verify(Some("Bearer not-a-jwt")).await.is_err());
+        let later = GoogleTokenVerifier::with_certs("http://127.0.0.1:8080/google/chat".into(), Arc::new(FixedPem(TEST_PUB.into())));
+        assert!(later.verify(Some(&format!("Bearer {token}"))).await.is_err());
+        later.set_audience("https://example.com/google/chat".into());
+        later.verify(Some(&format!("Bearer {token}"))).await.unwrap();
     }
 
     const TEST_PRIV: &str = "-----BEGIN RSA PRIVATE KEY-----

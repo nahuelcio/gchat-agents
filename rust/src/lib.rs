@@ -229,29 +229,31 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     let mode = config.tunnel.unwrap_or_else(|| {
         SettingsStore::open(config.data_dir.join("config.json"), Default::default()).get().tunnel
     });
-    let public_url = match crate::tunnel::open_tunnel(mode, config.port, &config.data_dir).await {
-        Ok(url) => url,
-        Err(err) => {
-            tracing::warn!("tunnel unavailable: {err}");
-            None
-        }
-    };
-    if let Some(url) = &public_url {
-        tracing::info!("public endpoint: {url}/google/chat");
-        if config.token_audience.is_none() {
-            config.token_audience = Some(format!("{url}/google/chat"));
-        }
-    }
+    let fixed_audience = config.token_audience.is_some();
     if config.token_audience.is_none() {
         config.token_audience = Some(format!("http://127.0.0.1:{}/google/chat", config.port));
         if !config.skip_token_verify {
             tracing::warn!(
-                "no public URL and GOOGLE_TOKEN_AUDIENCE not set; using loopback audience"
+                "GOOGLE_TOKEN_AUDIENCE not set; using loopback audience until the tunnel is up"
             );
         }
     }
     let runtime = build_runtime(config, echo)?;
-    *runtime.state.public_url.lock().unwrap() = public_url;
+    let state = runtime.state.clone();
+    let (port, data_dir) = (runtime.config.port, runtime.config.data_dir.clone());
+    tokio::spawn(async move {
+        match crate::tunnel::open_tunnel(mode, port, &data_dir).await {
+            Ok(Some(url)) => {
+                tracing::info!("public endpoint: {url}/google/chat");
+                if !fixed_audience {
+                    state.handler.verifier.set_audience(format!("{url}/google/chat"));
+                }
+                *state.public_url.lock().unwrap() = Some(url);
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!("tunnel unavailable: {err}"),
+        }
+    });
     Ok(runtime)
 }
 
