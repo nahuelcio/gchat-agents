@@ -27,8 +27,17 @@ function safeJson(raw: string) {
   }
 }
 
+export const SUPPORT = [
+  { name: "soporte", prompt: "Sos el agente de soporte funcional. Respondés dudas de configuración, uso y procedimientos, breve y en español. Si es un bug de código o hay que leer código o un stack trace, respondé exactamente PASS." },
+  { name: "codigo", prompt: "Sos el agente que conoce el código del repo en tu directorio de trabajo. Explicás bugs y logs citando archivo y línea, breve y en español. Si es puramente de procedimiento o atención al cliente, respondé exactamente PASS." },
+];
+
+const CATALOG = [...["architect", "qa", "dev"].map((name) => ({ name, prompt: `You are ${name}.` })), ...SUPPORT];
+
+export const ensureCatalog = () => call("PUT", "/api/settings", { personas: CATALOG });
+
 export async function room(personas: string[], humans: string[] = []) {
-  await call("PUT", "/api/settings", { personas: personas.map((name) => ({ name, prompt: `You are ${name}.` })) });
+  await ensureCatalog();
   const thread = `room-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   for (const persona of personas) await call("POST", "/api/team/members", { thread, op: "add", member: { kind: "agent", persona } });
   for (const name of humans) await call("POST", "/api/team/members", { thread, op: "add", member: { kind: "human", name } });

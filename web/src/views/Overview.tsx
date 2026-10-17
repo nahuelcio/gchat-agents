@@ -99,6 +99,7 @@ export function Overview({ notify }: ViewProps) {
               <thead>
                 <tr>
                   <th>Thread</th>
+                  <th>In the room</th>
                   <th>Repo and branch</th>
                   <th>App</th>
                   <th>Last activity</th>
@@ -113,6 +114,17 @@ export function Overview({ notify }: ViewProps) {
                     <td>
                       <div className="strong">{t.slug}</div>
                       {t.context && <div className="mono muted">{t.context}</div>}
+                    </td>
+                    <td>
+                      {t.members?.length ? (
+                        <div className="room-chips">
+                          {t.members.map((m) => (
+                            <span key={m} className="chip">{m}</span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
                     <td>
                       {t.repo ? (

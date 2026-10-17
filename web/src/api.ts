@@ -38,6 +38,9 @@ export interface Thread {
   updatedAt: string;
   context?: string;
   app: { running: boolean; port?: number };
+  members?: string[];
+  driver?: "opencode" | "claude" | null;
+  model?: string | null;
 }
 
 export interface Agent {
@@ -228,6 +231,14 @@ export interface TeamThreadState {
   members?: RoomMember[] | null;
   kicked?: string[];
   answering?: string[];
+  presence?: Presence[];
+}
+
+export interface Presence {
+  id: string;
+  name: string;
+  status: "speaking" | "waiting" | "idle";
+  lastSeenN?: number | null;
 }
 
 export type RoomMember =

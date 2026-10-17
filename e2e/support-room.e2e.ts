@@ -1,20 +1,16 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
-import { authoredBy, call } from "./helpers";
+import { authoredBy, call, ensureCatalog, SUPPORT } from "./helpers";
 
 const REAL = process.env.E2E_DRIVER === "opencode";
 const LONG = { timeout: 900000 };
 const REPLY = { timeout: 600000 };
 
-const personas = [
-  { name: "soporte", prompt: "Sos el agente de soporte funcional. Respondés dudas de configuración, uso y procedimientos, breve y en español. Si es un bug de código o hay que leer código o un stack trace, respondé exactamente PASS." },
-  { name: "codigo", prompt: "Sos el agente que conoce el código del repo en tu directorio de trabajo. Explicás bugs y logs citando archivo y línea, breve y en español. Si es puramente de procedimiento o atención al cliente, respondé exactamente PASS." },
-];
 
 async function supportRoom() {
-  await call("PUT", "/api/settings", { personas });
+  await ensureCatalog();
   const thread = `soporte-${Date.now().toString(36)}`;
-  for (const p of personas) await call("POST", "/api/team/members", { thread, op: "add", member: { kind: "agent", persona: p.name } });
+  for (const p of SUPPORT) await call("POST", "/api/team/members", { thread, op: "add", member: { kind: "agent", persona: p.name } });
   return thread;
 }
 

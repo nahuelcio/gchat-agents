@@ -567,6 +567,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         <header className="play-head">
           <span className="strong title">{active?.title ?? "Team chat"}</span>
           {state?.repo && <code className="tag">{state.repo} · {state.branch}</code>}
+          {(state?.agent || state?.model) && <code className="tag">{[state.agent, state.model].filter(Boolean).join(" · ")}</code>}
           {activeId && agents.length > 1 && (
             <label className="agent-pick">
               <span className="sr-only">Agent for this thread</span>
@@ -848,11 +849,14 @@ function MembersSection({
 }) {
   const members = state?.members;
   const [adding, setAdding] = useState(false);
+  const presenceOf = (id: string) => state?.presence?.find((p) => p.id === id);
+  const host = presenceOf("host");
   const agentNames = new Set((members ?? []).flatMap((m) => (m.kind === "agent" ? [m.persona.toLowerCase()] : [])));
   const addable = members ? catalog.filter((p) => !agentNames.has(p.name.toLowerCase())) : [];
   return (
     <section className="room-members" aria-label="Members">
       <h2>Members</h2>
+      {host && host.status !== "idle" && <p className={`presence ${host.status}`}>{host.name} · {host.status}</p>}
       {!members ? (
         <p className="muted small">
           {state?.messages.length ? "Older room: every agent from Settings can be @mentioned here." : "New room: no agents yet."}
@@ -865,7 +869,15 @@ function MembersSection({
               <span className={`member-avatar ${m.kind}`} aria-hidden="true">
                 {(m.kind === "agent" ? m.persona : m.name).slice(0, 2).toUpperCase()}
               </span>
-              <span className="grow">{m.kind === "agent" ? `@${m.persona}` : m.name}</span>
+              <span className="grow">
+                <span>{m.kind === "agent" ? `@${m.persona}` : m.name}</span>
+                {m.kind === "agent" && presenceOf(m.id) && (
+                  <span className={`presence ${presenceOf(m.id)!.status}`}>
+                    {presenceOf(m.id)!.status}
+                    {presenceOf(m.id)!.lastSeenN ? ` · saw #${presenceOf(m.id)!.lastSeenN}` : ""}
+                  </span>
+                )}
+              </span>
               <span className={`badge ${m.kind === "agent" ? "agent" : ""}`}>{m.kind === "agent" ? "Agent" : "Person"}</span>
               {onMember && m.kind === "agent" && (
                 <button className="x" aria-label={`Remove @${m.persona}`} onClick={() => void onMember("remove", { kind: "agent", persona: m.persona })}>
