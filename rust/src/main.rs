@@ -31,6 +31,9 @@ async fn main() {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("json") {
+        std::process::exit(switchboard::cli::run(&args[2..]).await);
+    }
     if args.iter().any(|a| a == "mcp") {
         if let Err(err) = switchboard::mcp::serve_stdio().await {
             eprintln!("mcp error: {err}");

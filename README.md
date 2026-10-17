@@ -119,6 +119,16 @@ npm run test:browser   # browser e2e (tester-army/e2e) against the real binary, 
 E2E_DRIVER=opencode npx e2e run e2e/rooms.e2e.ts --workers 1   # rooms with real opencode agents
 ```
 
+Agent-first CLI over the local control plane (JSON in, JSON out, errors as `{"error": ...}` with exit 1):
+
+```
+switchboard json                                   # lists verbs
+switchboard json activity --limit 20 --kind turn_fail
+switchboard json search --q "token de meta"
+echo '{"text":"hola","name":"bot"}' | switchboard json thread send --thread T --stdin
+switchboard json approvals decide --id ab12 --approve
+```
+
 ## Layout
 
 ```

@@ -316,3 +316,22 @@ async fn command_jobs_run_and_approval_gates_them() {
     let (_, events) = get_json(admin, "/api/activity?kind=approval_pending,approval_decided").await;
     assert_eq!(events.as_array().unwrap().len(), 4);
 }
+
+#[tokio::test]
+async fn json_cli_matches_the_admin_api() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    post_json(admin, "/api/team/send", json!({ "thread": "cli1", "name": "Ana", "text": "hola desde la api" })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let base = format!("http://127.0.0.1:{admin}");
+    let args: Vec<String> = ["activity", "--limit", "50"].iter().map(|s| s.to_string()).collect();
+    let via_cli = switchboard::cli::send(&base, switchboard::cli::plan(&args, None).unwrap()).await.unwrap();
+    let (_, via_api) = get_json(admin, "/api/activity?limit=50").await;
+    assert_eq!(via_cli, via_api);
+    let send: Vec<String> = ["thread", "send", "--thread", "cli1", "otra", "vez"].iter().map(|s| s.to_string()).collect();
+    switchboard::cli::send(&base, switchboard::cli::plan(&send, None).unwrap()).await.unwrap();
+    let (_, thread) = get_json(admin, "/api/team/thread?thread=cli1").await;
+    assert!(thread["messages"].as_array().unwrap().iter().any(|m| m["text"] == "otra vez"));
+    let down = switchboard::cli::send("http://127.0.0.1:1", switchboard::cli::plan(&args, None).unwrap()).await;
+    assert_eq!(down.unwrap_err(), "control plane is not running");
+}
