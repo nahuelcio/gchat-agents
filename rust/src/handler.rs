@@ -577,12 +577,14 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                     },
                 )
                 .await;
-            if let Some(rec) = deps.store.get(&req.thread_key) {
-                if should_show_footer(options.context_footer, &rec) {
-                    reply.push_str(&context_line(&rec, &options));
+            if !is_pass(&reply) {
+                if let Some(rec) = deps.store.get(&req.thread_key) {
+                    if should_show_footer(options.context_footer, &rec) {
+                        reply.push_str(&context_line(&rec, &options));
+                    }
                 }
+                deliver_reply(req, deps, &reply, None, None).await;
             }
-            deliver_reply(req, deps, &reply, None, None).await;
 
             let room_now = active_personas(
                 &options.personas,
@@ -1485,7 +1487,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caps_optional_room_chime_ins_at_one() {
+    async fn caps_optional_room_chime_ins_at_two() {
         let dir = tempdir().unwrap();
         let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
             "default" => "host".into(),
@@ -1494,8 +1496,8 @@ mod tests {
         let d = room_deps(
             dir.path(),
             driver,
-            vec![persona("a1", None), persona("b1", None)],
-            Some(vec!["a1", "b1"]),
+            vec![persona("a1", None), persona("b1", None), persona("c1", None)],
+            Some(vec!["a1", "b1", "c1"]),
         )
         .await;
         let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -1520,7 +1522,43 @@ mod tests {
             .iter()
             .filter(|r| r.contains("*@"))
             .count();
-        assert_eq!(agent_posts, 1);
+        assert_eq!(agent_posts, 2);
+    }
+
+    #[tokio::test]
+    async fn host_pass_is_not_posted() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "default" => "PASS".into(),
+            "soporte" => "Es de configuracion: revisa el canal.".into(),
+            _ => "PASS".into(),
+        }));
+        let d = room_deps(
+            dir.path(),
+            driver,
+            vec![persona("soporte", None), persona("codigo", None)],
+            Some(vec!["soporte", "codigo"]),
+        )
+        .await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "el canal de WhatsApp no recibe mensajes".into(),
+                sender: Some("Ana".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: Some(captured.clone()),
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let replies = captured.lock().await.clone();
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0].starts_with("*@soporte*"));
     }
 
     #[tokio::test]

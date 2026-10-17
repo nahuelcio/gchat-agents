@@ -7,6 +7,7 @@ use super::types::{AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, 
 use crate::mcp::{claude_mcp_config, SWITCHBOARD_HINT, SwitchboardMcp};
 use crate::questions::{answers_map_from_text, format_questions, normalize_questions};
 
+#[derive(Clone)]
 pub struct ClaudeDriver {
     pub bin: String,
     pub model: Option<String>,

@@ -7,7 +7,7 @@ pub const BOT_NAME: &str = "Switchi";
 pub const PASS: &str = "PASS";
 pub const MAX_HOPS: usize = 3;
 pub const MAX_DIALOGUE_HOPS: usize = 6;
-pub const MAX_INTERJECTIONS: usize = 1;
+pub const MAX_INTERJECTIONS: usize = 2;
 
 pub fn room_prompt(text: &str) -> String {
     format!("[Room message, not addressed to you. Reply with exactly {PASS} unless you have something genuinely useful to add.]\n{text}")
@@ -410,6 +410,7 @@ pub fn host_preamble(personas: &[Persona]) -> String {
         "You are {BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.\n\
 {agents}\n\
 When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.\n\
+Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly {PASS}. If it fits none of them, say so and suggest who should take it.\n\
 If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again."
     )
 }

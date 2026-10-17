@@ -25,7 +25,7 @@ export default {
             TUNNEL: "off",
             AGENT_DRIVER: driver === "echo" ? "opencode" : driver,
             DATA_DIR: dataDir,
-            AGENT_WORKDIR: join(dataDir, "workspace"),
+            AGENT_WORKDIR: process.env.E2E_WORKDIR ?? join(dataDir, "workspace"),
             CHAT_ALLOWED_SPACES: "spaces/e2e",
           },
           log: ".e2e/logs/app.log",

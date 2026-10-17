@@ -338,6 +338,7 @@ fn command(program: &str, args: &[String], cwd: &str, stdin: Stdio) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
+        .env("PWD", cwd)
         .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -449,6 +450,15 @@ mod tests {
         let run = run_captured(bin, &args, ".", 5_000).await.unwrap();
         assert!(!run.timed_out);
         assert!(run.stdout.contains("hello-fixture"));
+    }
+
+    #[tokio::test]
+    async fn child_sees_its_own_pwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let args = vec!["-e".into(), "console.log(process.env.PWD)".into()];
+        let run = run_captured("node", &args, &cwd, 10_000).await.unwrap();
+        assert_eq!(run.stdout.trim(), cwd);
     }
 
     #[tokio::test]

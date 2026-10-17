@@ -9,6 +9,7 @@ use crate::questions::{continuation, format_questions, normalize_questions};
 
 const ASK_IDLE_MS: u64 = 200;
 
+#[derive(Clone)]
 pub struct OpenCodeDriver {
     pub bin: String,
     pub model: Option<String>,

@@ -100,22 +100,23 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let driver: Arc<dyn crate::driver::AgentDriver> = if echo {
         Arc::new(EchoDriver)
     } else {
-        match settings.get().agent_driver {
-            crate::config::AgentDriverKind::Opencode => Arc::new(OpenCodeDriver {
+        Arc::new(crate::driver::ConfiguredDriver {
+            opencode: OpenCodeDriver {
                 bin: config.opencode_bin.clone(),
-                model: settings.get().models.opencode.clone(),
-                agent: settings.get().agents.opencode.clone(),
+                model: None,
+                agent: None,
                 timeout_ms: config.turn_timeout_ms,
                 switchboard: Some(switchboard.clone()),
-            }),
-            crate::config::AgentDriverKind::Claude => Arc::new(ClaudeDriver {
+            },
+            claude: ClaudeDriver {
                 bin: config.claude_bin.clone(),
-                model: settings.get().models.claude.clone(),
+                model: None,
                 timeout_ms: config.turn_timeout_ms,
                 switchboard: Some(switchboard.clone()),
                 read_dirs: vec![config.data_dir.join("media").to_string_lossy().into_owned()],
-            }),
-        }
+            },
+            settings: settings.clone(),
+        })
     };
 
     if config.token_audience.is_none() {
