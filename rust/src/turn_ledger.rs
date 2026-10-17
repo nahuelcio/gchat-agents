@@ -81,6 +81,10 @@ impl TurnLedger {
         self.entries.lock().unwrap().iter().find(|e| e.request_id == request_id).map(|e| e.state)
     }
 
+    pub fn running_for(&self, thread_key: &str) -> Option<String> {
+        self.entries.lock().unwrap().iter().rev().find(|e| e.thread_key == thread_key && e.state == TurnState::Running).map(|e| e.request_id.clone())
+    }
+
     pub fn unfinished(&self) -> Vec<TurnEntry> {
         self.entries.lock().unwrap().iter().filter(|e| matches!(e.state, TurnState::Accepted | TurnState::Running)).cloned().collect()
     }

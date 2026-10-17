@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type TunnelMode } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -39,6 +39,7 @@ export function SettingsView(props: ViewProps) {
       <PersonasCard {...props} />
       <ContextCard {...props} />
       <TunnelCard {...props} />
+      <DriveCard {...props} />
       <ReposCard {...props} />
       <SpacesCard {...props} />
     </>
@@ -372,9 +373,17 @@ function PersonasCard({ settings, save }: ViewProps) {
     setOcAgentsBusy(true);
     return api.opencodeAgents(refresh).then(setOcAgents, () => setOcAgents([])).finally(() => setOcAgentsBusy(false));
   };
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   useEffect(() => {
     void loadOcAgents();
+    api.skills().then(setSkills, () => setSkills([]));
   }, []);
+  const toggle = (key: "skills" | "mcps", value: string) =>
+    editing &&
+    setEditing({
+      ...editing,
+      draft: { ...editing.draft, [key]: (editing.draft[key] ?? []).includes(value) ? (editing.draft[key] ?? []).filter((x) => x !== value) : [...(editing.draft[key] ?? []), value] },
+    });
   const taken = new Set(personas.map((p) => p.name.toLowerCase()));
   const importable = ocAgents.filter((id) => !taken.has(id.toLowerCase()) && /^[A-Za-z0-9][\w-]{0,31}$/.test(id));
   const setAgent = (id: string) => {
@@ -390,6 +399,8 @@ function PersonasCard({ settings, save }: ViewProps) {
   const submit = () => {
     if (!editing) return;
     const draft = { ...editing.draft, name: editing.draft.name.trim().replace(/^@/, ""), prompt: editing.draft.prompt.trim() };
+    if (!draft.skills?.length) delete draft.skills;
+    if (!draft.mcps?.length) delete draft.mcps;
     if (!draft.model?.trim()) delete draft.model;
     if (!draft.driver) delete draft.driver;
     if (!draft.agent || draft.driver === "claude") delete draft.agent;
@@ -434,6 +445,7 @@ function PersonasCard({ settings, save }: ViewProps) {
       {editing ? (
         <form
           className="persona-form"
+          aria-label="Agent in chat"
           onSubmit={(e) => {
             e.preventDefault();
             submit();
@@ -543,6 +555,28 @@ function PersonasCard({ settings, save }: ViewProps) {
               placeholder="You are the sales agent. You know our plans and prices, answer briefly and in Spanish…"
             />
           </label>
+          <fieldset className="field">
+            <legend>Skills</legend>
+            {skills.length === 0 && <span className="muted small">No skills yet. Add one as data/skills/&lt;name&gt;/SKILL.md.</span>}
+            {skills.map((sk) => (
+              <label key={sk.name} className="inline check">
+                <input type="checkbox" checked={(editing.draft.skills ?? []).includes(sk.name)} onChange={() => toggle("skills", sk.name)} />
+                <span>
+                  <span className="strong">{sk.name}</span> <span className="muted small">{sk.description}{sk.mcps.length ? ` · uses ${sk.mcps.join(", ")}` : ""}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="field">
+            <legend>Tools (MCP)</legend>
+            {BUILTIN_MCPS.map((m) => (
+              <label key={m.name} className="inline check">
+                <input type="checkbox" checked={(editing.draft.mcps ?? []).includes(m.name)} onChange={() => toggle("mcps", m.name)} />
+                <span>{m.label}</span>
+              </label>
+            ))}
+            <span className="muted small">Skills turn on the tools they need by themselves.</span>
+          </fieldset>
           <div className="row">
             <button className="btn primary">Save</button>
             <button type="button" className="btn" onClick={() => setEditing(null)}>
@@ -583,6 +617,31 @@ function PersonasCard({ settings, save }: ViewProps) {
           </div>
         </>
       )}
+    </details>
+  );
+}
+
+function DriveCard({ settings, save }: ViewProps) {
+  const [folder, setFolder] = useState(settings.googleDriveFolderId ?? "");
+  return (
+    <details className="card" open aria-label="Google Drive">
+      <summary className="card-title">
+        <h2>Google Drive</h2>
+        <p className="muted small">Where agents with the Google Drive tool save files. Share the folder with the service account email as Editor.</p>
+      </summary>
+      <form
+        className="field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save({ googleDriveFolderId: folder.trim() }, folder.trim() ? "Drive folder saved" : "Drive folder cleared");
+        }}
+      >
+        <span>Folder id</span>
+        <div className="row">
+          <input className="mono grow" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="1AbC… (the part after /folders/ in the folder URL)" />
+          <button className="btn">Save</button>
+        </div>
+      </form>
     </details>
   );
 }

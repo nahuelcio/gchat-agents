@@ -1468,6 +1468,8 @@ mod tests {
             agent: None,
             listen: listen.map(str::to_string),
             respond_to: None,
+            skills: vec![],
+            mcps: vec![],
         }
     }
 

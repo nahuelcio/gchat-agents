@@ -119,6 +119,8 @@ npm run test:browser   # browser e2e (tester-army/e2e) against the real binary, 
 E2E_DRIVER=opencode npx e2e run e2e/rooms.e2e.ts --workers 1   # rooms with real opencode agents
 ```
 
+Agents are a persona plus skills plus tools. A skill is `data/skills/<name>/SKILL.md` (or `skills/<name>/SKILL.md` in this repo) with `name`, `description` and `mcps` in the frontmatter; its text goes into the agent's instructions and its `mcps` turn on by themselves. The Finance example: create a persona with the `finanzas` skill, set the Drive folder id in Settings › Google Drive, and share that folder with the service account email as Editor. The agent then calls `create_xlsx`, which uploads one `.xlsx` per request (a retry returns the same file).
+
 Agent-first CLI over the local control plane (JSON in, JSON out, errors as `{"error": ...}` with exit 1):
 
 ```

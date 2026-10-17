@@ -17,6 +17,7 @@ export interface Settings {
   contextFooter: ContextFooter;
   autoCompactAt: number;
   tunnel: TunnelMode;
+  googleDriveFolderId?: string | null;
   personas: Persona[];
 }
 
@@ -28,7 +29,20 @@ export interface Persona {
   agent?: string;
   listen?: "mentions" | "all";
   respondTo?: "anyone" | "people";
+  skills?: string[];
+  mcps?: string[];
 }
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  mcps: string[];
+}
+
+export const BUILTIN_MCPS = [
+  { name: "switchboard", label: "Switchboard (repos, schedules, work item, room)" },
+  { name: "google-drive", label: "Google Drive (create .xlsx in the shared folder)" },
+];
 
 export interface SearchHit {
   threadKey: string;
@@ -153,6 +167,7 @@ export const api = {
   settings: () => call<Settings>("/api/settings"),
   save: (patch: Partial<Settings>) => call<Settings>("/api/settings", patch, "PUT"),
   threads: () => call<Thread[]>("/api/threads"),
+  skills: () => call<SkillInfo[]>("/api/skills"),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
   activity: (limit = 50) => call<ActivityEvent[]>(`/api/activity?limit=${limit}`),
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),

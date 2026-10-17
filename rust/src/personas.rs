@@ -269,7 +269,7 @@ pub fn room_catch_up(log: Option<&[RoomEntry]>, who: &str, seen: Option<u64>, be
     format!("Messages in this chat since your last turn (for context):\n{lines}\n\n---\n\n")
 }
 
-pub fn persona_preamble(p: &Persona, all: &[Persona]) -> String {
+fn roster_preamble(p: &Persona, all: &[Persona]) -> String {
     let others: Vec<_> = all
         .iter()
         .filter(|o| o.name != p.name)
@@ -293,6 +293,16 @@ pub fn persona_preamble(p: &Persona, all: &[Persona]) -> String {
         "You see every message in the chat. When one is not for you and you have nothing useful to add, reply exactly {PASS}."
     ));
     parts.join("\n\n")
+}
+
+pub fn persona_preamble(p: &Persona, all: &[Persona]) -> String {
+    let skills = crate::skills::instructions(p);
+    let base = roster_preamble(p, all);
+    if skills.is_empty() {
+        base
+    } else {
+        format!("{base}\n\n{skills}")
+    }
 }
 
 pub fn asked_personas<'a>(reply: &str, personas: &'a [Persona]) -> Vec<&'a Persona> {
@@ -464,6 +474,8 @@ mod tests {
             agent: None,
             listen: None,
             respond_to: None,
+            skills: vec![],
+            mcps: vec![],
         }
     }
 

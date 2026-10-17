@@ -79,7 +79,9 @@ fn tools() -> Value {
         {"name":"list_schedules","description":"List schedules.","inputSchema":{"type":"object","properties":{}}},
         {"name":"create_schedule","description":"Create a schedule.","inputSchema":{"type":"object","properties":{"cron":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["cron","prompt"]}},
         {"name":"update_schedule","description":"Update a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"},"cron":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["id"]}},
-        {"name":"delete_schedule","description":"Delete a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}
+        {"name":"delete_schedule","description":"Delete a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
+        {"name":"create_xlsx","description":"Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. Calling it again for the same request returns the same file.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"sheets":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"rows":{"type":"array","items":{"type":"array"}}},"required":["name","rows"]}}},"required":["title","sheets"]}},
+        {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}}
     ])
 }
 
@@ -195,6 +197,26 @@ pub async fn run_tool(
         "clear_work_item" => {
             call_admin("/api/work-item", "PUT", Some(json!({ "id": null })), true, &env, client).await?;
             Ok("Cleared the work item on this thread.".into())
+        }
+        "create_xlsx" => {
+            let body = json!({ "title": args.get("title").cloned().unwrap_or(Value::Null), "sheets": args.get("sheets").cloned().unwrap_or(Value::Null) });
+            let data = call_admin("/api/drive/xlsx", "POST", Some(body), true, &env, client).await?;
+            let link = data.pointer("/file/webViewLink").and_then(|v| v.as_str()).unwrap_or("(no link)");
+            let rows = data.get("rows").and_then(|v| v.as_u64()).unwrap_or(0);
+            let verb = if data.get("created").and_then(|v| v.as_bool()) == Some(false) { "Already created" } else { "Created" };
+            Ok(format!("{verb}: {link} ({rows} rows)"))
+        }
+        "list_spreadsheets" => {
+            let data = call_admin("/api/drive/spreadsheets", "GET", None, true, &env, client).await?;
+            let files = data.as_array().cloned().unwrap_or_default();
+            if files.is_empty() {
+                return Ok("No spreadsheets in the Drive folder yet.".into());
+            }
+            Ok(files
+                .iter()
+                .map(|f| format!("{} · {}", f["name"].as_str().unwrap_or(""), f["webViewLink"].as_str().unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join("\n"))
         }
         "list_repos" => {
             let data = call_admin("/api/thread/repos", "GET", None, false, &env, client).await?;

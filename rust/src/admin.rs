@@ -62,6 +62,9 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/thread/repo", post(post_thread_repo).put(post_thread_repo))
         .route("/api/thread/app", post(post_thread_app).put(post_thread_app))
         .route("/api/work-item", axum::routing::put(put_work_item))
+        .route("/api/drive/xlsx", post(post_drive_xlsx))
+        .route("/api/skills", get(get_skills))
+        .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
         .layer(axum::middleware::from_fn(require_local_host))
@@ -866,6 +869,57 @@ async fn put_work_item(State(state): State<Arc<AppState>>, Json(body): Json<Thre
     {
         Ok(()) => Json(json!({ "ok": true, "workItemId": id })).into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XlsxBody {
+    thread_key: Option<String>,
+    title: Option<String>,
+    sheets: Option<Vec<crate::google_drive::Sheet>>,
+}
+
+async fn get_skills() -> Response {
+    let list: Vec<Value> = crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps })).collect();
+    Json(list).into_response()
+}
+
+async fn post_drive_xlsx(State(state): State<Arc<AppState>>, Json(body): Json<XlsxBody>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    let folder = match crate::google_drive::allowed(&key, &state.settings.get()) {
+        Ok(f) => f,
+        Err(err) => return (StatusCode::FORBIDDEN, Json(json!({ "error": err }))).into_response(),
+    };
+    let title = body.title.unwrap_or_default();
+    let sheets = body.sheets.unwrap_or_default();
+    if title.trim().is_empty() || sheets.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "title and at least one sheet are required" }))).into_response();
+    }
+    let task = crate::google_drive::task_id(&key, state.handler.ledger.as_deref(), &title);
+    match state.drive.create_xlsx(&folder, &task, title.trim(), &sheets).await {
+        Ok(created) => {
+            let link = created.file.web_view_link.clone().unwrap_or_default();
+            crate::handler::note(&state.handler, "drive_xlsx", &key, created.file.name.clone(), link).await;
+            Json(created).into_response()
+        }
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_drive_spreadsheets(State(state): State<Arc<AppState>>, Query(q): Query<ThreadKeyQuery>) -> Response {
+    let Some(key) = thread_key_of(q.thread_key) else {
+        return missing_thread_key();
+    };
+    let folder = match crate::google_drive::allowed(&key, &state.settings.get()) {
+        Ok(f) => f,
+        Err(err) => return (StatusCode::FORBIDDEN, Json(json!({ "error": err }))).into_response(),
+    };
+    match state.drive.list(&folder).await {
+        Ok(files) => Json(files).into_response(),
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
     }
 }
 

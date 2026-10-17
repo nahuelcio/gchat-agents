@@ -32,6 +32,10 @@ pub struct Persona {
     pub listen: Option<String>,
     #[serde(rename = "respondTo", skip_serializing_if = "Option::is_none")]
     pub respond_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -47,6 +51,8 @@ pub struct Settings {
     pub personas: Vec<Persona>,
     #[serde(default)]
     pub tunnel: TunnelMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_drive_folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -112,6 +118,7 @@ impl SettingsStore {
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
             personas: saved.personas.or(defaults.personas).unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
+            google_drive_folder_id: saved.google_drive_folder_id,
         };
         Self {
             file_path,
@@ -158,6 +165,9 @@ impl SettingsStore {
             if let Some(v) = patch.tunnel {
                 current.tunnel = v;
             }
+            if let Some(v) = patch.google_drive_folder_id {
+                current.google_drive_folder_id = Some(v.trim().to_string()).filter(|f| !f.is_empty());
+            }
             validate(&current)?;
             current
         };
@@ -183,6 +193,7 @@ struct PartialSettings {
     auto_compact_at: Option<u32>,
     personas: Option<Vec<Persona>>,
     tunnel: Option<TunnelMode>,
+    google_drive_folder_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -197,6 +208,7 @@ pub struct SettingsPatch {
     pub auto_compact_at: Option<u32>,
     pub personas: Option<Vec<Persona>>,
     pub tunnel: Option<TunnelMode>,
+    pub google_drive_folder_id: Option<String>,
 }
 
 fn validate(s: &Settings) -> Result<(), String> {

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const CHAT_BOT_SCOPE: &str = "https://www.googleapis.com/auth/chat.bot";
+pub const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,7 +134,7 @@ pub struct GoogleConnection {
     key_file: PathBuf,
     state: Mutex<GoogleStatus>,
     key: Mutex<Option<SaKey>>,
-    token: Mutex<Option<TokenCache>>,
+    token: Mutex<std::collections::HashMap<String, TokenCache>>,
     http: reqwest::Client,
     token_url: String,
     chat_base: String,
@@ -165,14 +166,13 @@ impl GoogleConnection {
             key_file,
             state: Mutex::new(status),
             key: Mutex::new(key),
-            token: Mutex::new(None),
+            token: Mutex::new(std::collections::HashMap::new()),
             http: reqwest::Client::new(),
             token_url: TOKEN_URL.into(),
             chat_base: "https://chat.googleapis.com/v1".into(),
         }
     }
 
-    #[cfg(test)]
     pub fn with_endpoints(
         key_file: impl AsRef<Path>,
         raw: &str,
@@ -199,7 +199,7 @@ impl GoogleConnection {
             .map_err(|e| e.to_string())?;
         *self.state.lock().unwrap() = status_from(&parsed, "ui");
         *self.key.lock().unwrap() = Some(parsed);
-        *self.token.lock().unwrap() = None;
+        self.token.lock().unwrap().clear();
         Ok(())
     }
 
@@ -213,18 +213,26 @@ impl GoogleConnection {
             endpoint: None,
         };
         *self.key.lock().unwrap() = None;
-        *self.token.lock().unwrap() = None;
+        self.token.lock().unwrap().clear();
         Ok(())
     }
 
     async fn access_token(&self) -> Result<String, String> {
+        self.token_for(CHAT_BOT_SCOPE).await
+    }
+
+    pub fn client_email(&self) -> Option<String> {
+        self.key.lock().unwrap().as_ref().map(|k| k.client_email.clone())
+    }
+
+    pub async fn token_for(&self, scope: &str) -> Result<String, String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         {
             let cache = self.token.lock().unwrap();
-            if let Some(t) = cache.as_ref() {
+            if let Some(t) = cache.get(scope) {
                 if t.expires_at > now + 60 {
                     return Ok(t.access_token.clone());
                 }
@@ -236,7 +244,7 @@ impl GoogleConnection {
             .unwrap()
             .clone()
             .ok_or_else(|| "Google Chat not connected".to_string())?;
-        let assertion = sign_jwt(&key, now)?;
+        let assertion = sign_jwt(&key, now, scope)?;
         let res = self
             .http
             .post(&self.token_url)
@@ -260,10 +268,13 @@ impl GoogleConnection {
         }
         let body: TokenRes = res.json().await.map_err(|e| e.to_string())?;
         let expires_at = now + body.expires_in.unwrap_or(3600);
-        *self.token.lock().unwrap() = Some(TokenCache {
-            access_token: body.access_token.clone(),
-            expires_at,
-        });
+        self.token.lock().unwrap().insert(
+            scope.to_string(),
+            TokenCache {
+                access_token: body.access_token.clone(),
+                expires_at,
+            },
+        );
         Ok(body.access_token)
     }
 
@@ -374,10 +385,10 @@ struct JwtClaims {
     exp: u64,
 }
 
-fn sign_jwt(key: &SaKey, now: u64) -> Result<String, String> {
+fn sign_jwt(key: &SaKey, now: u64, scope: &str) -> Result<String, String> {
     let claims = JwtClaims {
         iss: key.client_email.clone(),
-        scope: CHAT_BOT_SCOPE.into(),
+        scope: scope.into(),
         aud: TOKEN_URL.into(),
         iat: now,
         exp: now + 3600,
@@ -395,7 +406,7 @@ fn base64_decode(raw: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tempfile::tempdir;
 
@@ -452,7 +463,7 @@ mod tests {
             .unwrap();
     }
 
-    const TEST_PRIV: &str = "-----BEGIN RSA PRIVATE KEY-----
+    pub(crate) const TEST_PRIV: &str = "-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEAndFPS8U4n2hdvvmGhw32XiRXtbPs+DkUYKBShXRmi1a6ETpn
 mWmG4IvnoJN7uQUZPCTAVmem3gzB7EvUk/RCC3hYNJGW2HFZiglNJhuMfX+26Ga3
 zviNkYOeBFn6aGSWxs6PI8q/StdxRd6Ca25hjgWo8WJB8UTVwyxUDX/9n6nSt+K0

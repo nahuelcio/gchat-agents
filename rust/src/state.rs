@@ -14,6 +14,7 @@ use crate::transcripts::TranscriptStore;
 use crate::workspace::Workspaces;
 
 pub struct AppState {
+    pub drive: Arc<crate::google_drive::Drive>,
     pub activity: Arc<crate::activity::ActivityLog>,
     pub settings: Arc<SettingsStore>,
     pub health: Arc<Mutex<Health>>,

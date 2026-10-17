@@ -451,3 +451,28 @@ async fn mcp_thread_tools_reach_the_admin() {
     assert!(thread["members"].as_array().unwrap().iter().any(|m| m["persona"] == "qa"));
     assert!(tool("start_app", json!({})).await.unwrap_err().contains("no up command"));
 }
+
+#[tokio::test]
+async fn drive_tools_are_only_for_agents_with_the_drive_mcp() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    put_json(
+        admin,
+        "/api/settings",
+        json!({ "personas": [{ "name": "finanzas", "prompt": "F", "mcps": ["google-drive"] }, { "name": "dev", "prompt": "D" }] }),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let call = |thread: &str| {
+        let env = switchboard::mcp::mcp_env(thread, &format!("http://127.0.0.1:{admin}"));
+        let client = client.clone();
+        async move {
+            switchboard::mcp::run_tool("create_xlsx", &json!({ "title": "Cierre", "sheets": [{ "name": "M", "rows": [["a", 1]] }] }), &env, &client).await
+        }
+    };
+    assert!(call("share/r1#dev").await.unwrap_err().contains("does not have the google-drive MCP"));
+    assert!(call("share/r1").await.unwrap_err().contains("only for agents"));
+    assert!(call("share/r1#finanzas").await.unwrap_err().contains("folder id"));
+    let (_, settings) = get_json(admin, "/api/settings").await;
+    assert_eq!(settings["personas"][0]["mcps"], json!(["google-drive"]));
+}

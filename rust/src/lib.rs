@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod config;
 pub mod driver;
 pub mod google;
+pub mod google_drive;
 pub mod handler;
 pub mod health;
 pub mod integrations;
@@ -20,6 +21,7 @@ pub mod schedules;
 pub mod session;
 pub mod settings;
 pub mod share;
+pub mod skills;
 pub mod state;
 pub mod static_files;
 pub mod team;
@@ -61,6 +63,7 @@ pub struct Runtime {
 pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> {
     std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&config.workdir).map_err(|e| e.to_string())?;
+    crate::skills::set_dirs(vec![config.data_dir.join("skills"), PathBuf::from("skills")]);
 
     let settings = Arc::new(SettingsStore::open(
         config.data_dir.join("config.json"),
@@ -215,6 +218,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
 
     let web_dir = find_web_dir();
     let state = Arc::new(AppState {
+        drive: Arc::new(crate::google_drive::Drive::new(google.clone())),
         activity,
         settings,
         health,
