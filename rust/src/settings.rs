@@ -61,6 +61,8 @@ pub struct Models {
     pub opencode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -101,6 +103,7 @@ impl SettingsStore {
             models: Models {
                 opencode: saved.models.as_ref().and_then(|m| m.opencode.clone()).or(defaults.models.opencode),
                 claude: saved.models.as_ref().and_then(|m| m.claude.clone()).or(defaults.models.claude),
+                pi: saved.models.as_ref().and_then(|m| m.pi.clone()).or(defaults.models.pi),
             },
             agents: Agents {
                 opencode: saved

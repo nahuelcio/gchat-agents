@@ -29,6 +29,7 @@ pub struct AgentTurnInput {
     pub agent: Option<String>,
     pub driver: Option<AgentDriverKind>,
     pub answer_questions: bool,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

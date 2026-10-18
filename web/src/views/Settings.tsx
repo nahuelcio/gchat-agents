@@ -161,7 +161,7 @@ function AgentCard({ settings, save }: ViewProps) {
               className="mono"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="e.g. opus — empty = default"
+              placeholder={driver === "pi" ? "provider/model, e.g. anthropic/claude-sonnet-5-5 — needs that provider's API key" : "e.g. opus — empty = default"}
             />
             <div className="model-chips">
               {modelsBusy && models.length === 0 && <span className="muted small">Loading models…</span>}
@@ -403,7 +403,7 @@ function PersonasCard({ settings, save }: ViewProps) {
     if (!draft.mcps?.length) delete draft.mcps;
     if (!draft.model?.trim()) delete draft.model;
     if (!draft.driver) delete draft.driver;
-    if (!draft.agent || draft.driver === "claude") delete draft.agent;
+    if (!draft.agent || draft.driver === "claude" || draft.driver === "pi") delete draft.agent;
     const list = [...personas];
     if (editing.index < 0) list.push(draft);
     else list[editing.index] = draft;
@@ -479,10 +479,11 @@ function PersonasCard({ settings, save }: ViewProps) {
               >
                 <option value="">Default agent</option>
                 <option value="claude">Claude Code</option>
+                <option value="pi">Pi (durable)</option>
                 <option value="opencode">OpenCode</option>
               </select>
             </label>
-            {editing.draft.driver !== "claude" && (
+            {editing.draft.driver !== "claude" && editing.draft.driver !== "pi" && (
               <label className="field narrow">
                 <div className="field-head">
                   <span>OpenCode agent</span>

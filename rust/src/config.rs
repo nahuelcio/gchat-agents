@@ -11,6 +11,7 @@ pub enum AgentDriverKind {
     #[default]
     Opencode,
     Claude,
+    Pi,
 }
 
 impl AgentDriverKind {
@@ -18,7 +19,8 @@ impl AgentDriverKind {
         match value {
             "opencode" => Ok(Self::Opencode),
             "claude" => Ok(Self::Claude),
-            other => Err(format!(r#"AGENT_DRIVER must be "opencode" or "claude" (got "{other}")"#)),
+            "pi" => Ok(Self::Pi),
+            other => Err(format!(r#"AGENT_DRIVER must be "opencode", "claude" or "pi" (got "{other}")"#)),
         }
     }
 }

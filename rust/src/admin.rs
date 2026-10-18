@@ -876,6 +876,7 @@ async fn put_work_item(State(state): State<Arc<AppState>>, Json(body): Json<Thre
 #[serde(rename_all = "camelCase")]
 struct XlsxBody {
     thread_key: Option<String>,
+    task_id: Option<String>,
     title: Option<String>,
     sheets: Option<Vec<crate::google_drive::Sheet>>,
 }
@@ -898,7 +899,10 @@ async fn post_drive_xlsx(State(state): State<Arc<AppState>>, Json(body): Json<Xl
     if title.trim().is_empty() || sheets.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "title and at least one sheet are required" }))).into_response();
     }
-    let task = crate::google_drive::task_id(&key, state.handler.ledger.as_deref(), &title);
+    let task = body
+        .task_id
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| crate::google_drive::task_id(&key, state.handler.ledger.as_deref(), &title));
     match state.drive.create_xlsx(&folder, &task, title.trim(), &sheets).await {
         Ok(created) => {
             let link = created.file.web_view_link.clone().unwrap_or_default();

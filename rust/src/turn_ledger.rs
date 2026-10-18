@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
@@ -107,13 +107,55 @@ async fn notify(deps: &HandlerDeps, transcripts: &TranscriptStore, thread_key: &
     }
 }
 
-pub async fn recover(deps: &HandlerDeps, ledger: &TurnLedger, transcripts: &TranscriptStore) -> usize {
+fn runs_on_pi(deps: &HandlerDeps, thread_key: &str) -> bool {
+    let driver = deps.store.get(thread_key).and_then(|r| r.driver).unwrap_or((deps.options)().default_driver);
+    driver == crate::config::AgentDriverKind::Pi
+}
+
+async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>, e: TurnEntry) {
+    let record = deps.store.get(&e.thread_key);
+    let input = crate::driver::types::AgentTurnInput {
+        thread_key: e.thread_key.clone(),
+        session_ref: record.as_ref().and_then(|r| r.session_ref.clone()),
+        text: String::new(),
+        workdir: record.as_ref().and_then(|r| r.worktree.clone()).unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone()),
+        model: record.as_ref().and_then(|r| r.model.clone()),
+        agent: None,
+        driver: Some(crate::config::AgentDriverKind::Pi),
+        answer_questions: false,
+        request_id: Some(e.request_id.clone()),
+    };
+    match deps.driver.run_turn(input).await {
+        Ok(out) => {
+            if out.session_ref.is_some() {
+                let _ = deps.store.update(&e.thread_key, &e.space, SessionPatch { session_ref: Some(out.session_ref), ..Default::default() }).await;
+            }
+            notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), &out.reply).await;
+            ledger.set(&e.request_id, TurnState::Posted).await;
+            crate::handler::note(&deps, "turn_ok", &e.thread_key, "Turn resumed after a restart", e.request_id.clone()).await;
+        }
+        Err(err) => {
+            ledger.set(&e.request_id, TurnState::Failed).await;
+            notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), CUT_NOTICE).await;
+            crate::handler::note(&deps, "turn_fail", &e.thread_key, "Turn could not resume", err).await;
+        }
+    }
+}
+
+pub async fn recover(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>) -> usize {
     let cut = ledger.unfinished();
     for e in &cut {
+        if runs_on_pi(&deps, &e.thread_key) {
+            ledger.set(&e.request_id, TurnState::Running).await;
+            tokio::spawn(resume_on_pi(deps.clone(), ledger.clone(), transcripts.clone(), e.clone()));
+            continue;
+        }
         ledger.set(&e.request_id, TurnState::Failed).await;
-        notify(deps, transcripts, &e.thread_key, &e.space, e.thread.clone(), CUT_NOTICE).await;
-        crate::handler::note(deps, "turn_fail", &e.thread_key, "Turn cut by a restart", e.request_id.clone()).await;
+        notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), CUT_NOTICE).await;
+        crate::handler::note(&deps, "turn_fail", &e.thread_key, "Turn cut by a restart", e.request_id.clone()).await;
     }
+    let deps = &*deps;
+    let transcripts = &*transcripts;
     for (key, record) in deps.store.all() {
         if record.pending_questions.as_ref().is_some_and(|q| !q.is_empty()) {
             let _ = deps.store.update(&key, &record.space, SessionPatch { pending_questions: Some(None), ..Default::default() }).await;

@@ -9,8 +9,8 @@ export type ContextFooter = "every" | "every5" | "above60" | "never";
 export type TunnelMode = "auto" | "opentunnel" | "cloudflared" | "off";
 
 export interface Settings {
-  agentDriver: "opencode" | "claude";
-  models: { opencode?: string; claude?: string };
+  agentDriver: "opencode" | "claude" | "pi";
+  models: { opencode?: string; claude?: string; pi?: string };
   agents: { opencode?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
@@ -24,7 +24,7 @@ export interface Settings {
 export interface Persona {
   name: string;
   prompt: string;
-  driver?: "opencode" | "claude";
+  driver?: "opencode" | "claude" | "pi";
   model?: string;
   agent?: string;
   listen?: "mentions" | "all";
@@ -173,7 +173,8 @@ export const api = {
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),
   stop: (slug: string) => call("/api/threads/down", { slug }),
   agents: () => call<Agent[]>("/api/agents"),
-  models: (agent: "opencode" | "claude" = "opencode", refresh = false) =>
+  models: (agent: "opencode" | "claude" | "pi" = "opencode", refresh = false) =>
+    agent === "pi" ? Promise.resolve<string[]>([]) :
     call<string[]>(`/api/agents/${agent}/models${refresh ? "?refresh=1" : ""}`),
   opencodeAgents: (refresh = false) => call<string[]>(`/api/agents/opencode/agents${refresh ? "?refresh=1" : ""}`),
   health: () => call<Health>("/api/health"),

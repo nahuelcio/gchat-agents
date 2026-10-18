@@ -112,6 +112,7 @@ mod tests {
                 agent: None,
                 driver: None,
                 answer_questions: true,
+                request_id: None,
             })
             .await
             .unwrap();
@@ -136,6 +137,7 @@ Ana: @qa check this".into(),
             agent: None,
             driver: None,
             answer_questions: true,
+            request_id: None,
         };
         assert_eq!(EchoDriver.run_turn(turn("team/t#qa")).await.unwrap().reply, "Echo: Ana: @qa check this");
         assert_eq!(EchoDriver.run_turn(turn("team/t#architect")).await.unwrap().reply, PASS);
@@ -154,6 +156,7 @@ Ana: @qa check this".into(),
                 agent: None,
                 driver: None,
                 answer_questions: true,
+                request_id: None,
             })
             .await
             .unwrap();

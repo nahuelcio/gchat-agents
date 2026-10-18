@@ -486,6 +486,7 @@ for await (const line of rl) {{
                 agent: None,
                 driver: None,
                 answer_questions: true,
+                request_id: None,
             })
             .await
             .unwrap();

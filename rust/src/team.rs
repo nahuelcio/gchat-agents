@@ -185,6 +185,7 @@ pub async fn team_send(
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: Some(request_id.clone()),
             },
             deps2,
         ))
@@ -348,6 +349,7 @@ pub async fn team_thread(
         r.driver.map(|d| match d {
             crate::config::AgentDriverKind::Opencode => "opencode".into(),
             crate::config::AgentDriverKind::Claude => "claude".into(),
+            crate::config::AgentDriverKind::Pi => "pi".into(),
         })
     });
     Ok(TeamThreadState {

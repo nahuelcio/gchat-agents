@@ -3,13 +3,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::types::{AgentDriver, AgentTurnInput, AgentTurnResult};
-use super::{ClaudeDriver, OpenCodeDriver};
+use super::{ClaudeDriver, OpenCodeDriver, PiDriver};
 use crate::config::AgentDriverKind;
 use crate::settings::SettingsStore;
 
 pub struct ConfiguredDriver {
     pub opencode: OpenCodeDriver,
     pub claude: ClaudeDriver,
+    pub pi: PiDriver,
     pub settings: Arc<SettingsStore>,
 }
 
@@ -24,6 +25,7 @@ impl AgentDriver for ConfiguredDriver {
                     .await
             }
             AgentDriverKind::Claude => ClaudeDriver { model: s.models.claude, ..self.claude.clone() }.run_turn(input).await,
+            AgentDriverKind::Pi => PiDriver { model: s.models.pi, settings: Some(self.settings.clone()), ..self.pi.clone() }.run_turn(input).await,
         }
     }
 }
@@ -64,6 +66,7 @@ mod tests {
                 switchboard: None,
                 read_dirs: vec![],
             },
+            pi: PiDriver { base_url: "http://127.0.0.1:1".into(), model: None, settings: None, timeout_ms: 1_000, retry_ms: 0 },
             settings,
         };
         let turn = |driver: Option<AgentDriverKind>| AgentTurnInput {
@@ -75,6 +78,7 @@ mod tests {
             agent: None,
             driver,
             answer_questions: false,
+            request_id: None,
         };
         let out = driver.run_turn(turn(Some(AgentDriverKind::Opencode))).await.unwrap();
         assert!(out.reply.contains("from opencode"));

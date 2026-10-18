@@ -23,6 +23,9 @@
     "smoke": "cargo run --manifest-path rust/Cargo.toml -- --driver echo"
   },
   "dependencies": {
+    "@earendil-works/chord": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-durable": "1.3.0",
     "google-auth-library": "^11.2.0",
     "pele": "^1.6.0"
   },

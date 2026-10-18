@@ -14,6 +14,7 @@ pub mod integrations;
 pub mod mcp;
 pub mod media;
 pub mod personas;
+pub mod pi_sidecar;
 pub mod question_gate;
 pub mod questions;
 pub mod queue;
@@ -72,6 +73,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
             models: crate::settings::Models {
                 opencode: config.opencode_model.clone(),
                 claude: config.claude_model.clone(),
+                pi: std::env::var("PI_MODEL").ok().filter(|m| !m.trim().is_empty()),
             },
             agents: Default::default(),
             repos: config.repos.clone(),
@@ -121,6 +123,13 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                 timeout_ms: config.turn_timeout_ms,
                 switchboard: Some(switchboard.clone()),
                 read_dirs: vec![config.data_dir.join("media").to_string_lossy().into_owned()],
+            },
+            pi: crate::driver::PiDriver {
+                base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
+                model: None,
+                settings: None,
+                timeout_ms: config.turn_timeout_ms,
+                retry_ms: 60_000,
             },
             settings: settings.clone(),
         })
@@ -192,6 +201,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     agent: None,
                     driver: None,
                     answer_questions: false,
+                    request_id: None,
                 })
                 .await;
             let reply = match &result {
@@ -268,10 +278,10 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     }
     let runtime = build_runtime(config, echo)?;
     let state = runtime.state.clone();
-    if let Some(ledger) = &state.handler.ledger {
-        let cut = crate::turn_ledger::recover(&state.handler, ledger, &state.transcripts).await;
+    if let Some(ledger) = state.handler.ledger.clone() {
+        let cut = crate::turn_ledger::recover(state.handler.clone(), ledger, state.transcripts.clone()).await;
         if cut > 0 {
-            tracing::warn!("{cut} turn(s) were cut by the last restart; their threads were told");
+            tracing::warn!("{cut} turn(s) were unfinished at the last restart: resumed on Pi, announced as cut otherwise");
         }
     }
     let (port, data_dir) = (runtime.config.port, runtime.config.data_dir.clone());
@@ -294,6 +304,7 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
 pub async fn serve(runtime: Runtime) -> Result<(), String> {
     let state = runtime.state.clone();
     let config = runtime.config;
+    crate::pi_sidecar::spawn(&config.data_dir, config.admin_port);
 
     let health = state.health.clone();
     tokio::spawn(async move {

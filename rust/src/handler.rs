@@ -263,6 +263,7 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
                 thread,
                 room_n: None,
                 captured_replies: None,
+                request_id: request_id.clone(),
             },
             deps2,
         ))
@@ -328,6 +329,7 @@ pub struct TurnRequest {
     pub thread: Option<PostThread>,
     pub room_n: Option<u64>,
     pub captured_replies: Option<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    pub request_id: Option<String>,
 }
 
 pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Result<bool, String> {
@@ -578,6 +580,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 agent: None,
                 driver: Some(driver_kind),
                 answer_questions: true,
+                request_id: req.request_id.clone(),
             })
             .await
     };
@@ -837,6 +840,7 @@ async fn persona_round(
                 agent: item.persona.agent.clone(),
                 driver: item.persona.driver.or(record.as_ref().and_then(|r| r.driver)),
                 answer_questions: false,
+                request_id: req.request_id.as_ref().map(|r| format!("{r}#{}#{}", item.persona.name, item.hop)),
             })
             .await;
         drop(talking);
@@ -1010,6 +1014,7 @@ async fn host_continue(req: &TurnRequest, deps: &HandlerDeps, text: &str) -> Opt
             agent: None,
             driver: record.as_ref().and_then(|r| r.driver).or(Some(options.default_driver)),
             answer_questions: false,
+            request_id: None,
         })
         .await
     {
@@ -1113,6 +1118,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             let driver = match args.first().copied() {
                 Some("opencode") => Some(crate::config::AgentDriverKind::Opencode),
                 Some("claude") => Some(crate::config::AgentDriverKind::Claude),
+                Some("pi") => Some(crate::config::AgentDriverKind::Pi),
                 Some(other) => return Err(format!("unknown agent {other}")),
                 None => None,
             };
@@ -1184,6 +1190,7 @@ pub async fn thread_command(deps: &HandlerDeps, thread_key: &str, text: &str) ->
         thread: None,
         room_n: None,
         captured_replies: None,
+        request_id: None,
     };
     run_command(&req, deps).await
 }
@@ -1234,6 +1241,7 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
             agent: None,
             driver: record.as_ref().and_then(|r| r.driver),
             answer_questions: false,
+            request_id: None,
         })
         .await?;
     let after = out.reply.len().div_ceil(4) as u64;
@@ -1423,6 +1431,7 @@ pub fn context_line(r: &crate::session::SessionRecord, options: &TurnOptions) ->
         .or_else(|| match r.driver.unwrap_or(options.default_driver) {
             crate::config::AgentDriverKind::Opencode => options.default_models.opencode.clone(),
             crate::config::AgentDriverKind::Claude => options.default_models.claude.clone(),
+            crate::config::AgentDriverKind::Pi => options.default_models.pi.clone(),
         })
         .unwrap_or_else(|| "default".into());
     let pct = context_percent(r)
@@ -1435,6 +1444,7 @@ pub fn settings_to_options(s: &Settings) -> TurnOptions {
     let default_model = match s.agent_driver {
         crate::config::AgentDriverKind::Opencode => s.models.opencode.clone(),
         crate::config::AgentDriverKind::Claude => s.models.claude.clone(),
+        crate::config::AgentDriverKind::Pi => s.models.pi.clone(),
     };
     TurnOptions {
         context_footer: s.context_footer,
@@ -1654,6 +1664,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                request_id: None,
             },
             d,
         )
@@ -1704,6 +1715,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                request_id: None,
             },
             d.clone(),
         )
@@ -1720,6 +1732,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                request_id: None,
             },
             d,
         )
@@ -1759,6 +1772,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: None,
             },
             d,
         )
@@ -1799,6 +1813,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: None,
             },
             d,
         )
@@ -1844,6 +1859,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: None,
             },
             d,
         )
@@ -1908,6 +1924,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: None,
+            request_id: None,
         };
         let sessions = |d: &HandlerDeps| d.store.get("team/t1").map(|r| (r.session_ref.is_some(), r.persona_sessions.is_some())).unwrap();
         deps.store.update("team/t1", "spaces/team", seed()).await.unwrap();
@@ -1945,6 +1962,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: Some(Arc::new(tokio::sync::Mutex::new(Vec::new()))),
+            request_id: None,
         };
         let note = run_command(&req("/compact"), &d).await.unwrap();
         assert!(note.contains("Session compacted"));
@@ -2033,10 +2051,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let transcripts = crate::transcripts::TranscriptStore::open(dir.path().join("t"), 50);
-        let reopened = crate::turn_ledger::TurnLedger::open(dir.path().join("turns.json"));
-        assert_eq!(crate::turn_ledger::recover(&deps, &reopened, &transcripts).await, 1);
-        assert_eq!(crate::turn_ledger::recover(&deps, &reopened, &transcripts).await, 0);
+        let transcripts = Arc::new(crate::transcripts::TranscriptStore::open(dir.path().join("t"), 50));
+        let reopened = Arc::new(crate::turn_ledger::TurnLedger::open(dir.path().join("turns.json")));
+        assert_eq!(crate::turn_ledger::recover(deps.clone(), reopened.clone(), transcripts.clone()).await, 1);
+        assert_eq!(crate::turn_ledger::recover(deps.clone(), reopened.clone(), transcripts.clone()).await, 0);
         let posts = chat.posts.lock().unwrap().clone();
         assert_eq!(posts.len(), 2);
         assert!(posts.iter().any(|(_, b)| b.text == crate::turn_ledger::CUT_NOTICE));
@@ -2072,6 +2090,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: None,
             },
             d,
         )
@@ -2103,6 +2122,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                request_id: None,
             },
             d,
         )

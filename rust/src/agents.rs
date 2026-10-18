@@ -20,7 +20,23 @@ pub async fn detect_agents(opencode_bin: &str, claude_bin: &str) -> Vec<Detected
     vec![
         probe("opencode", "OpenCode", opencode_bin).await,
         probe("claude", "Claude Code", claude_bin).await,
+        probe_pi().await,
     ]
+}
+
+async fn probe_pi() -> DetectedAgent {
+    let url = format!("http://127.0.0.1:{}/health", crate::pi_sidecar::port());
+    let up = reqwest::Client::new().get(url).timeout(std::time::Duration::from_secs(2)).send().await.is_ok_and(|r| r.status().is_success());
+    let present = crate::pi_sidecar::script().is_some();
+    DetectedAgent {
+        id: "pi".into(),
+        name: "Pi (durable)".into(),
+        installed: present,
+        version: Some("pi-durable 1.3.0".into()),
+        supported: true,
+        ready: Some(up),
+        detail: Some(if up { "harness running".into() } else if present { "harness starting or stopped".into() } else { "harness/server.ts not found".into() }),
+    }
 }
 
 async fn probe(id: &str, name: &str, bin: &str) -> DetectedAgent {
@@ -80,9 +96,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn detect_returns_two() {
+    async fn detect_lists_opencode_claude_and_pi() {
         let agents = detect_agents("opencode-missing-bin", "claude-missing-bin").await;
-        assert_eq!(agents.len(), 2);
+        assert_eq!(agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["opencode", "claude", "pi"]);
         assert!(!agents[0].installed);
     }
 }
