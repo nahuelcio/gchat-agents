@@ -64,7 +64,7 @@ const INTRO = {
   host: "Describe changes to the host — tone, rules, tools. Edits land in the form on the left.",
   agent: "Describe the agent you want. I’ll draft fields on the left; keep chatting to refine.",
   skill: "Describe the skill. I’ll draft it with the skill-creator pack (SKILL.md + references/scripts).",
-  editAgent: (name: string) => `Editing @${name}. Say what to change, or edit the form.`,
+  editAgent: (name: string) => `Editing @${name}. Tell me what to change (role, tools, skills, who they can ask) — I’ll update the draft.`,
   editSkill: (name: string) =>
     name === "skill-creator"
       ? "Editing skill-creator — this pack steers Create → Skills AI. Change carefully."
@@ -189,7 +189,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setAiOpen(false);
   };
 
-  const startEditHost = () => {
+  const startEditHost = (withAi = false) => {
     setKind("agent");
     setMessages([]);
     setInput("");
@@ -205,10 +205,10 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
       skills: settings.hostSkills ?? [],
     });
     setReady(true);
-    setAiOpen(false);
+    setAiOpen(withAi);
   };
 
-  const startEditAgent = (p: Persona) => {
+  const startEditAgent = (p: Persona, withAi = false) => {
     setKind("agent");
     setMessages([]);
     setInput("");
@@ -220,7 +220,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setAgentDraft({ ...EMPTY_PERSONA, ...p, avatar: p.avatar ?? avatarFromName(p.name) });
     setEditingAgent(p.name);
     setReady(true);
-    setAiOpen(false);
+    setAiOpen(withAi);
   };
 
   const startEditSkill = (sk: SkillInfo, withAi = false) => {
@@ -522,33 +522,41 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         )}
         {kind === "agent" ? (
           <>
-            <button type="button" className={`create-ai-item${editingHost ? " on" : ""}`} onClick={startEditHost}>
+            <div className={`create-ai-item${editingHost ? " on" : ""}`}>
               <span className="create-ai-item-face" aria-hidden="true">
                 <AgentBlob name={BOT_NAME} size={36} animate />
               </span>
-              <span className="create-ai-item-main">
+              <button type="button" className="create-ai-item-main" onClick={() => startEditHost(false)}>
                 <span className="strong">Host (Pi)</span>
                 <span className="muted small">{hostTools.join(" · ")}</span>
-              </span>
+              </button>
               <span className="create-ai-item-meta">
                 <span className="pill accent">locked</span>
-                <span className="btn small">Edit</span>
+                <button className="btn small" type="button" onClick={() => startEditHost(false)}>
+                  Edit
+                </button>
+                <button className="btn small primary" type="button" onClick={() => startEditHost(true)}>
+                  Edit with AI
+                </button>
               </span>
-            </button>
+            </div>
             {personas.map((p) => (
               <div key={p.name} className={`create-ai-item${editingAgent === p.name ? " on" : ""}`}>
                 <span className="create-ai-item-face" aria-hidden="true">
                   <AgentBlob name={p.name} avatar={p.avatar} size={36} />
                 </span>
-                <button type="button" className="create-ai-item-main" onClick={() => startEditAgent(p)}>
+                <button type="button" className="create-ai-item-main" onClick={() => startEditAgent(p, false)}>
                   <span className="strong agent-tint author" style={agentTint(p.name)}>
                     @{p.name}
                   </span>
                   <span className="muted small">{p.prompt ? p.prompt.slice(0, 90) + (p.prompt.length > 90 ? "…" : "") : "No role yet"}</span>
                 </button>
                 <span className="create-ai-item-meta">
-                  <button className="btn small" type="button" onClick={() => startEditAgent(p)}>
+                  <button className="btn small" type="button" onClick={() => startEditAgent(p, false)}>
                     Edit
+                  </button>
+                  <button className="btn small primary" type="button" onClick={() => startEditAgent(p, true)}>
+                    Edit with AI
                   </button>
                   <button className="btn small" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
                     Delete

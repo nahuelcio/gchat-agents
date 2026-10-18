@@ -342,18 +342,18 @@ fn agent_chat_instructions(ctx: &DraftContext) -> String {
         ctx.available_skills.join(", ")
     };
     format!(
-        r#"You help the user design a Google Chat agent for Switchboard (Pi runtime) through a short conversation.
+        r#"You help the user create OR improve a Google Chat agent for Switchboard (Pi runtime).
 
-Goal: clarify what they want, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+Goal: clarify what they want, then produce a solid draft. When a Current draft JSON is provided, treat this as an EDIT — keep the name, preserve what still fits, change only what the user asks.
 
 Rules:
 - Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
 - Shape: {{"message":"...","draft":{{...}}|null,"ready":false|true}}
 - message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating the draft, say what changed.
-- draft: null until you know at least a name and a role. Then always include the best draft so far.
-- ready: true only when the draft is good enough to save (name + clear prompt). Still allow more refinements if the user keeps chatting.
+- draft: null only for a brand-new agent with no name/role yet. If a current draft exists, ALWAYS return a full updated draft.
+- ready: true when name + prompt are clear enough to save (edits can be ready right after a clear change).
 - Draft fields:
-  - name: short handle, lowercase letters/digits/-/_ , max 32, no @.
+  - name: short handle, lowercase letters/digits/-/_ , max 32, no @. On edit, keep the existing name unless the user renames.
   - prompt: concise role + know-how (2–8 sentences). Prefer reusable procedures in skills when a matching skill exists.
   - listen: omit or "all". Default omit = only @mentions.
   - respondTo: omit or "people". Default omit = anyone.
@@ -362,11 +362,8 @@ Rules:
   - delegates: other agent names only if "agents" is in mcps.
   - model: omit unless the user names one.
 
-Example early turn:
-{{"message":"Should it listen only to @mentions or every message? Which tools does it need?","draft":null,"ready":false}}
-
-Example later turn:
-{{"message":"Ready: @sales with Drive and engram. Anything else?","draft":{{"name":"sales","prompt":"...","listen":"all","respondTo":"people","skills":[],"mcps":["google-drive","engram"],"delegates":[]}},"ready":true}}"#
+Example (edit):
+{{"message":"Shortened the role and limited Can ask to @finanzas. Ready to save?","draft":{{"name":"soporte","prompt":"...","listen":"all","skills":["soporte"],"mcps":["switchboard","engram","agents"],"delegates":["finanzas"]}},"ready":true}}"#
     )
 }
 
@@ -378,24 +375,24 @@ fn host_chat_instructions(ctx: &DraftContext) -> String {
         ctx.available_skills.join(", ")
     };
     format!(
-        r#"You help the user configure the host agent for Switchboard (the main Pi agent that answers when people talk to the bot — it can code and use tools, not just chat).
+        r#"You help the user create OR improve the host agent for Switchboard (the main Pi agent — it can code and use tools).
 
 The built-in host preamble already covers room roster, @mentions, and inviting agents. The user prompt is EXTRA instructions layered on top (tone, domain rules, never-do, company context).
 
-Goal: clarify what they want, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+Goal: clarify what they want, then produce a solid draft. When a Current draft JSON is provided, treat this as an EDIT — preserve what still fits, change only what the user asks.
 
 Rules:
 - Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
 - Shape: {{"message":"...","draft":{{"prompt":"...","mcps":[],"skills":[]}}|null,"ready":false|true}}
-- message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing.
-- draft: null until you have something useful. Then always include the best draft so far.
-- ready: true when the prompt is clear enough to save.
+- message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating, say what changed.
+- draft: if a current draft exists, ALWAYS return a full updated draft. Otherwise null until you have something useful.
+- ready: true when the prompt is clear enough to save (edits can be ready immediately after a clear change).
 - prompt: 2–12 sentences of durable host instructions. Do NOT restate the built-in roster/@mention rules unless the user wants a change.
 - mcps: subset of [{mcps}]. Default for a coding host: coding, switchboard, engram, agents, google-drive. Empty = every tool.
 - skills: subset of [{skills}] when clearly useful.
 
-Example:
-{{"message":"Should the host stay short and route to specialists, or answer deeply itself?","draft":{{"prompt":"Prefer routing product questions to specialists. Stay concise.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]}},"ready":false}}"#
+Example (edit):
+{{"message":"Made the host prefer Spanish and route billing to specialists. Ready to save?","draft":{{"prompt":"Prefer Spanish. Route billing to specialists.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]}},"ready":true}}"#
     )
 }
 
