@@ -171,6 +171,7 @@ pub async fn team_send(
     let request_id = uuid::Uuid::new_v4().to_string();
     if let Some(ledger) = &deps.ledger {
         ledger.begin(&request_id, &thread_key2, "team-chat", None).await;
+        ledger.remember_prompt(&request_id, &format!("{name}: {prompt}")).await;
     }
     tokio::spawn(async move {
         let captured = Arc::new(Mutex::new(Vec::new()));

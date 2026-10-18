@@ -33,6 +33,10 @@ pub struct TurnEntry {
     pub thread: Option<PostThread>,
     pub state: TurnState,
     pub at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
 }
 
 pub struct TurnLedger {
@@ -61,12 +65,32 @@ impl TurnLedger {
                 thread,
                 state: TurnState::Accepted,
                 at: chrono::Utc::now().to_rfc3339(),
+                prompt: String::new(),
+                persona: None,
             });
             let overflow = entries.len().saturating_sub(CAP);
             entries.drain(..overflow);
         }
         self.save().await;
         true
+    }
+
+    pub async fn remember_prompt(&self, request_id: &str, prompt: &str) {
+        if let Some(e) = self.entries.lock().unwrap().iter_mut().find(|e| e.request_id == request_id) {
+            e.prompt = prompt.to_string();
+        }
+        self.save().await;
+    }
+
+    pub async fn begin_persona(&self, request_id: &str, base: &str, persona: &str, space: &str, thread: Option<PostThread>, prompt: &str) {
+        if self.begin(request_id, base, space, thread).await {
+            if let Some(e) = self.entries.lock().unwrap().iter_mut().find(|e| e.request_id == request_id) {
+                e.persona = Some(persona.to_string());
+                e.prompt = prompt.to_string();
+                e.state = TurnState::Running;
+            }
+            self.save().await;
+        }
     }
 
     pub async fn set(&self, request_id: &str, state: TurnState) {
@@ -107,37 +131,76 @@ async fn notify(deps: &HandlerDeps, transcripts: &TranscriptStore, thread_key: &
     }
 }
 
-fn runs_on_pi(deps: &HandlerDeps, thread_key: &str) -> bool {
-    let driver = deps.store.get(thread_key).and_then(|r| r.driver).unwrap_or((deps.options)().default_driver);
+fn runs_on_pi(deps: &HandlerDeps, e: &TurnEntry) -> bool {
+    let options = (deps.options)();
+    let record = deps.store.get(&e.thread_key);
+    let persona_driver = e.persona.as_ref().and_then(|name| options.personas.iter().find(|p| p.name.eq_ignore_ascii_case(name))).and_then(|p| p.driver);
+    let driver = persona_driver.or(record.and_then(|r| r.driver)).unwrap_or(options.default_driver);
     driver == crate::config::AgentDriverKind::Pi
 }
 
 async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>, e: TurnEntry) {
-    let record = deps.store.get(&e.thread_key);
-    let input = crate::driver::types::AgentTurnInput {
-        thread_key: e.thread_key.clone(),
-        session_ref: record.as_ref().and_then(|r| r.session_ref.clone()),
-        text: String::new(),
-        workdir: record.as_ref().and_then(|r| r.worktree.clone()).unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone()),
-        model: record.as_ref().and_then(|r| r.model.clone()),
-        agent: None,
-        driver: Some(crate::config::AgentDriverKind::Pi),
-        answer_questions: false,
-        request_id: Some(e.request_id.clone()),
+    let pi = crate::driver::PiDriver {
+        base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
+        model: None,
+        settings: None,
+        timeout_ms: 0,
+        retry_ms: 60_000,
     };
-    match deps.driver.run_turn(input).await {
-        Ok(out) => {
-            if out.session_ref.is_some() {
-                let _ = deps.store.update(&e.thread_key, &e.space, SessionPatch { session_ref: Some(out.session_ref), ..Default::default() }).await;
+    let record = deps.store.get(&e.thread_key);
+    let key = match &e.persona {
+        Some(p) => format!("{}#{p}", e.thread_key),
+        None => e.thread_key.clone(),
+    };
+    let session = match &e.persona {
+        Some(p) => record.as_ref().and_then(|r| r.persona_sessions.as_ref()).and_then(|m| m.get(p).cloned()),
+        None => record.as_ref().and_then(|r| r.session_ref.clone()),
+    };
+    let outcome = match pi.wait(&e.request_id).await {
+        Ok(Some(out)) => Ok(Some(out)),
+        Ok(None) if !e.prompt.trim().is_empty() => deps
+            .driver
+            .run_turn(crate::driver::types::AgentTurnInput {
+                thread_key: key.clone(),
+                session_ref: session,
+                text: e.prompt.clone(),
+                workdir: record.as_ref().and_then(|r| r.worktree.clone()).unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone()),
+                model: None,
+                agent: None,
+                driver: Some(crate::config::AgentDriverKind::Pi),
+                answer_questions: false,
+                request_id: Some(e.request_id.clone()),
+            })
+            .await
+            .map(Some),
+        Ok(None) => Ok(None),
+        Err(err) => Err(err),
+    };
+    match outcome {
+        Ok(Some(out)) => {
+            if let Some(session) = out.session_ref.clone() {
+                let patch = match &e.persona {
+                    Some(p) => {
+                        let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+                        sessions.insert(p.clone(), session);
+                        SessionPatch { persona_sessions: Some(Some(sessions)), ..Default::default() }
+                    }
+                    None => SessionPatch { session_ref: Some(Some(session)), ..Default::default() },
+                };
+                let _ = deps.store.update(&e.thread_key, &e.space, patch).await;
             }
-            notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), &out.reply).await;
+            let text = match &e.persona {
+                Some(p) => format!("*@{p}*\n{}", out.reply),
+                None => out.reply.clone(),
+            };
+            notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), &text).await;
             ledger.set(&e.request_id, TurnState::Posted).await;
             crate::handler::note(&deps, "turn_ok", &e.thread_key, "Turn resumed after a restart", e.request_id.clone()).await;
         }
-        Err(err) => {
+        Ok(None) | Err(_) => {
             ledger.set(&e.request_id, TurnState::Failed).await;
             notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), CUT_NOTICE).await;
-            crate::handler::note(&deps, "turn_fail", &e.thread_key, "Turn could not resume", err).await;
+            crate::handler::note(&deps, "turn_fail", &e.thread_key, "Turn could not resume", e.request_id.clone()).await;
         }
     }
 }
@@ -145,7 +208,7 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
 pub async fn recover(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>) -> usize {
     let cut = ledger.unfinished();
     for e in &cut {
-        if runs_on_pi(&deps, &e.thread_key) {
+        if runs_on_pi(&deps, e) {
             ledger.set(&e.request_id, TurnState::Running).await;
             tokio::spawn(resume_on_pi(deps.clone(), ledger.clone(), transcripts.clone(), e.clone()));
             continue;

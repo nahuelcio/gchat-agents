@@ -2,7 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
@@ -22,14 +22,22 @@ const threadsFile = join(dataDir, "harness-threads.json");
 const SECRET = /KEY|TOKEN|SECRET|PASSWORD|SERVICE_ACCOUNT|CREDENTIAL/i;
 
 mkdirSync(dataDir, { recursive: true });
-const saved: { threads: Record<string, string>; requests: Record<string, string> } = existsSync(threadsFile)
-  ? JSON.parse(readFileSync(threadsFile, "utf8"))
-  : { threads: {}, requests: {} };
+function loadSaved(): { threads: Record<string, string>; requests: Record<string, string> } {
+  try {
+    if (existsSync(threadsFile)) return JSON.parse(readFileSync(threadsFile, "utf8"));
+  } catch (err) {
+    console.error("harness-threads.json unreadable, starting a new map:", err instanceof Error ? err.message : err);
+  }
+  return { threads: {}, requests: {} };
+}
+const saved = loadSaved();
 const threads = saved.threads;
 const remember = (conversationId: string, threadKey: string, requestId: string) => {
   threads[conversationId] = threadKey;
   saved.requests[requestId] = conversationId;
-  writeFileSync(threadsFile, JSON.stringify(saved));
+  const tmp = `${threadsFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(saved));
+  renameSync(tmp, threadsFile);
 };
 
 function lastUserText(context: { messages?: { role: string; content: unknown }[] }): string {
@@ -42,12 +50,14 @@ function lastUserText(context: { messages?: { role: string; content: unknown }[]
 function models(): MutableModels {
   if (process.env.PI_FAUX !== "1") return builtinModels();
   const faux = fauxProvider({ provider: "faux", models: [{ id: "echo", contextWindow: 200_000 }] });
-  const respond = (context: { messages?: { role: string; content: unknown }[] }) => {
+  const respond = (context: { messages?: { role: string; content: unknown }[] }): ReturnType<typeof fauxAssistantMessage> | Promise<ReturnType<typeof fauxAssistantMessage>> => {
     const last = [...(context.messages ?? [])].reverse()[0];
     const text = lastUserText(context);
     if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${text.slice(0, 200)}`);
     const read = text.match(/READ:(\S+)/);
     if (read) return fauxAssistantMessage([fauxToolCall("read", { path: read[1] })], { stopReason: "toolUse" });
+    const sleep = text.match(/SLEEP:(\d+)/);
+    if (sleep) return new Promise((ok) => setTimeout(() => ok(fauxAssistantMessage(`Slept ${sleep[1]}s`)), Number(sleep[1]) * 1000));
     const bash = text.match(/BASH:(.+)$/m);
     if (bash) return fauxAssistantMessage([fauxToolCall("bash", { command: bash[1] })], { stopReason: "toolUse" });
     return fauxAssistantMessage(`Echo: ${text.split("\n---\n").pop()?.trim()}`);
@@ -157,7 +167,16 @@ async function answerText(conv: Conversation, answer: unknown): Promise<string> 
   return content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
 }
 
-type TurnBody = { conversationId?: string; threadKey: string; requestId: string; text: string; cwd?: string; model?: string; mcps?: string[] | null };
+type SubmitBody = {
+  conversationId?: string;
+  threadKey: string;
+  requestId: string;
+  text: string;
+  cwd?: string;
+  model?: string;
+  mcps?: string[] | null;
+  instructions?: string | null;
+};
 
 function loadKeys() {
   const file = join(dataDir, "pi-keys.json");
@@ -167,22 +186,43 @@ function loadKeys() {
   }
 }
 
-async function turn(body: TurnBody) {
+const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>();
+
+async function admit(body: SubmitBody) {
   loadKeys();
-  const known = saved.requests[body.requestId] ?? body.conversationId;
+  const known = saved.requests[body.requestId];
+  if (!known && !body.text?.trim()) throw new Error("empty input for a new request");
   let conv = known ? await harness.conversation(known as never, ctx) : undefined;
+  if (!conv && body.conversationId) conv = await harness.conversation(body.conversationId as never, ctx);
   if (!conv) conv = await harness.createConversation({ ownership: { kind: "ownerless" } }, ctx);
   remember(String(conv.id), body.threadKey, body.requestId);
-  const tools = toolsFor(body.mcps);
-  await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools }, ctx);
-  const submission = await conv.submit({ type: "input", content: body.text, requestId: body.requestId }, ctx);
-  const settled = await submission.wait(ctx);
+  if (!known) {
+    await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
+  }
+  const submission = await conv.submit({ type: "input", content: body.text || "(resumed)", requestId: body.requestId }, ctx);
+  submissions.set(body.requestId, submission);
+  return { conversationId: String(conv.id) };
+}
+
+async function waitFor(requestId: string, ms: number) {
+  const known = saved.requests[requestId];
+  if (!known) return { status: "unknown" };
+  const conv = await harness.conversation(known as never, ctx);
+  if (!conv) return { status: "unknown" };
+  let submission = submissions.get(requestId);
+  if (!submission) {
+    submission = await conv.submit({ type: "input", content: "(resumed)", requestId }, ctx);
+    submissions.set(requestId, submission);
+  }
+  const settled = await Promise.race([submission.wait(ctx), new Promise<undefined>((ok) => setTimeout(() => ok(undefined), ms))]);
+  if (!settled) return { status: "running", conversationId: known };
+  submissions.delete(requestId);
   if (settled.status !== "done" || settled.type !== "input") {
     const { reason, detail } = settled as { reason?: unknown; detail?: unknown };
     const why = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : "";
-    return { conversationId: String(conv.id), status: settled.status, error: [reason ?? "unanswered", why].filter(Boolean).join(": ") };
+    return { status: "unanswered", conversationId: known, error: [reason ?? "unanswered", why].filter(Boolean).join(": ") };
   }
-  return { conversationId: String(conv.id), status: "done", reply: await answerText(conv, settled.answer) };
+  return { status: "done", conversationId: known, reply: await answerText(conv, settled.answer) };
 }
 
 const read = (req: IncomingMessage) =>
@@ -200,7 +240,11 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
 createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, faux: process.env.PI_FAUX === "1" });
-    if (req.method === "POST" && req.url === "/turn") return send(res, 200, await turn(JSON.parse(await read(req)) as TurnBody));
+    if (req.method === "POST" && req.url === "/submit") return send(res, 200, await admit(JSON.parse(await read(req)) as SubmitBody));
+    if (req.method === "POST" && req.url === "/wait") {
+      const { requestId, timeoutMs } = JSON.parse(await read(req)) as { requestId: string; timeoutMs?: number };
+      return send(res, 200, await waitFor(requestId, Math.min(timeoutMs ?? 50_000, 50_000)));
+    }
     if (req.method === "POST" && req.url === "/reload") {
       await loadMcp();
       return send(res, 200, { ok: true, tools: mcpTools.map((t) => t.tool.name) });

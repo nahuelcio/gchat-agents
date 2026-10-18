@@ -229,6 +229,12 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
         if !ledger.begin(id, &thread_key, &space_name, thread.clone()).await {
             return HandleResult { status: 200, body: json!({ "ok": true, "duplicate": true }) };
         }
+        let who = message.sender.as_ref().or(event.user.as_ref()).and_then(|u| u.display_name.clone());
+        let said = match &who {
+            Some(w) => format!("{w}: {text}"),
+            None => text.clone(),
+        };
+        ledger.remember_prompt(id, &said).await;
     }
     let sender = message
         .sender
@@ -275,13 +281,19 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
     }
 }
 
+async fn mark(deps: &HandlerDeps, request_id: Option<&str>, state: crate::turn_ledger::TurnState) {
+    if let (Some(ledger), Some(id)) = (&deps.ledger, request_id) {
+        ledger.set(id, state).await;
+    }
+}
+
 pub async fn tracked<F: std::future::Future<Output = Result<bool, String>>>(deps: &HandlerDeps, request_id: Option<&str>, turn: F) -> Result<bool, String> {
     let (Some(ledger), Some(id)) = (&deps.ledger, request_id) else {
         return turn.await;
     };
     ledger.set(id, crate::turn_ledger::TurnState::Running).await;
     let result = turn.await;
-    let state = if result.is_ok() { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
+    let state = if result == Ok(true) { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
     ledger.set(id, state).await;
     result
 }
@@ -603,6 +615,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                     )
                     .await;
                 deliver_reply(req, deps, &out.reply, None, Some(&questions)).await;
+                mark(deps, req.request_id.as_deref(), crate::turn_ledger::TurnState::Posted).await;
                 return Ok(true);
             }
 
@@ -631,6 +644,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                     }
                 }
                 deliver_reply(req, deps, &reply, None, None).await;
+                mark(deps, req.request_id.as_deref(), crate::turn_ledger::TurnState::Posted).await;
             }
             let pct = deps.store.get(&req.thread_key).as_ref().and_then(context_percent);
             if let Some(pct) = pct.filter(|p| options.auto_compact_at > 0 && *p >= options.auto_compact_at as u64) {
@@ -822,6 +836,11 @@ async fn persona_round(
             .as_ref()
             .and_then(|r| r.worktree.clone())
             .unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone());
+        let persona_request = req.request_id.as_ref().map(|r| format!("{r}#{}#{}", item.persona.name, item.hop));
+        let on_pi = item.persona.driver.or(record.as_ref().and_then(|r| r.driver)).unwrap_or((deps.options)().default_driver) == crate::config::AgentDriverKind::Pi;
+        if let (Some(ledger), Some(id), true) = (&deps.ledger, &persona_request, on_pi) {
+            ledger.begin_persona(id, &req.thread_key, &item.persona.name, &req.space_name, req.thread.clone(), &item.text).await;
+        }
         let talking = Speaking::start(&req.thread_key, &format!("@{}", item.persona.name));
         let result = deps
             .driver
@@ -840,10 +859,14 @@ async fn persona_round(
                 agent: item.persona.agent.clone(),
                 driver: item.persona.driver.or(record.as_ref().and_then(|r| r.driver)),
                 answer_questions: false,
-                request_id: req.request_id.as_ref().map(|r| format!("{r}#{}#{}", item.persona.name, item.hop)),
+                request_id: persona_request.clone(),
             })
             .await;
         drop(talking);
+        if on_pi {
+            let state = if result.is_ok() { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
+            mark(deps, persona_request.as_deref(), state).await;
+        }
         let reply = match result {
             Ok(out) => {
                 let reply = strip_self_prefix(&out.reply, &item.persona);
