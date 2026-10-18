@@ -64,6 +64,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/work-item", axum::routing::put(put_work_item))
         .route("/api/drive/xlsx", post(post_drive_xlsx))
         .route("/api/skills", get(get_skills))
+        .route("/api/pi/keys", get(get_pi_keys).post(post_pi_key))
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
@@ -879,6 +880,23 @@ struct XlsxBody {
     task_id: Option<String>,
     title: Option<String>,
     sheets: Option<Vec<crate::google_drive::Sheet>>,
+}
+
+async fn get_pi_keys(State(state): State<Arc<AppState>>) -> Response {
+    Json(crate::pi_keys::status(&state.data_dir)).into_response()
+}
+
+#[derive(Deserialize)]
+struct PiKeyBody {
+    provider: Option<String>,
+    key: Option<String>,
+}
+
+async fn post_pi_key(State(state): State<Arc<AppState>>, Json(body): Json<PiKeyBody>) -> Response {
+    match crate::pi_keys::set(&state.data_dir, body.provider.as_deref().unwrap_or(""), body.key.as_deref().unwrap_or("")).await {
+        Ok(()) => Json(crate::pi_keys::status(&state.data_dir)).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 async fn get_skills() -> Response {

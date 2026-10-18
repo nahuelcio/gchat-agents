@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -46,7 +46,7 @@ export function SettingsView(props: ViewProps) {
   );
 }
 
-function AgentCard({ settings, save }: ViewProps) {
+function AgentCard({ settings, save, notify }: ViewProps) {
   const [agents, setAgents] = useState<Agent[]>();
   const [models, setModels] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
@@ -179,11 +179,12 @@ function AgentCard({ settings, save }: ViewProps) {
                 </button>
               ))}
             </div>
-            <span className="muted small">Threads can override it with /model. Aliases always track the latest model.</span>
+            <span className="muted small">{driver === "pi" ? "Threads can override it with /model." : "Threads can override it with /model. Aliases always track the latest model."}</span>
           </div>
           <button className="btn primary">Save</button>
         </form>
       )}
+      {driver === "pi" && <PiKeys notify={notify} />}
     </details>
   );
 }
@@ -619,6 +620,59 @@ function PersonasCard({ settings, save }: ViewProps) {
         </>
       )}
     </details>
+  );
+}
+
+function PiKeys({ notify }: { notify: ViewProps["notify"] }) {
+  const [keys, setKeys] = useState<PiKey[]>();
+  const [provider, setProvider] = useState("zai");
+  const [key, setKey] = useState("");
+  useEffect(() => {
+    api.piKeys().then(setKeys, () => setKeys([]));
+  }, []);
+  const store = (value: string, ok: string) =>
+    api.setPiKey(provider, value).then(
+      (list) => {
+        setKeys(list);
+        setKey("");
+        notify(ok);
+      },
+      (e: Error) => notify(e.message, true),
+    );
+  const current = keys?.find((k) => k.provider === provider);
+  return (
+    <div className="field" aria-label="Provider keys" role="group">
+      <span>Provider keys</span>
+      <span className="muted small">Pi calls the model directly. The key is stored on this machine, never shown again, and used from the next turn.</span>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (key.trim()) void store(key, `${current?.label ?? provider} key saved`);
+        }}
+      >
+        <select value={provider} onChange={(e) => setProvider(e.target.value)} aria-label="Provider">
+          {keys?.map((k) => (
+            <option key={k.provider} value={k.provider}>
+              {k.label}
+              {k.source === "none" ? "" : " ✓"}
+            </option>
+          ))}
+        </select>
+        <input className="mono grow" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={`Paste the ${current?.envVar ?? "API key"}`} aria-label="API key" autoComplete="off" />
+        <button className="btn" disabled={!key.trim()}>
+          Save key
+        </button>
+        {current?.source === "settings" && (
+          <button type="button" className="btn ghost" onClick={() => void store("", `${current.label} key removed`)}>
+            Remove
+          </button>
+        )}
+      </form>
+      <span className="muted small">
+        {current?.source === "settings" ? "Saved here." : current?.source === "env" ? `Taken from ${current.envVar} in .env.` : "Not configured yet."}
+      </span>
+    </div>
   );
 }
 

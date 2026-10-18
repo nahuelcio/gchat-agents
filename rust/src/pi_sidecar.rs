@@ -44,7 +44,8 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
                 .env("DATA_DIR", &data_dir)
                 .env("PI_PORT", port().to_string())
                 .env("SWITCHBOARD_ADMIN_URL", format!("http://127.0.0.1:{admin_port}"))
-                .stdin(Stdio::null())
+                .env("PI_PARENT_PIPE", "1")
+                .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .kill_on_drop(true)
@@ -52,6 +53,7 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
             match child {
                 Ok(mut child) => {
                     tracing::info!("Pi harness started on 127.0.0.1:{}", port());
+                    let _parent_pipe = child.stdin.take();
                     let status = child.wait().await;
                     tracing::warn!(?status, "Pi harness exited; restarting");
                 }

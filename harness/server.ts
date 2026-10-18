@@ -100,6 +100,7 @@ registry.install(CodingTools);
 registry.install(Switchboard);
 const allTools = new Map([...(CodingTools.tools ?? []), ...(Switchboard.tools ?? [])].map((t) => [t.name, t]));
 
+loadKeys();
 const shellEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET.test(k)));
 const harness = await Harness.open(
   await openNodeSqliteStorage(join(dataDir, "harness.sqlite")),
@@ -127,7 +128,16 @@ async function answerText(conv: Conversation, answer: unknown): Promise<string> 
 
 type TurnBody = { conversationId?: string; threadKey: string; requestId: string; text: string; cwd?: string; model?: string; tools?: string[] };
 
+function loadKeys() {
+  const file = join(dataDir, "pi-keys.json");
+  if (!existsSync(file)) return;
+  for (const [name, value] of Object.entries(JSON.parse(readFileSync(file, "utf8")) as Record<string, string>)) {
+    if (value) process.env[name] = value;
+  }
+}
+
 async function turn(body: TurnBody) {
+  loadKeys();
   const known = saved.requests[body.requestId] ?? body.conversationId;
   let conv = known ? await harness.conversation(known as never, ctx) : undefined;
   if (!conv) conv = await harness.createConversation({ ownership: { kind: "ownerless" } }, ctx);
@@ -172,4 +182,10 @@ createServer(async (req, res) => {
   }
 }).listen(port, "127.0.0.1", () => console.log(`pi harness on 127.0.0.1:${port} (${dirname(join(dataDir, "harness.sqlite"))})`));
 
-for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void harness.close(ctx).finally(() => process.exit(0)));
+const shutdown = () => void harness.close(ctx).finally(() => process.exit(0));
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, shutdown);
+if (process.env.PI_PARENT_PIPE === "1") {
+  process.stdin.resume();
+  process.stdin.on("end", shutdown);
+  process.stdin.on("close", shutdown);
+}

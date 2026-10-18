@@ -27,6 +27,7 @@ export default {
             PI_HARNESS: driver === "pi" ? "on" : "off",
             PI_FAUX: "1",
             PI_PORT: "18095",
+            PI_MODEL: driver === "pi" ? "faux/echo" : "",
             DATA_DIR: dataDir,
             AGENT_WORKDIR: process.env.E2E_WORKDIR ?? join(dataDir, "workspace"),
             CHAT_ALLOWED_SPACES: "spaces/e2e",

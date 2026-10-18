@@ -33,6 +33,13 @@ export interface Persona {
   mcps?: string[];
 }
 
+export interface PiKey {
+  provider: string;
+  label: string;
+  envVar: string;
+  source: "settings" | "env" | "none";
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -168,6 +175,8 @@ export const api = {
   save: (patch: Partial<Settings>) => call<Settings>("/api/settings", patch, "PUT"),
   threads: () => call<Thread[]>("/api/threads"),
   skills: () => call<SkillInfo[]>("/api/skills"),
+  piKeys: () => call<PiKey[]>("/api/pi/keys"),
+  setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
   activity: (limit = 50) => call<ActivityEvent[]>(`/api/activity?limit=${limit}`),
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),

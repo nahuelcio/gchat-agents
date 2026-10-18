@@ -14,6 +14,7 @@ pub mod integrations;
 pub mod mcp;
 pub mod media;
 pub mod personas;
+pub mod pi_keys;
 pub mod pi_sidecar;
 pub mod question_gate;
 pub mod questions;
