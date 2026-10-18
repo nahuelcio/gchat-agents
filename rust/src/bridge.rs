@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::compression::CompressionLayer;
+use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::handler::{handle_event, ChatEvent};
 use crate::state::AppState;
@@ -14,6 +15,7 @@ use crate::static_files::serve_static;
 
 pub fn bridge_router(state: Arc<AppState>) -> Router {
     let play = Router::new()
+        .route("/play/api/threads", get(play_threads))
         .route("/play/api/thread", get(play_thread))
         .route("/play/api/send", post(play_send))
         .route("/play/api/stop", post(crate::admin::post_team_stop))
@@ -28,6 +30,7 @@ pub fn bridge_router(state: Arc<AppState>) -> Router {
         .route("/google/chat", post(google_chat).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)))
         .fallback(bridge_fallback)
         .layer(CompressionLayer::new())
+        .layer(RequestDecompressionLayer::new())
         .with_state(state)
 }
 
@@ -71,6 +74,30 @@ fn percent_decode(v: &str) -> String {
 #[derive(serde::Deserialize)]
 struct ThreadQuery {
     thread: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ThreadsQuery {
+    archived: Option<String>,
+}
+
+async fn play_threads(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<ThreadsQuery>) -> Response {
+    let archived = q.archived.as_deref() == Some("1");
+    let list: Vec<_> = state
+        .transcripts
+        .list(crate::handler::TEAM_PREFIX, archived)
+        .into_iter()
+        .map(|t| {
+            let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
+            json!({
+                "id": t.key.strip_prefix(crate::handler::TEAM_PREFIX).unwrap_or(&t.key),
+                "title": title,
+                "updatedAt": t.updated_at,
+                "count": t.count,
+            })
+        })
+        .collect();
+    Json(list).into_response()
 }
 
 async fn play_thread(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<ThreadQuery>) -> Response {

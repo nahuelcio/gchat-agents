@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import type { DetectedAgent } from "./agents.js";
 import { compressBody, withEncoding } from "./compress.js";
 import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
@@ -22,6 +23,25 @@ export interface ShareOptions {
 /** Team chat may send a couple of base64 images; keep Google Chat event bodies small in practice. */
 const MAX_BODY_BYTES = 8_000_000;
 
+function decodeBody(raw: Buffer, contentEncoding: string | string[] | undefined): Buffer {
+  if (!contentEncoding) return raw;
+  const encodings = (Array.isArray(contentEncoding) ? contentEncoding.join(",") : contentEncoding)
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  // Content-Encoding lists outermost first; undo in reverse.
+  let buf = raw;
+  for (const enc of encodings.reverse()) {
+    if (enc === "gzip" || enc === "x-gzip") buf = gunzipSync(buf);
+    else if (enc === "br") buf = brotliDecompressSync(buf);
+    else if (enc === "deflate") buf = inflateSync(buf);
+    else if (enc === "identity") continue;
+    else throw new Error(`unsupported content-encoding: ${enc}`);
+  }
+  if (buf.length > MAX_BODY_BYTES) throw new Error("body too large");
+  return buf;
+}
+
 export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -35,7 +55,13 @@ export function readBody(req: IncomingMessage): Promise<string> {
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => {
+      try {
+        resolve(decodeBody(Buffer.concat(chunks), req.headers["content-encoding"]).toString("utf8"));
+      } catch (err) {
+        reject(err);
+      }
+    });
     req.on("error", reject);
   });
 }
@@ -72,6 +98,15 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
   }
   if (req.method === "GET" && url === "/play/api/personas") {
     send(res, 200, (share.personas?.() ?? []).map(({ name, avatar }) => ({ name, ...(avatar ? { avatar } : {}) })));
+    return;
+  }
+  if (req.method === "GET" && url === "/play/api/threads") {
+    const archived = parsed.searchParams.get("archived") === "1";
+    send(
+      res,
+      200,
+      share.transcripts.list(TEAM_PREFIX, { archived }).map(({ key, ...t }) => ({ id: key.slice(TEAM_PREFIX.length), ...t })),
+    );
     return;
   }
   if (req.method === "GET" && url === "/play/api/thread") {

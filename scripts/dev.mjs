@@ -59,6 +59,7 @@ console.info("");
 console.info(`  UI (hot reload):   http://127.0.0.1:${webPort}`);
 console.info(`  control plane:     http://127.0.0.1:${adminPort}`);
 console.info(`  bridge (Chat):     http://127.0.0.1:${bridgePort}`);
+console.info(`  share link UI:     web/dist (watched — public /play uses this, not Vite HMR)`);
 console.info("");
 
 const backend = run("backend", "cargo", ["run", "--manifest-path", "rust/Cargo.toml", "--", ...driverArgs]);
@@ -70,4 +71,6 @@ try {
   shutdown(1);
 }
 
+// Public /play (tunnel) is served from web/dist by the bridge — keep it in sync with source.
+run("web-dist", process.execPath, [vite, "build", "--watch", "--config", "web/vite.config.ts", "--clearScreen", "false"]);
 run("web", process.execPath, [vite, "--config", "web/vite.config.ts", "--clearScreen", "false"]);

@@ -2,9 +2,10 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const adminPort = Number(process.env.ADMIN_PORT) || 8081;
+const bridgePort = Number(process.env.PORT) || 8080;
 const webPort = Number(process.env.DEV_WEB_PORT) || 5173;
 
-// `npm run dev` / `dev:web`: React HMR here; /api goes to the loopback control plane.
+// `npm run dev` / `dev:web`: React HMR here; /api → control plane, /play/api → public bridge.
 export default defineConfig({
   root: import.meta.dirname,
   plugins: [react()],
@@ -13,6 +14,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: webPort,
     strictPort: true,
-    proxy: { "/api": { target: `http://127.0.0.1:${adminPort}`, headers: { host: "127.0.0.1" } } },
+    proxy: {
+      "/api": { target: `http://127.0.0.1:${adminPort}`, headers: { host: "127.0.0.1" } },
+      "/play/api": { target: `http://127.0.0.1:${bridgePort}`, headers: { host: "127.0.0.1" } },
+    },
   },
 });

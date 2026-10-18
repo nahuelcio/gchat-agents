@@ -36,6 +36,7 @@ export function canSpeak(): boolean {
 /** Strip markdown noise so TTS does not read asterisks and raw URLs forever. */
 export function cleanForSpeech(text: string): string {
   return text
+    .replace(/```[\s\S]*?```/g, " ")
     .replace(/!\[[^\]]*]\([^)]+\)/g, "")
     .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
     .replace(/https?:\/\/\S+/g, "")
@@ -44,22 +45,61 @@ export function cleanForSpeech(text: string): string {
     .trim();
 }
 
-export function speakText(text: string, onEnd?: () => void): void {
+function pickVoice(lang: string): SpeechSynthesisVoice | undefined {
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return undefined;
+  const base = lang.split("-")[0] ?? lang;
+  return (
+    voices.find((v) => v.lang === lang) ??
+    voices.find((v) => v.lang.toLowerCase().startsWith(base.toLowerCase())) ??
+    voices.find((v) => /^(es|en)/i.test(v.lang))
+  );
+}
+
+/** Speaks `text`. Returns false when there is nothing to say or TTS is unavailable. */
+export function speakText(text: string, onEnd?: () => void): boolean {
   if (!canSpeak()) {
     onEnd?.();
-    return;
+    return false;
   }
   const clean = cleanForSpeech(text);
   if (!clean) {
     onEnd?.();
-    return;
+    return false;
   }
-  window.speechSynthesis.cancel();
+  const synth = window.speechSynthesis;
+  // Chrome often drops the next utterance if speak() runs in the same turn as cancel().
+  synth.cancel();
+  const lang = navigator.language || "es-ES";
   const u = new SpeechSynthesisUtterance(clean);
-  u.lang = navigator.language || "es-ES";
+  u.lang = lang;
+  const voice = pickVoice(lang);
+  if (voice) u.voice = voice;
   u.onend = () => onEnd?.();
   u.onerror = () => onEnd?.();
-  window.speechSynthesis.speak(u);
+
+  const kick = () => {
+    if (synth.paused) synth.resume();
+    const chosen = pickVoice(lang);
+    if (chosen) u.voice = chosen;
+    synth.speak(u);
+  };
+
+  // Voices load async on Chromium; still speak after a tick so cancel() settles.
+  if (!synth.getVoices().length) {
+    const onVoices = () => {
+      synth.removeEventListener("voiceschanged", onVoices);
+      kick();
+    };
+    synth.addEventListener("voiceschanged", onVoices);
+    window.setTimeout(() => {
+      synth.removeEventListener("voiceschanged", onVoices);
+      kick();
+    }, 300);
+  } else {
+    window.setTimeout(kick, 0);
+  }
+  return true;
 }
 
 export function stopSpeaking(): void {

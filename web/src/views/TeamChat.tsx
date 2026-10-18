@@ -175,7 +175,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [contextOpen, setContextOpen] = useState(() => remember("switchboard.contextOpen", true));
   const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
   const [nameDraft, setNameDraft] = useState("");
-  const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("switchboard.guest-threads", []) : []));
+  const [threads, setThreads] = useState<TeamThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | undefined>(initialThread);
   const [state, setState] = useState<TeamThreadState>();
   const [loadError, setLoadError] = useState<string>();
@@ -256,7 +256,10 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   function toggleSpeak(id: number, text: string) {
-    if (!speechOut) return;
+    if (!speechOut) {
+      notify("Text-to-speech is not available in this browser", true);
+      return;
+    }
     if (speakingId === id) {
       stopSpeaking();
       setSpeakingId(null);
@@ -264,7 +267,10 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     }
     stopSpeaking();
     setSpeakingId(id);
-    speakText(text, () => setSpeakingId((cur) => (cur === id ? null : cur)));
+    if (!speakText(text, () => setSpeakingId((cur) => (cur === id ? null : cur)))) {
+      setSpeakingId(null);
+      notify("Nothing to speak in that message", true);
+    }
   }
 
   function queueImages(files: FileList | File[]) {
@@ -283,14 +289,11 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     });
   }
 
-  // Guests keep their own thread list; a deeplinked thread joins it.
+  // Deeplinked thread appears even before the list refresh lands.
   useEffect(() => {
     if (!transport.guest || !initialThread) return;
     setThreads((list) => (list.some((t) => t.id === initialThread) ? list : [{ id: initialThread, title: "Shared thread", count: 0 }, ...list]));
   }, [transport.guest, initialThread]);
-  useEffect(() => {
-    if (transport.guest) store("switchboard.guest-threads", threads);
-  }, [transport.guest, threads]);
 
   const loadThreads = useCallback(() => {
     transport.threads?.(showArchived).then(setThreads, () => {});
@@ -1305,7 +1308,11 @@ export function SharePanel({ link, setLink, notify }: { link?: string; setLink: 
           New link
         </button>
       </div>
-      <span className="muted small">Guests can chat and use /context /compact /clear /model /agent. Worktree, app and schedule commands stay yours.</span>
+      <span className="muted small">
+        Guests see the same threads, artifacts, and avatars. They can chat with /context /compact /clear /model /agent.
+        Worktree, app and schedule commands stay yours.
+      </span>
+
     </div>
   );
 }

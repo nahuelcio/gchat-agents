@@ -1,3 +1,5 @@
+import { encodeJsonBody } from "./http-body";
+
 export interface RepoConfig {
   path: string;
   up?: string;
@@ -263,10 +265,11 @@ export interface AdoRepo {
 }
 
 async function call<T>(path: string, body?: unknown, method = body ? "POST" : "GET"): Promise<T> {
+  const encoded = body !== undefined ? await encodeJsonBody(body) : undefined;
   const res = await fetch(path, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: encoded?.headers,
+    body: encoded?.body,
   });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -468,7 +471,7 @@ export interface TeamThreadSummary {
 
 export interface TeamTransport {
   guest: boolean;
-  /** Owner: every thread on the server. Guest: undefined (they keep their own list). */
+  /** Active (or archived) team threads on this machine. */
   threads?: (archived?: boolean) => Promise<TeamThreadSummary[]>;
   /** Owner only. */
   archive?: (id: string, archived: boolean) => Promise<unknown>;
@@ -505,10 +508,11 @@ export const ownerTransport: TeamTransport = {
 
 export function guestTransport(token: string): TeamTransport {
   const req = async <T,>(path: string, body?: unknown): Promise<T> => {
+    const encoded = body !== undefined ? await encodeJsonBody(body) : undefined;
     const res = await fetch(path, {
-      method: body ? "POST" : "GET",
-      headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
+      method: body !== undefined ? "POST" : "GET",
+      headers: { authorization: `Bearer ${token}`, ...encoded?.headers },
+      body: encoded?.body,
     });
     const data = (await res.json().catch(() => ({}))) as T & { error?: string };
     if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -516,6 +520,7 @@ export function guestTransport(token: string): TeamTransport {
   };
   return {
     guest: true,
+    threads: (archived = false) => req<TeamThreadSummary[]>(`/play/api/threads${archived ? "?archived=1" : ""}`),
     thread: (id) => req<TeamThreadState>(`/play/api/thread?thread=${encodeURIComponent(id)}`),
     send: (id, text, name, attachments) => req("/play/api/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
     agents: () => req("/play/api/agents"),
