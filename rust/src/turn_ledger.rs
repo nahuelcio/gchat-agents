@@ -172,17 +172,39 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
     };
     match outcome {
         Ok(Some(out)) => {
-            if let Some(session) = out.session_ref.clone() {
-                let patch = match &e.persona {
-                    Some(p) => {
-                        let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+            let patch = match &e.persona {
+                Some(p) => {
+                    let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+                    if let Some(session) = out.session_ref.clone() {
                         sessions.insert(p.clone(), session);
-                        SessionPatch { persona_sessions: Some(Some(sessions)), ..Default::default() }
                     }
-                    None => SessionPatch { session_ref: Some(Some(session)), ..Default::default() },
-                };
-                let _ = deps.store.update(&e.thread_key, &e.space, patch).await;
-            }
+                    let mut usage = record.as_ref().and_then(|r| r.persona_usage.clone()).unwrap_or_default();
+                    let prev = usage.get(p).cloned();
+                    usage.insert(
+                        p.clone(),
+                        crate::session::persona_usage_after(prev.as_ref(), out.usage.as_ref(), e.prompt.len(), out.reply.len()),
+                    );
+                    SessionPatch {
+                        persona_sessions: Some(if sessions.is_empty() { None } else { Some(sessions) }),
+                        persona_usage: Some(Some(usage)),
+                        ..Default::default()
+                    }
+                }
+                None => {
+                    let (context_tokens, context_window, estimated) = match &out.usage {
+                        Some(u) => (Some(Some(u.context_tokens)), u.context_window.map(Some), Some(Some(false))),
+                        None => (None, None, None),
+                    };
+                    SessionPatch {
+                        session_ref: out.session_ref.clone().map(Some),
+                        context_tokens,
+                        context_window,
+                        estimated,
+                        ..Default::default()
+                    }
+                }
+            };
+            let _ = deps.store.update(&e.thread_key, &e.space, patch).await;
             let text = match &e.persona {
                 Some(p) => format!("*@{p}*\n{}", out.reply),
                 None => out.reply.clone(),

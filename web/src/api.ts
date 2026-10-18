@@ -21,7 +21,16 @@ export interface Settings {
   mcpServers?: McpServer[];
   personas: Persona[];
   templates?: PersonaTemplate[];
+  /** Extra system prompt for the host (main Pi agent). */
+  hostPrompt?: string | null;
+  /** Tool groups for the host. Omit = coding+switchboard+engram. Empty = every tool. */
+  hostMcps?: string[] | null;
+  /** Skill packs attached to the host. */
+  hostSkills?: string[];
 }
+
+/** Default host tools when `hostMcps` is unset. */
+export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "agents", "google-drive"];
 
 export interface Persona {
   name: string;
@@ -52,6 +61,28 @@ export interface PiKey {
   source: "settings" | "env" | "none";
 }
 
+export interface PiCustomProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  models: string[];
+  apiKeyEnv: string;
+  contextWindow: number;
+  maxTokens: number;
+  keySource: "settings" | "env" | "none";
+}
+
+export type PiCustomProviderInput = {
+  id: string;
+  name?: string;
+  baseUrl: string;
+  models: string[];
+  apiKey?: string;
+  clearKey?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
 export interface DriveMcpStatus {
   configured: boolean;
   connected: boolean;
@@ -64,6 +95,35 @@ export interface SkillInfo {
   description: string;
   mcps: string[];
   body: string;
+}
+
+export interface DraftChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentDraftChatReply {
+  message: string;
+  draft?: Persona | null;
+  ready: boolean;
+}
+
+export interface SkillDraftChatReply {
+  message: string;
+  draft?: SkillInfo | null;
+  ready: boolean;
+}
+
+export interface HostDraft {
+  prompt: string;
+  mcps?: string[];
+  skills?: string[];
+}
+
+export interface HostDraftChatReply {
+  message: string;
+  draft?: HostDraft | null;
+  ready: boolean;
 }
 
 export const BUILTIN_MCPS = [
@@ -204,9 +264,18 @@ export const api = {
   installSkill: (source: string) => call<{ installed: string[]; skills: SkillInfo[] }>("/api/skills/install", { source }),
   draftAgent: (brief: string, current?: Persona) => call<Persona>("/api/ai/draft-agent", { brief, current }),
   draftSkill: (brief: string, current?: SkillInfo) => call<SkillInfo>("/api/ai/draft-skill", { brief, current }),
+  draftAgentChat: (messages: DraftChatMessage[], current?: Persona) =>
+    call<AgentDraftChatReply>("/api/ai/draft-agent/chat", { messages, current }),
+  draftSkillChat: (messages: DraftChatMessage[], current?: SkillInfo) =>
+    call<SkillDraftChatReply>("/api/ai/draft-skill/chat", { messages, current }),
+  draftHostChat: (messages: DraftChatMessage[], current?: HostDraft) =>
+    call<HostDraftChatReply>("/api/ai/draft-host/chat", { messages, current }),
   importMcp: (json: string) => call<{ imported: string[]; skipped: string[]; settings: Settings }>("/api/mcp/import", { json }),
   piKeys: () => call<PiKey[]>("/api/pi/keys"),
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
+  piCustomProviders: () => call<PiCustomProvider[]>("/api/pi/custom-providers"),
+  savePiCustomProvider: (provider: PiCustomProviderInput) => call<PiCustomProvider[]>("/api/pi/custom-providers", provider),
+  deletePiCustomProvider: (id: string) => call<PiCustomProvider[]>(`/api/pi/custom-providers?id=${encodeURIComponent(id)}`, undefined, "DELETE"),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
   activity: (limit = 50) => call<ActivityEvent[]>(`/api/activity?limit=${limit}`),
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),

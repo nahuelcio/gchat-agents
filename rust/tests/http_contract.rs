@@ -525,6 +525,28 @@ async fn ai_draft_endpoints_return_echo_drafts_without_persisting() {
     assert!(skill["body"].as_str().unwrap().contains("precios"));
     let (_, listed) = get_json(admin, "/api/skills").await;
     assert!(listed.as_array().unwrap().iter().all(|s| s["name"] != "cotizaciones"));
+
+    let (status, chat) = post_json(
+        admin,
+        "/api/ai/draft-agent/chat",
+        json!({ "messages": [{ "role": "user", "content": "necesito un agente de ventas" }] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{chat}");
+    assert!(chat["message"].as_str().unwrap().contains("ventas"));
+    assert_eq!(chat["draft"]["name"], "ventas");
+    assert_eq!(chat["ready"], true);
+    assert_eq!(state.settings.get().personas.len(), before);
+
+    let (status, skill_chat) = post_json(
+        admin,
+        "/api/ai/draft-skill/chat",
+        json!({ "messages": [{ "role": "user", "content": "skill de precios" }] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{skill_chat}");
+    assert_eq!(skill_chat["draft"]["name"], "cotizaciones");
+    assert_eq!(skill_chat["ready"], true);
 }
 
 #[tokio::test]

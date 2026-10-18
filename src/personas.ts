@@ -200,14 +200,16 @@ export const MAX_INTERJECTIONS = 1;
 
 export const ADD_HINT = /\b(agreg|añad|sum[aá]|invit|tra[eé]|met[eé]|volv[eé]|add|invite|bring)\w*/i;
 
-export function hostPreamble(personas: Persona[]): string {
+export function hostPreamble(personas: Persona[], hostPrompt?: string): string {
   const roster = personas.map((p) => `@${p.name}${p.prompt.trim() ? ` (${p.prompt.trim().slice(0, 120)})` : ""}`).join("; ");
-  return [
+  const base = [
     `You are ${BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.`,
     roster ? `Agents in this room: ${roster}.` : "No other agents are in this room yet.",
     "When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.",
     `If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again.`,
   ].join("\n");
+  const extra = hostPrompt?.trim();
+  return extra ? `${base}\n\n${extra}` : base;
 }
 
 export function rosterUpdate(before: string[] | undefined, now: string[]): string {

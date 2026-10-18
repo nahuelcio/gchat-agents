@@ -113,6 +113,7 @@ pub struct TurnOptions {
     pub default_driver: crate::config::AgentDriverKind,
     pub default_models: crate::settings::Models,
     pub personas: Vec<Persona>,
+    pub host_prompt: Option<String>,
 }
 
 pub struct HandlerDeps {
@@ -611,11 +612,11 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
             if !personas.is_empty() || record.as_ref().and_then(|r| r.host_roster.as_ref()).is_some() {
                 let names: Vec<String> = personas.iter().map(|p| p.name.clone()).collect();
                 if record.as_ref().and_then(|r| r.session_ref.as_ref()).is_none() {
-                    text = format!("{}\n\n---\n\n{text}", host_preamble(&personas));
+                    text = format!("{}\n\n---\n\n{text}", host_preamble(&personas, options.host_prompt.as_deref()));
                 } else if let Some(before) = record.as_ref().and_then(|r| r.host_roster.as_deref()) {
                     text.push_str(&roster_update(Some(before), &names));
                 } else {
-                    text.push_str(&format!("\n\n{}", host_preamble(&personas)));
+                    text.push_str(&format!("\n\n{}", host_preamble(&personas, options.host_prompt.as_deref())));
                 }
                 let _ = deps
                     .store
@@ -680,8 +681,16 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 return Ok(true);
             }
 
-            let mut reply = out.reply;
             let turns = record.as_ref().and_then(|r| r.turns).unwrap_or(0) + 1;
+            let (context_tokens, context_window, estimated) = match &out.usage {
+                Some(u) => (Some(Some(u.context_tokens)), u.context_window.map(Some), Some(Some(false))),
+                None => {
+                    let prev = record.as_ref().filter(|r| r.estimated != Some(false)).and_then(|r| r.context_tokens).unwrap_or(0);
+                    let add = ((req.text.len() + out.reply.len()).div_ceil(4)) as u64;
+                    (Some(Some(prev + add)), None, Some(Some(true)))
+                }
+            };
+            let mut reply = out.reply;
             let _ = deps
                 .store
                 .update(
@@ -691,8 +700,9 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                         session_ref: Some(out.session_ref.clone()),
                         turns: Some(Some(turns)),
                         pending_questions: Some(None),
-                        context_tokens: out.usage.as_ref().map(|u| Some(u.context_tokens)),
-                        context_window: out.usage.as_ref().and_then(|u| u.context_window.map(Some)),
+                        context_tokens,
+                        context_window,
+                        estimated,
                         summary: Some(None),
                         ..Default::default()
                     },
@@ -951,6 +961,15 @@ async fn persona_round(
                     .and_then(|r| r.persona_roster.clone())
                     .unwrap_or_default();
                 persona_roster.insert(item.persona.name.clone(), names);
+                let mut persona_usage = record
+                    .as_ref()
+                    .and_then(|r| r.persona_usage.clone())
+                    .unwrap_or_default();
+                let prev = persona_usage.get(&item.persona.name).cloned();
+                persona_usage.insert(
+                    item.persona.name.clone(),
+                    crate::session::persona_usage_after(prev.as_ref(), out.usage.as_ref(), item.text.len(), reply.len()),
+                );
                 let _ = deps
                     .store
                     .update(
@@ -959,6 +978,7 @@ async fn persona_round(
                         SessionPatch {
                             persona_sessions: Some(Some(persona_sessions)),
                             persona_roster: Some(Some(persona_roster)),
+                            persona_usage: Some(Some(persona_usage)),
                             ..Default::default()
                         },
                     )
@@ -1165,16 +1185,13 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear [@agent] /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
         }
         "compact" => compact(&req.thread_key, &req.space_name, deps).await,
-        "clear" => {
-            deps.store.delete(&req.thread_key).await?;
-            Ok("Session cleared.".into())
-        }
+        "clear" => clear_command(&args, req, deps).await,
         "context" => {
             let options = (deps.options)();
             match deps.store.get(&req.thread_key) {
@@ -1284,12 +1301,29 @@ pub async fn ask_persona(deps: &HandlerDeps, thread_key: &str, agent: &str, ques
             instructions_override: None,
         })
         .await?;
+    let space = record.as_ref().map(|r| r.space.clone()).unwrap_or_else(|| "team-chat".into());
+    let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
     if let Some(s) = out.session_ref {
-        let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
         sessions.insert(target.name.clone(), s);
-        let space = record.map(|r| r.space).unwrap_or_else(|| "team-chat".into());
-        let _ = deps.store.update(base, &space, SessionPatch { persona_sessions: Some(Some(sessions)), ..Default::default() }).await;
     }
+    let mut usage_map = record.as_ref().and_then(|r| r.persona_usage.clone()).unwrap_or_default();
+    let prev = usage_map.get(&target.name).cloned();
+    usage_map.insert(
+        target.name.clone(),
+        crate::session::persona_usage_after(prev.as_ref(), out.usage.as_ref(), question.len(), out.reply.len()),
+    );
+    let _ = deps
+        .store
+        .update(
+            base,
+            &space,
+            SessionPatch {
+                persona_sessions: Some(if sessions.is_empty() { None } else { Some(sessions) }),
+                persona_usage: Some(Some(usage_map)),
+                ..Default::default()
+            },
+        )
+        .await;
     note(deps, "agent_ask", base, format!("@{} asked @{}", caller.name, target.name), question.chars().take(120).collect::<String>()).await;
     Ok(out.reply)
 }
@@ -1337,6 +1371,67 @@ pub async fn fire_jobs(deps: &HandlerDeps, mut jobs: Vec<crate::schedules::Job>,
 
 const COMPACT_PROMPT: &str = "Summarize this conversation so a fresh session can continue it: goals, decisions made, current state of the code and worktree, open tasks and open questions. Be concise; no preamble.";
 const COMPACTED_HEADER: &str = "Context from earlier in this thread (compacted):";
+
+async fn clear_command(args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> Result<String, String> {
+    crate::question_gate::cancel_question(&req.thread_key);
+    if let Some(raw) = args.first() {
+        let want = raw.trim_start_matches('@');
+        if want.is_empty() {
+            return Err("Usage: /clear [@agent]".into());
+        }
+        let record = deps.store.get(&req.thread_key);
+        let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+        let mut roster = record.as_ref().and_then(|r| r.persona_roster.clone()).unwrap_or_default();
+        let mut usage = record.as_ref().and_then(|r| r.persona_usage.clone()).unwrap_or_default();
+        let key = sessions
+            .keys()
+            .chain(roster.keys())
+            .chain(usage.keys())
+            .find(|k| k.eq_ignore_ascii_case(want))
+            .cloned()
+            .unwrap_or_else(|| want.to_string());
+        let before_sessions = sessions.len();
+        let before_roster = roster.len();
+        let before_usage = usage.len();
+        sessions.retain(|k, _| !k.eq_ignore_ascii_case(want));
+        roster.retain(|k, _| !k.eq_ignore_ascii_case(want));
+        usage.retain(|k, _| !k.eq_ignore_ascii_case(want));
+        if sessions.len() == before_sessions && roster.len() == before_roster && usage.len() == before_usage {
+            return Ok(format!("No session for @{want} yet."));
+        }
+        deps.store
+            .update(
+                &req.thread_key,
+                &req.space_name,
+                SessionPatch {
+                    persona_sessions: Some(if sessions.is_empty() { None } else { Some(sessions) }),
+                    persona_roster: Some(if roster.is_empty() { None } else { Some(roster) }),
+                    persona_usage: Some(if usage.is_empty() { None } else { Some(usage) }),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        return Ok(format!("Started a fresh session for @{key}. Repo and members are untouched."));
+    }
+    deps.store
+        .update(
+            &req.thread_key,
+            &req.space_name,
+            SessionPatch {
+                session_ref: Some(None),
+                summary: Some(None),
+                context_tokens: Some(None),
+                context_window: Some(None),
+                estimated: Some(None),
+                turns: Some(None),
+                pending_questions: Some(None),
+                host_roster: Some(None),
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok("Started a fresh session for this thread. Repo and members are untouched.".into())
+}
 
 async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<String, String> {
     let record = deps.store.get(thread_key);
@@ -1563,6 +1658,7 @@ pub fn settings_to_options(s: &Settings) -> TurnOptions {
         default_driver: crate::config::AgentDriverKind::Pi,
         default_models: s.models.clone(),
         personas: s.personas.clone(),
+        host_prompt: s.host_prompt.clone(),
     }
 }
 
@@ -1660,6 +1756,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
+                host_prompt: None,
             }),
             media: None,
         })
@@ -1717,6 +1814,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: (*personas2).clone(),
+                host_prompt: None,
             }),
             media: None,
         })
@@ -1765,6 +1863,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
+                host_prompt: None,
             }),
             media: None,
         });
@@ -1817,6 +1916,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
+                host_prompt: None,
             }),
             media: None,
         });
@@ -2093,6 +2193,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clear_resets_host_or_one_persona_without_deleting_the_thread() {
+        let dir = tempdir().unwrap();
+        let deps = room_deps(dir.path(), Arc::new(EchoDriver), vec![persona("qa", None)], Some(vec!["qa"])).await;
+        deps.store
+            .update(
+                "team/t1",
+                "spaces/team",
+                SessionPatch {
+                    session_ref: Some(Some("ses_host".into())),
+                    summary: Some(Some("old".into())),
+                    context_tokens: Some(Some(1200)),
+                    turns: Some(Some(4)),
+                    pending_questions: Some(Some(vec![AgentQuestion {
+                        header: "h".into(),
+                        question: "Ship?".into(),
+                        options: vec![],
+                        multiple: None,
+                    }])),
+                    host_roster: Some(Some(vec!["qa".into()])),
+                    persona_sessions: Some(Some(std::collections::HashMap::from([
+                        ("qa".into(), "ses_qa".into()),
+                        ("architect".into(), "ses_arch".into()),
+                    ]))),
+                    persona_usage: Some(Some(std::collections::HashMap::from([(
+                        "qa".into(),
+                        crate::session::PersonaUsage {
+                            context_tokens: Some(99),
+                            context_window: Some(1000),
+                            estimated: Some(false),
+                            turns: Some(1),
+                        },
+                    )]))),
+                    persona_roster: Some(Some(std::collections::HashMap::from([
+                        ("qa".into(), vec!["Ana".into()]),
+                        ("architect".into(), vec!["Ana".into()]),
+                    ]))),
+                    repo: Some(Some("api".into())),
+                    worktree: Some(Some("/tmp/wt".into())),
+                    branch: Some(Some("feat".into())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let run = |text: &str| TurnRequest {
+            thread_key: "team/t1".into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: None,
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+            request_id: None,
+        };
+        let note = run_command(&run("/clear @QA"), &deps).await.unwrap();
+        assert!(note.contains("@qa"), "{note}");
+        let rec = deps.store.get("team/t1").unwrap();
+        assert_eq!(rec.session_ref.as_deref(), Some("ses_host"));
+        assert_eq!(rec.repo.as_deref(), Some("api"));
+        assert_eq!(rec.worktree.as_deref(), Some("/tmp/wt"));
+        assert_eq!(rec.branch.as_deref(), Some("feat"));
+        assert!(rec.members.as_ref().unwrap().iter().any(|m| matches!(m, RoomMember::Agent { persona, .. } if persona == "qa")));
+        assert_eq!(
+            rec.persona_sessions.as_ref().unwrap().get("architect").map(String::as_str),
+            Some("ses_arch")
+        );
+        assert!(!rec.persona_sessions.as_ref().unwrap().contains_key("qa"));
+        assert!(!rec.persona_roster.as_ref().unwrap().contains_key("qa"));
+        assert!(rec.persona_roster.as_ref().unwrap().contains_key("architect"));
+        assert!(rec.persona_usage.as_ref().map(|m| !m.contains_key("qa")).unwrap_or(true));
+
+        let note = run_command(&run("/clear"), &deps).await.unwrap();
+        assert!(note.contains("fresh session"), "{note}");
+        let rec = deps.store.get("team/t1").unwrap();
+        assert!(rec.session_ref.is_none());
+        assert!(rec.summary.is_none());
+        assert!(rec.context_tokens.is_none());
+        assert!(rec.turns.is_none());
+        assert!(rec.pending_questions.is_none());
+        assert!(rec.host_roster.is_none());
+        assert_eq!(rec.repo.as_deref(), Some("api"));
+        assert_eq!(rec.worktree.as_deref(), Some("/tmp/wt"));
+        assert_eq!(
+            rec.persona_sessions.as_ref().unwrap().get("architect").map(String::as_str),
+            Some("ses_arch")
+        );
+        assert!(deps.store.get("team/t1").is_some());
+    }
+
+    #[tokio::test]
     async fn compact_seeds_the_next_session_once() {
         let dir = tempdir().unwrap();
         let driver = Arc::new(ScriptedDriver::new(|_, _| "RESUMEN: login con SAML, falta el test".into()));
@@ -2146,6 +2337,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
+                host_prompt: None,
             }),
             media: None,
         })
@@ -2174,6 +2366,7 @@ mod tests {
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
+                host_prompt: None,
             }),
             media: None,
         });

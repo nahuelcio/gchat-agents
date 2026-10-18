@@ -23,7 +23,26 @@ pub fn pi_model(model: &str) -> String {
     }
 }
 
-const WITHOUT_PERSONA: &[&str] = &["coding", "switchboard", "engram"];
+/// Default tools when `hostMcps` is unset: full built-in set for a coding host.
+pub const DEFAULT_HOST_MCPS: &[&str] = &["coding", "switchboard", "engram", "agents", "google-drive"];
+
+fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Persona {
+    crate::settings::Persona {
+        name: "host".into(),
+        prompt: settings.host_prompt.clone().unwrap_or_default(),
+        driver: None,
+        model: None,
+        agent: None,
+        listen: None,
+        respond_to: None,
+        skills: settings.host_skills.clone(),
+        mcps: settings
+            .host_mcps
+            .clone()
+            .unwrap_or_else(|| DEFAULT_HOST_MCPS.iter().map(|s| (*s).to_string()).collect()),
+        delegates: vec![],
+    }
+}
 
 impl PiDriver {
     fn persona(&self, thread_key: &str) -> Option<crate::settings::Persona> {
@@ -34,7 +53,10 @@ impl PiDriver {
     fn groups(&self, thread_key: &str) -> Option<Vec<String>> {
         match self.persona(thread_key) {
             Some(p) => Some(crate::skills::mcps(&p)).filter(|m| !m.is_empty()),
-            None => Some(WITHOUT_PERSONA.iter().map(|g| g.to_string()).collect()),
+            None => match self.settings.as_ref() {
+                Some(store) => Some(crate::skills::mcps(&host_persona(&store.get()))).filter(|m| !m.is_empty()),
+                None => Some(DEFAULT_HOST_MCPS.iter().map(|g| g.to_string()).collect()),
+            },
         }
     }
 
@@ -59,6 +81,13 @@ impl PiDriver {
                 parts.push(p.prompt.trim().to_string());
             }
             let skills = crate::skills::instructions(&p);
+            if !skills.is_empty() {
+                parts.push(skills);
+            }
+        } else if let Some(store) = &self.settings {
+            let host = host_persona(&store.get());
+            // Prompt is also in the first-turn preamble; skills belong here as system instructions.
+            let skills = crate::skills::instructions(&host);
             if !skills.is_empty() {
                 parts.push(skills);
             }
@@ -98,10 +127,18 @@ impl PiDriver {
                 Some("running") => continue,
                 Some("unknown") => return Ok(None),
                 Some("done") => {
+                    let usage = out.get("usage").and_then(|u| {
+                        let context_tokens = u.get("contextTokens").and_then(|v| v.as_u64()).or_else(|| u.get("context_tokens").and_then(|v| v.as_u64()))?;
+                        let context_window = u
+                            .get("contextWindow")
+                            .and_then(|v| v.as_u64())
+                            .or_else(|| u.get("context_window").and_then(|v| v.as_u64()));
+                        Some(crate::driver::types::ContextUsage { context_tokens, context_window })
+                    });
                     return Ok(Some(AgentTurnResult {
                         reply: out["reply"].as_str().unwrap_or_default().to_string(),
                         session_ref: session,
-                        usage: None,
+                        usage,
                         pending: None,
                     }))
                 }
@@ -144,12 +181,15 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_without_persona_gets_no_drive() {
+    fn a_thread_without_persona_gets_default_host_tools() {
         let driver = PiDriver { base_url: String::new(), model: None, settings: None, timeout_ms: 0, retry_ms: 0 };
         assert_eq!(
             driver.groups("dm/1"),
-            Some(vec!["coding".to_string(), "switchboard".to_string(), "engram".to_string()])
+            Some(DEFAULT_HOST_MCPS.iter().map(|s| (*s).to_string()).collect())
         );
+        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "coding"));
+        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "agents"));
+        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "google-drive"));
     }
 
     #[test]

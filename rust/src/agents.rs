@@ -44,6 +44,14 @@ pub async fn pi_models() -> Vec<String> {
     Vec::new()
 }
 
+/// Custom OpenAI-compatible models as `provider/model` chips for Settings.
+pub fn custom_pi_models(data_dir: &std::path::Path) -> Vec<String> {
+    crate::pi_custom_providers::list(data_dir)
+        .into_iter()
+        .flat_map(|p| p.models.into_iter().map(move |m| format!("{}/{}", p.id, m)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

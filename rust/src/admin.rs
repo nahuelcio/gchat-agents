@@ -76,7 +76,11 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/agents/ask", post(post_ask_agent))
         .route("/api/ai/draft-agent", post(post_draft_agent))
         .route("/api/ai/draft-skill", post(post_draft_skill))
+        .route("/api/ai/draft-agent/chat", post(post_draft_agent_chat))
+        .route("/api/ai/draft-skill/chat", post(post_draft_skill_chat))
+        .route("/api/ai/draft-host/chat", post(post_draft_host_chat))
         .route("/api/pi/keys", get(get_pi_keys).post(post_pi_key))
+        .route("/api/pi/custom-providers", get(get_pi_custom_providers).post(post_pi_custom_provider).delete(delete_pi_custom_provider))
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
@@ -133,8 +137,12 @@ async fn get_agents(State(_state): State<Arc<AppState>>) -> Response {
     Json(detect_agents().await).into_response()
 }
 
-async fn get_pi_models(State(_state): State<Arc<AppState>>) -> Response {
-    Json(pi_models().await).into_response()
+async fn get_pi_models(State(state): State<Arc<AppState>>) -> Response {
+    let mut models = pi_models().await;
+    models.extend(crate::agents::custom_pi_models(&state.data_dir));
+    models.sort();
+    models.dedup();
+    Json(models).into_response()
 }
 
 async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
@@ -903,6 +911,35 @@ async fn post_pi_key(State(state): State<Arc<AppState>>, Json(body): Json<PiKeyB
     }
 }
 
+async fn get_pi_custom_providers(State(state): State<Arc<AppState>>) -> Response {
+    Json(crate::pi_custom_providers::list(&state.data_dir)).into_response()
+}
+
+async fn post_pi_custom_provider(State(state): State<Arc<AppState>>, Json(body): Json<crate::pi_custom_providers::CustomProviderUpsert>) -> Response {
+    match crate::pi_custom_providers::upsert(&state.data_dir, body).await {
+        Ok(list) => {
+            crate::pi_sidecar::reload();
+            Json(list).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CustomProviderQuery {
+    id: Option<String>,
+}
+
+async fn delete_pi_custom_provider(State(state): State<Arc<AppState>>, Query(q): Query<CustomProviderQuery>) -> Response {
+    match crate::pi_custom_providers::remove(&state.data_dir, q.id.as_deref().unwrap_or("")).await {
+        Ok(list) => {
+            crate::pi_sidecar::reload();
+            Json(list).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
 fn skill_list() -> Vec<Value> {
     crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps, "body": s.body })).collect()
 }
@@ -1036,6 +1073,27 @@ struct DraftSkillBody {
     current: Option<crate::ai_draft::SkillDraft>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftAgentChatBody {
+    messages: Option<Vec<crate::ai_draft::DraftChatMessage>>,
+    current: Option<crate::ai_draft::AgentDraft>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftSkillChatBody {
+    messages: Option<Vec<crate::ai_draft::DraftChatMessage>>,
+    current: Option<crate::ai_draft::SkillDraft>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftHostChatBody {
+    messages: Option<Vec<crate::ai_draft::DraftChatMessage>>,
+    current: Option<crate::ai_draft::HostDraft>,
+}
+
 fn draft_ctx(state: &AppState) -> crate::ai_draft::DraftContext {
     let settings = state.settings.get();
     crate::ai_draft::DraftContext {
@@ -1058,6 +1116,30 @@ async fn post_draft_skill(State(state): State<Arc<AppState>>, Json(b): Json<Draf
     let brief = b.brief.unwrap_or_default();
     match crate::ai_draft::draft_skill(&state.handler.driver, &brief, b.current.as_ref(), &draft_ctx(&state)).await {
         Ok(draft) => Json(draft).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_draft_agent_chat(State(state): State<Arc<AppState>>, Json(b): Json<DraftAgentChatBody>) -> Response {
+    let messages = b.messages.unwrap_or_default();
+    match crate::ai_draft::draft_agent_chat(&state.handler.driver, &messages, b.current.as_ref(), &draft_ctx(&state)).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_draft_skill_chat(State(state): State<Arc<AppState>>, Json(b): Json<DraftSkillChatBody>) -> Response {
+    let messages = b.messages.unwrap_or_default();
+    match crate::ai_draft::draft_skill_chat(&state.handler.driver, &messages, b.current.as_ref(), &draft_ctx(&state)).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_draft_host_chat(State(state): State<Arc<AppState>>, Json(b): Json<DraftHostChatBody>) -> Response {
+    let messages = b.messages.unwrap_or_default();
+    match crate::ai_draft::draft_host_chat(&state.handler.driver, &messages, b.current.as_ref(), &draft_ctx(&state)).await {
+        Ok(reply) => Json(reply).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
 }

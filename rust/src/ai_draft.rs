@@ -202,7 +202,7 @@ fn agent_instructions(ctx: &DraftContext, improve: bool) -> String {
 Rules:
 - Reply with ONLY one JSON object (no markdown, no commentary).
 - name: short handle, lowercase letters/digits/-/_ , max 32, no @.
-- prompt: concise role + know-how in Spanish or the brief's language (2–8 sentences). Prefer putting reusable procedures in skills when a matching skill exists.
+- prompt: concise role + know-how in the brief's language (default English; 2–8 sentences). Prefer putting reusable procedures in skills when a matching skill exists.
 - listen: omit or "all" (listens to every message). Default omit = only @mentions.
 - respondTo: omit or "people" (ignore other agents). Default omit = anyone.
 - skills: subset of [{skills}] — only when clearly useful.
@@ -243,6 +243,264 @@ fn user_text(brief: &str, current_json: Option<&str>) -> String {
         Some(cur) if !cur.trim().is_empty() => format!("Brief:\n{}\n\nCurrent draft JSON:\n{}", brief.trim(), cur.trim()),
         _ => format!("Brief:\n{}", brief.trim()),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatReply {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<AgentDraft>,
+    #[serde(default)]
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillChatReply {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<SkillDraft>,
+    #[serde(default)]
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HostDraft {
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostChatReply {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<HostDraft>,
+    #[serde(default)]
+    pub ready: bool,
+}
+
+fn chat_history_text(messages: &[DraftChatMessage], current_json: Option<&str>) -> String {
+    let mut out = String::from("Conversation so far:\n");
+    for m in messages {
+        let role = match m.role.trim().to_ascii_lowercase().as_str() {
+            "assistant" => "assistant",
+            _ => "user",
+        };
+        out.push_str(&format!("\n[{role}]\n{}\n", m.content.trim()));
+    }
+    if let Some(cur) = current_json.filter(|c| !c.trim().is_empty()) {
+        out.push_str("\nCurrent draft JSON (may be incomplete; refine it):\n");
+        out.push_str(cur);
+        out.push('\n');
+    }
+    out.push_str("\nReply with ONLY one JSON object for this next turn.");
+    out
+}
+
+fn agent_chat_instructions(ctx: &DraftContext) -> String {
+    let mcps = ctx.available_mcps.join(", ");
+    let skills = if ctx.available_skills.is_empty() {
+        "(none yet)".into()
+    } else {
+        ctx.available_skills.join(", ")
+    };
+    format!(
+        r#"You help the user design a Google Chat agent for Switchboard (Pi runtime) through a short conversation.
+
+Goal: clarify what they want, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+
+Rules:
+- Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
+- Shape: {{"message":"...","draft":{{...}}|null,"ready":false|true}}
+- message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating the draft, say what changed.
+- draft: null until you know at least a name and a role. Then always include the best draft so far.
+- ready: true only when the draft is good enough to save (name + clear prompt). Still allow more refinements if the user keeps chatting.
+- Draft fields:
+  - name: short handle, lowercase letters/digits/-/_ , max 32, no @.
+  - prompt: concise role + know-how (2–8 sentences). Prefer reusable procedures in skills when a matching skill exists.
+  - listen: omit or "all". Default omit = only @mentions.
+  - respondTo: omit or "people". Default omit = anyone.
+  - skills: subset of [{skills}] — only when clearly useful.
+  - mcps: subset of [{mcps}]. Always include "engram" when available. Prefer a short explicit list for narrow roles.
+  - delegates: other agent names only if "agents" is in mcps.
+  - model: omit unless the user names one.
+
+Example early turn:
+{{"message":"Should it listen only to @mentions or every message? Which tools does it need?","draft":null,"ready":false}}
+
+Example later turn:
+{{"message":"Ready: @sales with Drive and engram. Anything else?","draft":{{"name":"sales","prompt":"...","listen":"all","respondTo":"people","skills":[],"mcps":["google-drive","engram"],"delegates":[]}},"ready":true}}"#
+    )
+}
+
+fn host_chat_instructions(ctx: &DraftContext) -> String {
+    let mcps = ctx.available_mcps.join(", ");
+    let skills = if ctx.available_skills.is_empty() {
+        "(none yet)".into()
+    } else {
+        ctx.available_skills.join(", ")
+    };
+    format!(
+        r#"You help the user configure the host agent for Switchboard (the main Pi agent that answers when people talk to the bot — it can code and use tools, not just chat).
+
+The built-in host preamble already covers room roster, @mentions, and inviting agents. The user prompt is EXTRA instructions layered on top (tone, domain rules, never-do, company context).
+
+Goal: clarify what they want, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+
+Rules:
+- Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
+- Shape: {{"message":"...","draft":{{"prompt":"...","mcps":[],"skills":[]}}|null,"ready":false|true}}
+- message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing.
+- draft: null until you have something useful. Then always include the best draft so far.
+- ready: true when the prompt is clear enough to save.
+- prompt: 2–12 sentences of durable host instructions. Do NOT restate the built-in roster/@mention rules unless the user wants a change.
+- mcps: subset of [{mcps}]. Default for a coding host: coding, switchboard, engram, agents, google-drive. Empty = every tool.
+- skills: subset of [{skills}] when clearly useful.
+
+Example:
+{{"message":"Should the host stay short and route to specialists, or answer deeply itself?","draft":{{"prompt":"Prefer routing product questions to specialists. Stay concise.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]}},"ready":false}}"#
+    )
+}
+
+fn skill_chat_instructions(ctx: &DraftContext) -> String {
+    let mcps = ctx.available_mcps.join(", ");
+    format!(
+        r#"You help the user design a reusable skill pack (SKILL.md) for Switchboard agents through a short conversation.
+
+Goal: clarify the procedure, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+
+Rules:
+- Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
+- Shape: {{"message":"...","draft":{{...}}|null,"ready":false|true}}
+- message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating the draft, say what changed.
+- draft: null until you know a name and the core procedure. Then always include the best draft so far.
+- ready: true only when name + body instructions are clear enough to save.
+- Draft fields:
+  - name: lowercase letters, digits or - only (no underscores), max 40.
+  - description: one short line.
+  - body: markdown instructions — what to do, never do, and how to answer.
+  - mcps: subset of [{mcps}] that this pack needs. Empty is fine.
+
+Example:
+{{"message":"What discount rules or price sources should it follow?","draft":{{"name":"pricing","description":"Prices and plans","mcps":["google-drive"],"body":"..."}},"ready":false}}"#
+    )
+}
+
+fn parse_agent_chat_reply(reply: &str, ctx: &DraftContext) -> Result<AgentChatReply, String> {
+    let v = extract_json(reply)?;
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Ready — review the draft.")
+        .to_string();
+    let ready = v.get("ready").and_then(|r| r.as_bool()).unwrap_or(false);
+    let draft = match v.get("draft") {
+        None | Some(Value::Null) => None,
+        Some(d) => Some(parse_agent_draft(&d.to_string(), ctx)?),
+    };
+    let ready = ready && draft.as_ref().is_some_and(|d| !d.name.is_empty() && !d.prompt.is_empty());
+    Ok(AgentChatReply { message, draft, ready })
+}
+
+fn parse_skill_chat_reply(reply: &str, ctx: &DraftContext) -> Result<SkillChatReply, String> {
+    let v = extract_json(reply)?;
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Ready — review the draft.")
+        .to_string();
+    let ready = v.get("ready").and_then(|r| r.as_bool()).unwrap_or(false);
+    let draft = match v.get("draft") {
+        None | Some(Value::Null) => None,
+        Some(d) => Some(parse_skill_draft(&d.to_string(), ctx)?),
+    };
+    let ready = ready && draft.as_ref().is_some_and(|d| !d.name.is_empty() && !d.body.is_empty());
+    Ok(SkillChatReply { message, draft, ready })
+}
+
+fn parse_host_chat_reply(reply: &str, ctx: &DraftContext) -> Result<HostChatReply, String> {
+    let v = extract_json(reply)?;
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Ready — review the draft.")
+        .to_string();
+    let ready = v.get("ready").and_then(|r| r.as_bool()).unwrap_or(false);
+    let draft = match v.get("draft") {
+        None | Some(Value::Null) => None,
+        Some(d) => {
+            let prompt = d
+                .get("prompt")
+                .and_then(|p| p.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if prompt.is_empty() {
+                None
+            } else {
+                let mcps = d
+                    .get("mcps")
+                    .and_then(|m| m.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let skills = d
+                    .get("skills")
+                    .and_then(|m| m.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                Some(HostDraft {
+                    prompt,
+                    mcps: filter_known(&mcps, &ctx.available_mcps),
+                    skills: filter_known(&skills, &ctx.available_skills),
+                })
+            }
+        }
+    };
+    let ready = ready && draft.as_ref().is_some_and(|d| !d.prompt.is_empty());
+    Ok(HostChatReply { message, draft, ready })
+}
+
+fn validate_chat_messages(messages: &[DraftChatMessage]) -> Result<(), String> {
+    if messages.is_empty() {
+        return Err("send at least one message".into());
+    }
+    let last = messages.last().unwrap();
+    if !last.role.eq_ignore_ascii_case("user") {
+        return Err("last message must be from the user".into());
+    }
+    if last.content.trim().chars().count() < 1 {
+        return Err("message cannot be empty".into());
+    }
+    if messages.iter().map(|m| m.content.len()).sum::<usize>() > 24_000 {
+        return Err("conversation is too long — start a new one".into());
+    }
+    Ok(())
 }
 
 async fn run_draft(driver: &Arc<dyn AgentDriver>, thread_key: &str, instructions: String, text: String, ctx: &DraftContext) -> Result<String, String> {
@@ -308,6 +566,63 @@ pub async fn draft_skill(
     parse_skill_draft(&reply, ctx)
 }
 
+pub async fn draft_agent_chat(
+    driver: &Arc<dyn AgentDriver>,
+    messages: &[DraftChatMessage],
+    current: Option<&AgentDraft>,
+    ctx: &DraftContext,
+) -> Result<AgentChatReply, String> {
+    validate_chat_messages(messages)?;
+    let cur = current.map(|c| serde_json::to_string_pretty(c).unwrap_or_default());
+    let reply = run_draft(
+        driver,
+        "ai-draft/chat-agent",
+        agent_chat_instructions(ctx),
+        chat_history_text(messages, cur.as_deref()),
+        ctx,
+    )
+    .await?;
+    parse_agent_chat_reply(&reply, ctx)
+}
+
+pub async fn draft_skill_chat(
+    driver: &Arc<dyn AgentDriver>,
+    messages: &[DraftChatMessage],
+    current: Option<&SkillDraft>,
+    ctx: &DraftContext,
+) -> Result<SkillChatReply, String> {
+    validate_chat_messages(messages)?;
+    let cur = current.map(|c| serde_json::to_string_pretty(c).unwrap_or_default());
+    let reply = run_draft(
+        driver,
+        "ai-draft/chat-skill",
+        skill_chat_instructions(ctx),
+        chat_history_text(messages, cur.as_deref()),
+        ctx,
+    )
+    .await?;
+    parse_skill_chat_reply(&reply, ctx)
+}
+
+pub async fn draft_host_chat(
+    driver: &Arc<dyn AgentDriver>,
+    messages: &[DraftChatMessage],
+    current: Option<&HostDraft>,
+    ctx: &DraftContext,
+) -> Result<HostChatReply, String> {
+    validate_chat_messages(messages)?;
+    let cur = current.map(|c| serde_json::to_string_pretty(c).unwrap_or_default());
+    let reply = run_draft(
+        driver,
+        "ai-draft/chat-host",
+        host_chat_instructions(ctx),
+        chat_history_text(messages, cur.as_deref()),
+        ctx,
+    )
+    .await?;
+    parse_host_chat_reply(&reply, ctx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +675,28 @@ mod tests {
     fn extract_json_from_raw_object() {
         let v = extract_json("prefix {\"name\":\"a\",\"prompt\":\"p\"} suffix").unwrap();
         assert_eq!(v["name"], "a");
+    }
+
+    #[test]
+    fn parses_agent_chat_reply_with_null_draft() {
+        let r = parse_agent_chat_reply(
+            r#"{"message":"Mentions only?","draft":null,"ready":false}"#,
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r.message, "Mentions only?");
+        assert!(r.draft.is_none());
+        assert!(!r.ready);
+    }
+
+    #[test]
+    fn ready_requires_valid_draft() {
+        let r = parse_agent_chat_reply(
+            r#"{"message":"ok","draft":{"name":"ventas","prompt":"Vende.","mcps":["google-drive"]},"ready":true}"#,
+            &ctx(),
+        )
+        .unwrap();
+        assert!(r.ready);
+        assert_eq!(r.draft.as_ref().unwrap().name, "ventas");
     }
 }

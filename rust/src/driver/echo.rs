@@ -18,6 +18,30 @@ fn last_message(text: &str) -> &str {
 #[async_trait]
 impl AgentDriver for EchoDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
+        if input.thread_key.starts_with("ai-draft/chat-host") {
+            return Ok(AgentTurnResult {
+                reply: r#"{"message":"Host prompt ready. Want it shorter?","draft":{"prompt":"Stay concise. Prefer routing specialist topics to the right @agent.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]},"ready":true}"#.into(),
+                session_ref: Some(format!("echo-{}", input.thread_key)),
+                usage: None,
+                pending: None,
+            });
+        }
+        if input.thread_key.starts_with("ai-draft/chat-agent") {
+            return Ok(AgentTurnResult {
+                reply: r#"{"message":"@ventas draft ready. Want to tweak anything?","draft":{"name":"ventas","prompt":"Especialista en ventas y cotizaciones.","mcps":["google-drive"],"skills":[],"delegates":[]},"ready":true}"#.into(),
+                session_ref: Some(format!("echo-{}", input.thread_key)),
+                usage: None,
+                pending: None,
+            });
+        }
+        if input.thread_key.starts_with("ai-draft/chat-skill") {
+            return Ok(AgentTurnResult {
+                reply: r#"{"message":"Skill cotizaciones ready. More rules?","draft":{"name":"cotizaciones","description":"Precios y planes","mcps":["google-drive"],"body":"Respondé con precios vigentes. No inventar cifras."},"ready":true}"#.into(),
+                session_ref: Some(format!("echo-{}", input.thread_key)),
+                usage: None,
+                pending: None,
+            });
+        }
         if input.thread_key.starts_with("ai-draft/agent") {
             return Ok(AgentTurnResult {
                 reply: r#"{"name":"ventas","prompt":"Especialista en ventas y cotizaciones.","mcps":["google-drive"],"skills":[],"delegates":[]}"#.into(),

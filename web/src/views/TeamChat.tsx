@@ -828,6 +828,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             state={state}
             guest={transport.guest}
             catalog={catalog}
+            onCommand={(text) => void send(text)}
             onMember={
               transport.members
                 ? (op, member) =>
@@ -969,7 +970,13 @@ function Face({ name, host = false }: { name: string; host?: boolean }) {
   return <span className="avatar" aria-hidden="true">{letters}</span>;
 }
 
-function RunsSection({ runs }: { runs: NonNullable<TeamThreadState["runs"]> }) {
+function RunsSection({
+  runs,
+  onCommand,
+}: {
+  runs: NonNullable<TeamThreadState["runs"]>;
+  onCommand?: (text: string) => void;
+}) {
   return (
     <section className="runs" aria-label="Agents that ran">
       <h2>Agents</h2>
@@ -1003,6 +1010,27 @@ function RunsSection({ runs }: { runs: NonNullable<TeamThreadState["runs"]> }) {
                 </div>
               )}
             </dl>
+            {onCommand && (
+              <div className="run-actions">
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() => onCommand(host ? "/clear" : `/clear @${run.name}`)}
+                >
+                  Reset
+                </button>
+                {host && (
+                  <>
+                    <button type="button" className="btn small" onClick={() => onCommand("/compact")}>
+                      Compact
+                    </button>
+                    <button type="button" className="btn small" onClick={() => onCommand("/model")}>
+                      Model
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </details>
         );
       })}
@@ -1015,11 +1043,13 @@ function ThreadContextPanel({
   guest,
   catalog,
   onMember,
+  onCommand,
 }: {
   state?: TeamThreadState;
   guest: boolean;
   catalog: { name: string }[];
   onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
+  onCommand?: (text: string) => void;
 }) {
   const wi = state?.workItem;
   const changes = state?.changes;
@@ -1064,7 +1094,7 @@ function ThreadContextPanel({
           </div>
         )}
       </dl>
-      {!!state?.runs?.length && <RunsSection runs={state.runs} />}
+      {!!state?.runs?.length && <RunsSection runs={state.runs} onCommand={onCommand} />}
 
       {(wi || state?.worktree) && <h2>Work item</h2>}
       {!wi && !state?.worktree ? null : wi ? (

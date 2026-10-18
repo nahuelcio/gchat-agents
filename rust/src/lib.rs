@@ -17,6 +17,7 @@ pub mod drive_mcp;
 pub mod mcp_client;
 pub mod media;
 pub mod personas;
+pub mod pi_custom_providers;
 pub mod pi_keys;
 pub mod pi_sidecar;
 pub mod question_gate;

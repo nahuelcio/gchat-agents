@@ -14,6 +14,7 @@ export interface Settings {
   contextFooter: ContextFooter;
   autoCompactAt: number;
   personas: Persona[];
+  hostPrompt?: string;
 }
 
 const DEFAULTS = { contextFooter: "every5" as ContextFooter, autoCompactAt: 85, personas: [] as Persona[] };
@@ -82,6 +83,7 @@ export class SettingsStore {
       contextFooter: merged.contextFooter,
       autoCompactAt: merged.autoCompactAt,
       personas,
+      ...(typeof merged.hostPrompt === "string" && merged.hostPrompt.trim() ? { hostPrompt: merged.hostPrompt.trim() } : {}),
     };
   }
 

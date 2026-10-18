@@ -30,4 +30,24 @@ if (process.env.E2E_DRIVER === "pi") {
     await keys.getByRole("button", "Remove").tap();
     await expect(keys.getByText("Not configured yet.")).toBeVisible({ timeout: 10000 });
   });
+
+  test("openai-compatible custom providers are saved without echoing the key", { timeout: 60000 }, async ({ app, screen }) => {
+    await app.open("/#settings");
+    await expect(screen.getByText(/harness running/)).toBeVisible({ timeout: 10000 });
+    const group = screen.getByRole("group", "OpenAI-compatible providers");
+    await expect(group).toBeVisible();
+    await group.getByRole("button", "+ Add OpenAI-compatible endpoint").tap();
+    const form = group.getByLabel("OpenAI-compatible provider");
+    await form.getByLabel("Provider id").fill("e2e-local");
+    await form.getByLabel("Provider name").fill("E2E Local");
+    await form.getByLabel("Base URL").fill("http://127.0.0.1:11434/v1");
+    await form.getByLabel("Models").fill("echo-model");
+    await form.getByLabel("Custom API key").fill("sk-custom-e2e");
+    await form.getByRole("button", "Add endpoint").tap();
+    await expect(group.getByText("E2E Local")).toBeVisible({ timeout: 10000 });
+    await expect(group.getByText(/e2e-local/)).toBeVisible();
+    await expect(screen.getByText("sk-custom-e2e")).not.toBeVisible();
+    await group.getByLabel("Remove e2e-local").tap();
+    await expect(group.getByText("E2E Local")).not.toBeVisible({ timeout: 10000 });
+  });
 }

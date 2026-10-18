@@ -5,8 +5,9 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
-import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
+import { envApiKeyAuth, Type, type Model } from "@earendil-works/pi-ai";
+import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { AssistantEntry, createRegistry, defineExtension, defineTool, Harness, type Conversation } from "@earendil-works/pi-durable";
@@ -47,8 +48,94 @@ function lastUserText(context: { messages?: { role: string; content: unknown }[]
   return (msg.content as { type: string; text?: string }[]).map((c) => c.text ?? "").join("");
 }
 
+type CustomProviderConfig = {
+  id: string;
+  name?: string;
+  baseUrl: string;
+  models: string[];
+  apiKeyEnv?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
+const customProviderIds = new Set<string>();
+let modelsRef: MutableModels;
+
+function loadCustomProviders(): CustomProviderConfig[] {
+  const file = join(dataDir, "pi-custom-providers.json");
+  if (!existsSync(file)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8")) as CustomProviderConfig[];
+    return Array.isArray(raw) ? raw.filter((p) => p?.id && p?.baseUrl && Array.isArray(p.models)) : [];
+  } catch (err) {
+    console.error("pi-custom-providers.json unreadable:", err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
+function customEnv(id: string, explicit?: string) {
+  if (explicit) return explicit;
+  return `PI_CUSTOM_${id.replace(/-/g, "_").toUpperCase()}_API_KEY`;
+}
+
+function buildCustomProvider(cfg: CustomProviderConfig) {
+  const contextWindow = cfg.contextWindow || 128_000;
+  const maxTokens = cfg.maxTokens || 32_000;
+  const models = cfg.models
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map(
+      (id): Model<"openai-completions"> => ({
+        id,
+        name: id,
+        api: "openai-completions",
+        provider: cfg.id,
+        baseUrl: cfg.baseUrl,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow,
+        maxTokens,
+      }),
+    );
+  const envVar = customEnv(cfg.id, cfg.apiKeyEnv);
+  const hasKey = !!(process.env[envVar] || "").trim();
+  return createProvider({
+    id: cfg.id,
+    name: cfg.name || cfg.id,
+    baseUrl: cfg.baseUrl,
+    auth: hasKey
+      ? { apiKey: envApiKeyAuth(cfg.name || cfg.id, [envVar]) }
+      : { apiKey: { name: cfg.name || cfg.id, resolve: async () => ({ auth: {} }) } },
+    models,
+    api: openAICompletionsApi(),
+  });
+}
+
+function applyCustomProviders(m: MutableModels) {
+  loadKeys();
+  const next = loadCustomProviders();
+  const nextIds = new Set(next.map((p) => p.id));
+  for (const id of customProviderIds) {
+    if (!nextIds.has(id)) m.deleteProvider(id);
+  }
+  customProviderIds.clear();
+  for (const cfg of next) {
+    try {
+      m.setProvider(buildCustomProvider(cfg));
+      customProviderIds.add(cfg.id);
+    } catch (err) {
+      console.error(`custom provider ${cfg.id} skipped:`, err instanceof Error ? err.message : err);
+    }
+  }
+}
+
 function models(): MutableModels {
-  if (process.env.PI_FAUX !== "1") return builtinModels();
+  if (process.env.PI_FAUX !== "1") {
+    modelsRef = builtinModels();
+    applyCustomProviders(modelsRef);
+    return modelsRef;
+  }
   const faux = fauxProvider({ provider: "faux", models: [{ id: "echo", contextWindow: 200_000 }] });
   const respond = (context: { messages?: { role: string; content: unknown }[] }): ReturnType<typeof fauxAssistantMessage> | Promise<ReturnType<typeof fauxAssistantMessage>> => {
     const last = [...(context.messages ?? [])].reverse()[0];
@@ -63,9 +150,10 @@ function models(): MutableModels {
     return fauxAssistantMessage(`Echo: ${text.split("\n---\n").pop()?.trim()}`);
   };
   faux.setResponses(Array.from({ length: 10_000 }, () => respond));
-  const m = createModels();
-  m.setProvider(faux.provider);
-  return m;
+  modelsRef = createModels();
+  modelsRef.setProvider(faux.provider);
+  applyCustomProviders(modelsRef);
+  return modelsRef;
 }
 
 const SAFE = new Set(["create_xlsx", "list_spreadsheets", "list_agents", "list_repos", "thread_status", "list_schedules"]);
@@ -161,10 +249,33 @@ function modelRef(spec?: string) {
   return i > 0 ? { provider: s.slice(0, i), modelId: s.slice(i + 1) } : undefined;
 }
 
-async function answerText(conv: Conversation, answer: unknown): Promise<string> {
+type AssistantModel = {
+  content?: { type: string; text?: string }[];
+  usage?: { input?: number; output?: number; totalTokens?: number };
+};
+
+async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number } }> {
   const entry = await conv.commit((tx) => tx.entry(AssistantEntry, answer as never), ctx);
-  const content = (entry?.model?.[0] as { content?: { type: string; text?: string }[] } | undefined)?.content ?? [];
-  return content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
+  const msg = (entry?.model?.[0] as AssistantModel | undefined) ?? {};
+  const content = msg.content ?? [];
+  const reply = content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
+  const fromUsage = msg.usage
+    ? Math.round((msg.usage.input ?? 0) + (msg.usage.output ?? 0) || msg.usage.totalTokens || 0)
+    : 0;
+  const contextTokens = fromUsage > 0 ? fromUsage : Math.max(1, Math.ceil(reply.length / 4));
+  let contextWindow: number | undefined;
+  try {
+    const agent = await conv.agent(ctx);
+    const ref = agent.model;
+    if (ref) {
+      const model = modelsRef.getModel(ref.provider, ref.modelId);
+      if (model?.contextWindow) contextWindow = model.contextWindow;
+    }
+  } catch {
+    /* model catalog unavailable — window optional */
+  }
+  if (!contextWindow && process.env.PI_FAUX === "1") contextWindow = 200_000;
+  return { reply, usage: { contextTokens, contextWindow } };
 }
 
 type SubmitBody = {
@@ -222,7 +333,8 @@ async function waitFor(requestId: string, ms: number) {
     const why = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : "";
     return { status: "unanswered", conversationId: known, error: [reason ?? "unanswered", why].filter(Boolean).join(": ") };
   }
-  return { status: "done", conversationId: known, reply: await answerText(conv, settled.answer) };
+  const { reply, usage } = await commitAnswer(conv, settled.answer);
+  return { status: "done", conversationId: known, reply, usage };
 }
 
 const read = (req: IncomingMessage) =>
@@ -247,7 +359,12 @@ createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/reload") {
       await loadMcp();
-      return send(res, 200, { ok: true, tools: mcpTools.map((t) => t.tool.name) });
+      applyCustomProviders(modelsRef);
+      return send(res, 200, {
+        ok: true,
+        tools: mcpTools.map((t) => t.tool.name),
+        customProviders: [...customProviderIds],
+      });
     }
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
     if (req.method === "POST" && req.url === "/abort") {

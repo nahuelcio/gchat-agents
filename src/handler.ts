@@ -356,8 +356,9 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
         if (req.roomN) text = roomCatchUp(record?.room, BOT_NAME, record?.roomSeen?.[BOT_NAME], req.roomN) + text;
         if (personas.length || record?.hostRoster?.length) {
           const names = personas.map((p) => p.name);
-          if (!record?.sessionRef) text = `${hostPreamble(personas)}\n\n---\n\n${text}`;
-          else text += record.hostRoster ? rosterUpdate(record.hostRoster, names) : `\n\n${hostPreamble(personas)}`;
+          const hostPrompt = (deps.options?.() as { hostPrompt?: string } | undefined)?.hostPrompt;
+          if (!record?.sessionRef) text = `${hostPreamble(personas, hostPrompt)}\n\n---\n\n${text}`;
+          else text += record.hostRoster ? rosterUpdate(record.hostRoster, names) : `\n\n${hostPreamble(personas, hostPrompt)}`;
           await deps.store.update(threadKey, spaceName, { hostRoster: names }).catch(() => {});
         }
         if (record?.summary && !record.sessionRef) {

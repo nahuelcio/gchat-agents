@@ -7,7 +7,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::atomic::write_atomic;
 use crate::config::AgentDriverKind;
-use crate::driver::types::AgentQuestion;
+use crate::driver::types::{AgentQuestion, ContextUsage};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -31,6 +31,41 @@ pub struct RoomEntry {
     pub n: u64,
     pub author: String,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u64>,
+}
+
+pub fn persona_usage_after(prev: Option<&PersonaUsage>, usage: Option<&ContextUsage>, text_len: usize, reply_len: usize) -> PersonaUsage {
+    let turns = prev.and_then(|p| p.turns).unwrap_or(0) + 1;
+    match usage {
+        Some(u) => PersonaUsage {
+            context_tokens: Some(u.context_tokens),
+            context_window: u.context_window,
+            estimated: Some(false),
+            turns: Some(turns),
+        },
+        None => {
+            let prev_tokens = prev.filter(|p| p.estimated != Some(false)).and_then(|p| p.context_tokens).unwrap_or(0);
+            let add = ((text_len + reply_len).div_ceil(4)) as u64;
+            PersonaUsage {
+                context_tokens: Some(prev_tokens + add),
+                context_window: prev.and_then(|p| p.context_window),
+                estimated: Some(true),
+                turns: Some(turns),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -69,6 +104,8 @@ pub struct SessionRecord {
     pub pending_questions: Option<Vec<AgentQuestion>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persona_sessions: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_usage: Option<HashMap<String, PersonaUsage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_roster: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +200,7 @@ pub struct SessionPatch {
     pub turns: Option<Option<u64>>,
     pub pending_questions: Option<Option<Vec<AgentQuestion>>>,
     pub persona_sessions: Option<Option<HashMap<String, String>>>,
+    pub persona_usage: Option<Option<HashMap<String, PersonaUsage>>>,
     pub host_roster: Option<Option<Vec<String>>>,
     pub persona_roster: Option<Option<HashMap<String, Vec<String>>>>,
     pub room: Option<Option<Vec<RoomEntry>>>,
@@ -218,6 +256,9 @@ impl SessionPatch {
         if let Some(v) = self.persona_sessions {
             record.persona_sessions = v;
         }
+        if let Some(v) = self.persona_usage {
+            record.persona_usage = v;
+        }
         if let Some(v) = self.host_roster {
             record.host_roster = v;
         }
@@ -242,7 +283,21 @@ impl SessionPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::types::ContextUsage;
     use tempfile::tempdir;
+
+    #[test]
+    fn persona_usage_tracks_real_and_estimated_tokens() {
+        let real = persona_usage_after(None, Some(&ContextUsage { context_tokens: 225, context_window: Some(200_000) }), 10, 20);
+        assert_eq!(real.context_tokens, Some(225));
+        assert_eq!(real.context_window, Some(200_000));
+        assert_eq!(real.estimated, Some(false));
+        assert_eq!(real.turns, Some(1));
+        let next = persona_usage_after(Some(&real), None, 40, 40);
+        assert_eq!(next.context_tokens, Some(20));
+        assert_eq!(next.estimated, Some(true));
+        assert_eq!(next.turns, Some(2));
+    }
 
     #[tokio::test]
     async fn atomic_roundtrip() {

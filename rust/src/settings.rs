@@ -104,6 +104,15 @@ pub struct Settings {
     pub personas: Vec<Persona>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<PersonaTemplate>,
+    /// Extra system prompt for the host (Switchboard / Pi) — appended to the built-in host preamble.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_prompt: Option<String>,
+    /// Tool groups for the host. `None` = default (coding, switchboard, engram). Empty = every tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_mcps: Option<Vec<String>>,
+    /// Skill packs attached to the host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_skills: Vec<String>,
     #[serde(default)]
     pub tunnel: TunnelMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +173,12 @@ impl SettingsStore {
             debounce_ms: saved.debounce_ms.unwrap_or(0),
             personas,
             templates: saved.templates.unwrap_or_default(),
+            host_prompt: saved
+                .host_prompt
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            host_mcps: saved.host_mcps,
+            host_skills: saved.host_skills.unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
             mcp_servers: saved.mcp_servers.unwrap_or_default(),
@@ -217,6 +232,15 @@ impl SettingsStore {
             }
             if let Some(v) = patch.templates {
                 current.templates = v;
+            }
+            if let Some(v) = patch.host_prompt {
+                current.host_prompt = Some(v.trim().to_string()).filter(|s| !s.is_empty());
+            }
+            if let Some(v) = patch.host_mcps {
+                current.host_mcps = Some(v);
+            }
+            if let Some(v) = patch.host_skills {
+                current.host_skills = v;
             }
             if let Some(v) = patch.tunnel {
                 current.tunnel = v;
@@ -305,6 +329,9 @@ struct PartialSettings {
     debounce_ms: Option<u32>,
     personas: Option<Vec<Persona>>,
     templates: Option<Vec<PersonaTemplate>>,
+    host_prompt: Option<String>,
+    host_mcps: Option<Vec<String>>,
+    host_skills: Option<Vec<String>>,
     tunnel: Option<TunnelMode>,
     google_drive_folder_id: Option<String>,
     mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
@@ -322,12 +349,18 @@ pub struct SettingsPatch {
     pub debounce_ms: Option<u32>,
     pub personas: Option<Vec<Persona>>,
     pub templates: Option<Vec<PersonaTemplate>>,
+    pub host_prompt: Option<String>,
+    pub host_mcps: Option<Vec<String>>,
+    pub host_skills: Option<Vec<String>>,
     pub tunnel: Option<TunnelMode>,
     pub google_drive_folder_id: Option<String>,
     pub mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
 
 fn validate(s: &Settings) -> Result<(), String> {
+    if s.host_prompt.as_ref().is_some_and(|p| p.chars().count() > 12_000) {
+        return Err("hostPrompt is too long (max 12000 characters)".into());
+    }
     let mut seen = std::collections::HashSet::new();
     for m in &s.mcp_servers {
         if !crate::mcp_client::valid_name(&m.name) {

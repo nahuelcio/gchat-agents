@@ -106,16 +106,17 @@ pub fn agent_runs(record: &crate::session::SessionRecord, options: &crate::handl
         let explicit = persona.and_then(|p| p.model.as_deref()).or_else(|| {
             if persona.and_then(|p| p.driver).is_none() { record.model.as_deref() } else { None }
         });
+        let usage = record.persona_usage.as_ref().and_then(|m| m.get(name.as_str()));
         runs.push(AgentRun {
             name: name.clone(),
             role: "agent",
             driver: Some(driver_name(driver).into()),
             model: model_for(explicit, driver, &options.default_models),
             session: Some(session.clone()),
-            context_tokens: None,
-            context_window: None,
-            turns: None,
-            estimated: None,
+            context_tokens: usage.and_then(|u| u.context_tokens),
+            context_window: usage.and_then(|u| u.context_window),
+            turns: usage.and_then(|u| u.turns),
+            estimated: usage.and_then(|u| u.estimated),
         });
     }
     runs
@@ -504,6 +505,15 @@ mod presence_tests {
             context_window: Some(128_000),
             turns: Some(4),
             persona_sessions: Some(std::collections::HashMap::from([("architect".into(), "ses_eb8240236ffe9MtMpfyzlBVgko".into())])),
+            persona_usage: Some(std::collections::HashMap::from([(
+                "architect".into(),
+                crate::session::PersonaUsage {
+                    context_tokens: Some(420),
+                    context_window: Some(128_000),
+                    estimated: Some(false),
+                    turns: Some(2),
+                },
+            )])),
             ..Default::default()
         };
         let options = crate::handler::TurnOptions {
@@ -525,6 +535,7 @@ mod presence_tests {
                 mcps: vec![],
                 delegates: vec![],
             }],
+            host_prompt: None,
         };
         let runs = agent_runs(&record, &options);
         assert_eq!(runs[0].name, "pi");
@@ -536,6 +547,9 @@ mod presence_tests {
         assert_eq!(runs[1].driver.as_deref(), Some("pi"));
         assert_eq!(runs[1].model.as_deref(), Some("opus"));
         assert_eq!(runs[1].session.as_deref(), Some("ses_eb8240236ffe9MtMpfyzlBVgko"));
-        assert!(runs[1].context_tokens.is_none());
+        assert_eq!(runs[1].context_tokens, Some(420));
+        assert_eq!(runs[1].context_window, Some(128_000));
+        assert_eq!(runs[1].turns, Some(2));
+        assert_eq!(runs[1].estimated, Some(false));
     }
 }

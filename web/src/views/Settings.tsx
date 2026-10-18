@@ -1,6 +1,24 @@
 import { useEffect, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type DriveMcpStatus, type Persona, type PersonaTemplate, type RepoConfig, type Settings, type McpServer, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS, DEFAULT_PERSONA_MCPS } from "../api";
+import {
+  api,
+  type AdoRepo,
+  type AdoStatus,
+  type Agent,
+  type ContextFooter,
+  type DriveMcpStatus,
+  type Persona,
+  type PersonaTemplate,
+  type RepoConfig,
+  type Settings,
+  type McpServer,
+  type PiCustomProvider,
+  type PiKey,
+  type SkillInfo,
+  type TunnelMode,
+  BUILTIN_MCPS,
+  DEFAULT_PERSONA_MCPS,
+} from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -184,6 +202,7 @@ function AgentCard({ settings, save, notify }: ViewProps) {
         <button className="btn primary">Save</button>
       </form>
       <PiKeys notify={notify} />
+      <PiCustomProviders notify={notify} />
     </details>
   );
 }
@@ -246,7 +265,6 @@ function PersonasCard({ settings, save, notify }: ViewProps) {
   const [editing, setEditing] = useState<{ index: number; draft: Persona } | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [aiBrief, setAiBrief] = useState("");
-  const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   useEffect(() => {
     api.skills().then(setSkills, () => setSkills([]));
@@ -272,18 +290,17 @@ function PersonasCard({ settings, save, notify }: ViewProps) {
     void commit(list, `@${draft.name} saved`);
   };
 
-  const runAiDraft = (improve: boolean) => {
-    const brief = (improve ? aiBrief || editing?.draft.prompt || editing?.draft.name || "" : aiBrief || "").trim();
-    if (!brief || aiBusy) return;
+  const runAiDraft = () => {
+    const brief = (aiBrief || editing?.draft.prompt || editing?.draft.name || "").trim();
+    if (!brief || aiBusy || !editing) return;
     setAiBusy(true);
     api
-      .draftAgent(brief, improve && editing ? editing.draft : undefined)
+      .draftAgent(brief, editing.draft)
       .then(
         (draft) => {
-          setEditing({ index: improve && editing ? editing.index : -1, draft: { ...EMPTY_PERSONA, ...draft } });
-          setAiOpen(false);
+          setEditing({ index: editing.index, draft: { ...EMPTY_PERSONA, ...draft } });
           setAiBrief("");
-          notify(improve ? "Borrador mejorado — revisá y Guardá" : "Borrador listo — revisá y Guardá");
+          notify("Draft improved — review and Save");
         },
         (e: Error) => notify(e.message, true),
       )
@@ -465,17 +482,17 @@ function PersonasCard({ settings, save, notify }: ViewProps) {
             </fieldset>
           )}
           <label className="field">
-            <span>Mejorar con IA</span>
+            <span>Improve with AI</span>
             <div className="row">
               <input
                 className="grow"
                 value={aiBrief}
                 onChange={(e) => setAiBrief(e.target.value)}
-                placeholder="Qué cambiar o reforzar (opcional si el rol ya está)"
+                placeholder="What to change or strengthen (optional if the role is already set)"
                 disabled={aiBusy}
               />
-              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft(true)}>
-                {aiBusy ? "Generando…" : "Mejorar con IA"}
+              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft()}>
+                {aiBusy ? "Generating…" : "Improve with AI"}
               </button>
             </div>
           </label>
@@ -496,56 +513,10 @@ function PersonasCard({ settings, save, notify }: ViewProps) {
           <button className="btn" onClick={() => setEditing({ index: -1, draft: { ...EMPTY_PERSONA } })}>
             + Add agent
           </button>
-          <button
-            className="btn"
-            type="button"
-            onClick={() => {
-              setAiOpen((o) => !o);
-              setAiBrief("");
-            }}
-          >
-            Generar con IA
-          </button>
+          <a className="btn" href="#create">
+            Create with AI
+          </a>
         </div>
-      )}
-      {aiOpen && !editing && (
-        <form
-          className="persona-form"
-          aria-label="Generar agente con IA"
-          onSubmit={(e) => {
-            e.preventDefault();
-            runAiDraft(false);
-          }}
-        >
-          <label className="field">
-            <span>Brief (rol / dominio)</span>
-            <textarea
-              rows={3}
-              value={aiBrief}
-              onChange={(e) => setAiBrief(e.target.value)}
-              placeholder="Ej: agente de ventas B2B que cotiza planes y usa Drive"
-              required
-              autoFocus
-              disabled={aiBusy}
-            />
-          </label>
-          <div className="row">
-            <button className="btn primary" disabled={!aiBrief.trim() || aiBusy}>
-              {aiBusy ? "Generando…" : "Generar borrador"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={aiBusy}
-              onClick={() => {
-                setAiOpen(false);
-                setAiBrief("");
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
       )}
 
       <div className="card-title" style={{ marginTop: "1.25rem" }}>
@@ -595,7 +566,6 @@ function SkillsCard({ settings, notify }: ViewProps) {
   const [source, setSource] = useState("");
   const [installing, setInstalling] = useState(false);
   const [aiBrief, setAiBrief] = useState("");
-  const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   useEffect(() => {
     api.skills().then(setSkills, () => setSkills([]));
@@ -610,19 +580,17 @@ function SkillsCard({ settings, notify }: ViewProps) {
       },
       (e: Error) => notify(e.message, true),
     );
-  const runAiDraft = (improve: boolean) => {
-    const brief = (improve ? aiBrief || draft?.description || draft?.name || "" : aiBrief || "").trim();
-    if (!brief || aiBusy) return;
+  const runAiDraft = () => {
+    const brief = (aiBrief || draft?.description || draft?.name || "").trim();
+    if (!brief || aiBusy || !draft) return;
     setAiBusy(true);
     api
-      .draftSkill(brief, improve && draft ? draft : undefined)
+      .draftSkill(brief, draft)
       .then(
         (next) => {
-          setIsNew(improve ? isNew : true);
           setDraft({ ...EMPTY_SKILL, ...next });
-          setAiOpen(false);
           setAiBrief("");
-          notify(improve ? "Borrador mejorado — revisá y Guardá" : "Borrador listo — revisá y Guardá");
+          notify("Draft improved — review and Save");
         },
         (e: Error) => notify(e.message, true),
       )
@@ -717,17 +685,17 @@ function SkillsCard({ settings, notify }: ViewProps) {
             <textarea rows={8} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} placeholder="What the agent must do, never do, and how to answer." />
           </label>
           <label className="field">
-            <span>Mejorar con IA</span>
+            <span>Improve with AI</span>
             <div className="row">
               <input
                 className="grow"
                 value={aiBrief}
                 onChange={(e) => setAiBrief(e.target.value)}
-                placeholder="Qué cambiar o reforzar (opcional)"
+                placeholder="What to change or strengthen (optional)"
                 disabled={aiBusy}
               />
-              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft(true)}>
-                {aiBusy ? "Generando…" : "Mejorar con IA"}
+              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft()}>
+                {aiBusy ? "Generating…" : "Improve with AI"}
               </button>
             </div>
           </label>
@@ -743,56 +711,10 @@ function SkillsCard({ settings, notify }: ViewProps) {
           <button className="btn" onClick={() => { setIsNew(true); setDraft({ ...EMPTY_SKILL }); }}>
             + New skill pack
           </button>
-          <button
-            className="btn"
-            type="button"
-            onClick={() => {
-              setAiOpen((o) => !o);
-              setAiBrief("");
-            }}
-          >
-            Generar con IA
-          </button>
+          <a className="btn" href="#create">
+            Create with AI
+          </a>
         </div>
-      )}
-      {aiOpen && !draft && (
-        <form
-          className="persona-form"
-          aria-label="Generar skill con IA"
-          onSubmit={(e) => {
-            e.preventDefault();
-            runAiDraft(false);
-          }}
-        >
-          <label className="field">
-            <span>Brief (dominio / procedimiento)</span>
-            <textarea
-              rows={3}
-              value={aiBrief}
-              onChange={(e) => setAiBrief(e.target.value)}
-              placeholder="Ej: skill de cotizaciones con precios y reglas de descuento"
-              required
-              autoFocus
-              disabled={aiBusy}
-            />
-          </label>
-          <div className="row">
-            <button className="btn primary" disabled={!aiBrief.trim() || aiBusy}>
-              {aiBusy ? "Generando…" : "Generar borrador"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={aiBusy}
-              onClick={() => {
-                setAiOpen(false);
-                setAiBrief("");
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
       )}
     </details>
   );
@@ -935,7 +857,7 @@ function PiKeys({ notify }: { notify: ViewProps["notify"] }) {
   return (
     <div className="field" aria-label="Provider keys" role="group">
       <span>Provider keys</span>
-      <span className="muted small">Pi calls the model directly. The key is stored on this machine, never shown again, and used from the next turn.</span>
+      <span className="muted small">Pi calls the model directly. Built-in provider keys are stored on this machine, never shown again, and used from the next turn.</span>
       <form
         className="row"
         onSubmit={(e) => {
@@ -964,6 +886,107 @@ function PiKeys({ notify }: { notify: ViewProps["notify"] }) {
       <span className="muted small">
         {current?.source === "settings" ? "Saved here." : current?.source === "env" ? `Taken from ${current.envVar} in .env.` : "Not configured yet."}
       </span>
+    </div>
+  );
+}
+
+const EMPTY_CUSTOM = { id: "", name: "", baseUrl: "http://127.0.0.1:11434/v1", models: "", apiKey: "" };
+
+function PiCustomProviders({ notify }: { notify: ViewProps["notify"] }) {
+  const [list, setList] = useState<PiCustomProvider[]>([]);
+  const [draft, setDraft] = useState<typeof EMPTY_CUSTOM | null>(null);
+  useEffect(() => {
+    api.piCustomProviders().then(setList, () => setList([]));
+  }, []);
+  const remove = (id: string) =>
+    api.deletePiCustomProvider(id).then(
+      (next) => {
+        setList(next);
+        notify(`${id} removed`);
+      },
+      (e: Error) => notify(e.message, true),
+    );
+  return (
+    <div className="field" aria-label="OpenAI-compatible providers" role="group">
+      <span>OpenAI-compatible</span>
+      <span className="muted small">
+        Ollama, vLLM, LM Studio, or any OpenAI-compatible base URL. Use as <code>id/model</code> in Default model (e.g. <code>ollama/llama3.1</code>). Key optional for local servers.
+      </span>
+      {list.map((p) => (
+        <div key={p.id} className="persona-row">
+          <div className="grow">
+            <span className="strong">{p.name}</span> <code className="muted small">{p.id}</code>
+            <div className="muted small mono">
+              {p.baseUrl} · {p.models.join(", ")}
+              {p.keySource === "none" ? " · no key" : p.keySource === "env" ? ` · ${p.apiKeyEnv}` : " · key saved"}
+            </div>
+          </div>
+          <button className="x" aria-label={`Remove ${p.id}`} onClick={() => void remove(p.id)}>
+            ×
+          </button>
+        </div>
+      ))}
+      {draft ? (
+        <form
+          className="persona-form"
+          aria-label="OpenAI-compatible provider"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const id = draft.id.trim().toLowerCase();
+            const models = draft.models
+              .split(/[\s,]+/)
+              .map((m) => m.trim())
+              .filter(Boolean);
+            void api
+              .savePiCustomProvider({
+                id,
+                name: draft.name.trim() || id,
+                baseUrl: draft.baseUrl.trim(),
+                models,
+                apiKey: draft.apiKey.trim() || undefined,
+              })
+              .then(
+                (next) => {
+                  setList(next);
+                  setDraft(null);
+                  notify(`${id} saved — use ${id}/${models[0] ?? "model"}`);
+                },
+                (err: Error) => notify(err.message, true),
+              );
+          }}
+        >
+          <label className="field">
+            <span>Id</span>
+            <input className="mono" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.target.value })} placeholder="ollama" required aria-label="Provider id" />
+          </label>
+          <label className="field">
+            <span>Name</span>
+            <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Ollama" aria-label="Provider name" />
+          </label>
+          <label className="field">
+            <span>Base URL</span>
+            <input className="mono" value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} placeholder="http://127.0.0.1:11434/v1" required aria-label="Base URL" />
+          </label>
+          <label className="field">
+            <span>Models (space or comma separated)</span>
+            <input className="mono" value={draft.models} onChange={(e) => setDraft({ ...draft, models: e.target.value })} placeholder="llama3.1 qwen2.5-coder" required aria-label="Models" />
+          </label>
+          <label className="field">
+            <span>API key (optional)</span>
+            <input className="mono" type="password" value={draft.apiKey} onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })} placeholder="Leave empty for local servers" aria-label="Custom API key" autoComplete="off" />
+          </label>
+          <div className="row">
+            <button className="btn primary">Add endpoint</button>
+            <button type="button" className="btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button className="btn" onClick={() => setDraft({ ...EMPTY_CUSTOM })}>
+          + Add OpenAI-compatible endpoint
+        </button>
+      )}
     </div>
   );
 }
