@@ -655,13 +655,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
       <section className="play-chat" aria-label="Conversation">
         <header className="play-head">
-          {!threadsOpen && (
-            <button type="button" className="btn icon ghost" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
-              <Icon size={16}>
-                <path d="M4 6h16M4 12h10M4 18h14" />
-              </Icon>
-            </button>
-          )}
           <span className="strong title">{state?.title ?? active?.title ?? "Team chat"}</span>
           {state?.repo ? <code className="tag">{state.repo} · {state.branch}</code> : state?.title?.startsWith("switchboard/") && <code className="tag muted">branch kept</code>}
           {(state?.agent || state?.model) && <code className="tag">{[state.agent, state.model].filter(Boolean).join(" · ")}</code>}
@@ -696,20 +689,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             {activeId && (
               <button className="btn small danger" onClick={() => void removeThread(activeId)} disabled={working}>
                 {transport.remove ? "Delete" : "Hide"}
-              </button>
-            )}
-            {activeId && (
-              <button
-                type="button"
-                className="btn icon ghost"
-                aria-label={contextOpen ? "Hide context" : "Show context"}
-                title={contextOpen ? "Hide context" : "Show context"}
-                aria-pressed={contextOpen}
-                onClick={() => toggleContext(!contextOpen)}
-              >
-                <Icon size={16}>
-                  {contextOpen ? <path d="M9 18l6-6-6-6" /> : <path d="M15 18l-6-6 6-6" />}
-                </Icon>
               </button>
             )}
           </span>
@@ -934,6 +913,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             state={state}
             guest={transport.guest}
             catalog={catalog}
+            onHide={() => toggleContext(false)}
             onCommand={(text) => void send(text)}
             onMember={
               transport.members
@@ -1184,19 +1164,30 @@ function ThreadContextPanel({
   catalog,
   onMember,
   onCommand,
+  onHide,
 }: {
   state?: TeamThreadState;
   guest: boolean;
   catalog: PersonaRef[];
   onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
   onCommand?: (text: string) => void;
+  onHide?: () => void;
 }) {
   const wi = state?.workItem;
   const changes = state?.changes;
   return (
     <aside className="play-context" aria-label="Thread context">
+      <div className="play-context-head">
+        <h2>Context</h2>
+        {onHide && (
+          <button type="button" className="btn icon ghost" aria-label="Hide context" title="Hide context" onClick={onHide}>
+            <Icon size={16}>
+              <path d="M9 18l6-6-6-6" />
+            </Icon>
+          </button>
+        )}
+      </div>
       <MembersSection state={state} catalog={catalog} onMember={onMember} />
-      <h2>Context</h2>
       <dl>
         <div>
           <dt>Repo</dt>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { agentHue } from "./agent-color";
+import { agentHue, BOT_NAME } from "./agent-color";
 
 /** Customizable blob face for agents (inspired by bloub-style morph avatars). */
 export type BlobShape = "round" | "soft" | "tall" | "bean";
@@ -11,9 +11,9 @@ export interface PersonaAvatar {
   expression: BlobExpression;
 }
 
+export const HOST_BLOB_COLOR = "#111111";
+
 export const BLOB_COLORS = [
-  "#111111",
-  "#1a1a2e",
   "#0f766e",
   "#0369a1",
   "#4f46e5",
@@ -22,9 +22,21 @@ export const BLOB_COLORS = [
   "#c2410c",
   "#b45309",
   "#15803d",
-  "#374151",
+  "#0891b2",
   "#e11d48",
+  "#ca8a04",
+  "#db2777",
 ] as const;
+
+function isHostName(name: string): boolean {
+  const bare = name.replace(/^@/, "").toLowerCase();
+  return bare === BOT_NAME.toLowerCase() || bare === "host" || bare === "switchboard";
+}
+
+function isHostBlack(color: string): boolean {
+  const c = color.trim().toLowerCase();
+  return c === HOST_BLOB_COLOR || c === "#000" || c === "#000000" || c === "#1a1a2e" || c === "#374151";
+}
 
 export const BLOB_SHAPES: { id: BlobShape; label: string }[] = [
   { id: "round", label: "Round" },
@@ -91,6 +103,9 @@ function hashName(name: string): number {
 
 /** Stable default avatar from agent name when none is saved. */
 export function avatarFromName(name: string): PersonaAvatar {
+  if (isHostName(name)) {
+    return { color: HOST_BLOB_COLOR, shape: "round", expression: "idle" };
+  }
   const h = hashName(name);
   return {
     color: BLOB_COLORS[h % BLOB_COLORS.length]!,
@@ -100,10 +115,18 @@ export function avatarFromName(name: string): PersonaAvatar {
 }
 
 export function resolveAvatar(name: string, avatar?: PersonaAvatar | null): PersonaAvatar {
-  if (avatar?.color && avatar.shape && avatar.expression) return avatar;
   const fallback = avatarFromName(name);
+  if (isHostName(name)) {
+    return {
+      color: HOST_BLOB_COLOR,
+      shape: avatar?.shape ?? fallback.shape,
+      expression: avatar?.expression ?? fallback.expression,
+    };
+  }
+  let color = avatar?.color ?? fallback.color;
+  if (isHostBlack(color)) color = fallback.color;
   return {
-    color: avatar?.color ?? fallback.color,
+    color,
     shape: avatar?.shape ?? fallback.shape,
     expression: avatar?.expression ?? fallback.expression,
   };
@@ -203,8 +226,8 @@ export function AvatarPicker({
     <fieldset className="field avatar-picker">
       <legend>Avatar</legend>
       <div className="avatar-picker-preview">
-        <AgentBlob name={name || "agent"} avatar={current} size={72} animate />
-        <p className="muted small">Blob face — pick color, shape, and expression.</p>
+        <AgentBlob name={name || "agent"} avatar={current} size={56} animate />
+        <p className="muted small">Color, shape, and expression.</p>
       </div>
       <div className="avatar-picker-row" role="group" aria-label="Color">
         {BLOB_COLORS.map((c) => (

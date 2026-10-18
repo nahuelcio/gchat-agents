@@ -108,16 +108,10 @@ export function Overview({ settings, notify }: ViewProps) {
                   <strong>Create an agent</strong>
                   {hasPersonas && <span className="pill ok">Done</span>}
                 </div>
-                <p>Pick a starter (Finance / Support) or draft one with AI.</p>
+                <p>Draft an agent manually or with AI.</p>
                 {!hasPersonas && (
                   <div className="row setup-actions">
-                    <a className="btn small primary" href="#create?starter=finanzas">
-                      Finance
-                    </a>
-                    <a className="btn small primary" href="#create?starter=soporte">
-                      Support
-                    </a>
-                    <a className="btn small" href="#create">
+                    <a className="btn small primary" href="#create">
                       Open Create
                     </a>
                   </div>

@@ -397,6 +397,15 @@ pub fn add_hint(text: &str) -> bool {
         .is_match(text)
 }
 
+pub fn default_host_prompt() -> String {
+    format!(
+        "You are {BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.\n\
+When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.\n\
+Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly {PASS}. If it fits none of them, say so and suggest who should take it.\n\
+If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again."
+    )
+}
+
 pub fn host_preamble(personas: &[Persona], host_prompt: Option<&str>) -> String {
     let roster = personas
         .iter()
@@ -416,17 +425,12 @@ pub fn host_preamble(personas: &[Persona], host_prompt: Option<&str>) -> String 
     } else {
         format!("Agents in this room: {roster}.")
     };
-    let base = format!(
-        "You are {BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.\n\
-{agents}\n\
-When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.\n\
-Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly {PASS}. If it fits none of them, say so and suggest who should take it.\n\
-If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again."
-    );
-    match host_prompt.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(extra) => format!("{base}\n\n{extra}"),
-        None => base,
-    }
+    let body = host_prompt
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(default_host_prompt);
+    format!("{body}\n\n{agents}")
 }
 
 pub fn roster_update(before: Option<&[String]>, now: &[String]) -> String {

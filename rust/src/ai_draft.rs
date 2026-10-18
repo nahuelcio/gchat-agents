@@ -377,7 +377,7 @@ fn host_chat_instructions(ctx: &DraftContext) -> String {
     format!(
         r#"You help the user create OR improve the host agent for Switchboard (the main Pi agent — it can code and use tools).
 
-The built-in host preamble already covers room roster, @mentions, and inviting agents. The user prompt is EXTRA instructions layered on top (tone, domain rules, never-do, company context).
+The host system prompt is fully editable (Switchi). A live room roster is appended automatically each turn — do not invent roster lines.
 
 Goal: clarify what they want, then produce a solid draft. When a Current draft JSON is provided, treat this as an EDIT — preserve what still fits, change only what the user asks.
 
@@ -387,12 +387,12 @@ Rules:
 - message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating, say what changed.
 - draft: if a current draft exists, ALWAYS return a full updated draft. Otherwise null until you have something useful.
 - ready: true when the prompt is clear enough to save (edits can be ready immediately after a clear change).
-- prompt: 2–12 sentences of durable host instructions. Do NOT restate the built-in roster/@mention rules unless the user wants a change.
-- mcps: subset of [{mcps}]. Default for a coding host: coding, switchboard, engram, agents, google-drive. Empty = every tool.
-- skills: subset of [{skills}] when clearly useful.
+- prompt: full host system prompt (2–12 sentences). Keep @mention / PASS / invite_agent behavior unless the user wants a change.
+- mcps: subset of [{mcps}]. Empty = every tool (Switchi default).
+- skills: subset of [{skills}]. Default includes artifacts when useful.
 
 Example (edit):
-{{"message":"Made the host prefer Spanish and route billing to specialists. Ready to save?","draft":{{"prompt":"Prefer Spanish. Route billing to specialists.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]}},"ready":true}}"#
+{{"message":"Made the host prefer Spanish and keep all tools. Ready to save?","draft":{{"prompt":"You are Switchi… Prefer Spanish.","mcps":[],"skills":["artifacts"]}},"ready":true}}"#
     )
 }
 

@@ -23,10 +23,16 @@ pub fn pi_model(model: &str) -> String {
     }
 }
 
-/// Default tools when `hostMcps` is unset: full built-in set for a coding host.
 pub const DEFAULT_HOST_MCPS: &[&str] = &["coding", "switchboard", "engram", "agents", "google-drive"];
 
+pub const DEFAULT_HOST_SKILLS: &[&str] = &["artifacts"];
+
 fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Persona {
+    let skills = if settings.host_skills.is_empty() {
+        DEFAULT_HOST_SKILLS.iter().map(|s| (*s).to_string()).collect()
+    } else {
+        settings.host_skills.clone()
+    };
     crate::settings::Persona {
         name: "host".into(),
         prompt: settings.host_prompt.clone().unwrap_or_default(),
@@ -35,11 +41,8 @@ fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Person
         agent: None,
         listen: None,
         respond_to: None,
-        skills: settings.host_skills.clone(),
-        mcps: settings
-            .host_mcps
-            .clone()
-            .unwrap_or_else(|| DEFAULT_HOST_MCPS.iter().map(|s| (*s).to_string()).collect()),
+        skills,
+        mcps: settings.host_mcps.clone().unwrap_or_default(),
         delegates: vec![],
         avatar: None,
     }
@@ -55,8 +58,15 @@ impl PiDriver {
         match self.persona(thread_key) {
             Some(p) => Some(crate::skills::mcps(&p)).filter(|m| !m.is_empty()),
             None => match self.settings.as_ref() {
-                Some(store) => Some(crate::skills::mcps(&host_persona(&store.get()))).filter(|m| !m.is_empty()),
-                None => Some(DEFAULT_HOST_MCPS.iter().map(|g| g.to_string()).collect()),
+                Some(store) => {
+                    let s = store.get();
+                    match &s.host_mcps {
+                        None => None,
+                        Some(m) if m.is_empty() => None,
+                        Some(_) => Some(crate::skills::mcps(&host_persona(&s))).filter(|m| !m.is_empty()),
+                    }
+                }
+                None => None,
             },
         }
     }
@@ -87,7 +97,6 @@ impl PiDriver {
             }
         } else if let Some(store) = &self.settings {
             let host = host_persona(&store.get());
-            // Prompt is also in the first-turn preamble; skills belong here as system instructions.
             let skills = crate::skills::instructions(&host);
             if !skills.is_empty() {
                 parts.push(skills);
@@ -182,15 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_without_persona_gets_default_host_tools() {
+    fn a_thread_without_persona_gets_every_host_tool() {
         let driver = PiDriver { base_url: String::new(), model: None, settings: None, timeout_ms: 0, retry_ms: 0 };
-        assert_eq!(
-            driver.groups("dm/1"),
-            Some(DEFAULT_HOST_MCPS.iter().map(|s| (*s).to_string()).collect())
-        );
-        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "coding"));
-        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "agents"));
-        assert!(driver.groups("dm/1").unwrap().iter().any(|g| g == "google-drive"));
+        assert_eq!(driver.groups("dm/1"), None);
     }
 
     #[test]

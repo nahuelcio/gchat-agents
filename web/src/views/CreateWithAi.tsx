@@ -10,7 +10,7 @@ import {
   type SkillFile,
   type SkillInfo,
   BUILTIN_MCPS,
-  DEFAULT_HOST_MCPS,
+  DEFAULT_HOST_SKILLS,
   DEFAULT_PERSONA_MCPS,
 } from "../api";
 import { hashQuery, type ViewProps } from "../App";
@@ -28,28 +28,7 @@ const STARTERS: {
   skill: string;
   mcps: string[];
   prompt: string;
-}[] = [
-  {
-    id: "finanzas",
-    name: "finanzas",
-    label: "Finance",
-    blurb: "Closings and .xlsx sheets in Google Drive",
-    skill: "finanzas",
-    mcps: ["engram", "google-drive"],
-    prompt:
-      "You are the Finance agent. Build closing sheets and reports with the finanzas skill. Do not invent numbers; ask if a value is missing. Reply with the Drive link and a short sheet summary.",
-  },
-  {
-    id: "soporte",
-    name: "soporte",
-    label: "Support",
-    blurb: "Incident triage, SLA, and integrations",
-    skill: "soporte",
-    mcps: ["engram", "switchboard"],
-    prompt:
-      "You are the Support agent. Prioritize impact and workarounds; use switchboard for repos and work items. Ask one concrete question if a detail is missing. Keep replies short with a clear next step.",
-  },
-];
+}[] = [];
 
 const SCRIPT_STUBS: Record<string, { path: string; content: string }> = {
   js: {
@@ -85,21 +64,20 @@ function ensureCoding(mcps: string[]): string[] {
   return mcps.includes("coding") ? mcps : [...mcps, "coding"];
 }
 
-const HOST_BUILTIN_PROMPT = `You are ${BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.
-Agents in this room: (filled from the current room).
+const HOST_DEFAULT_PROMPT = `You are ${BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.
 When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.
 Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly PASS. If it fits none of them, say so and suggest who should take it.
 If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again.`;
 
 const INTRO = {
-  host: "Describe changes to the host — tone, rules, tools. Edits land in the form on the left.",
-  agent: "Describe the agent you want. I’ll draft fields on the left; keep chatting to refine.",
-  skill: "Describe the skill. I’ll draft it with the skill-creator pack (SKILL.md + references/scripts).",
-  editAgent: (name: string) => `Editing @${name}. Tell me what to change (role, tools, skills, who they can ask) — I’ll update the draft.`,
+  host: "e.g. prefer Spanish, keep all tools, shorter replies…",
+  agent: "e.g. B2B sales agent that quotes from Drive…",
+  skill: "e.g. pricing skill with discount rules and a JS helper…",
+  editAgent: (name: string) => `e.g. make @${name} shorter, add Drive, only answer people…`,
   editSkill: (name: string) =>
     name === "skill-creator"
-      ? "Editing skill-creator — this pack steers Create → Skills AI. Change carefully."
-      : `Editing “${name}”. Tell me what to change (tone, tools, references, scripts) — I’ll update the draft.`,
+      ? "e.g. tighten never-dos for Create → Skills…"
+      : `e.g. add references/sla.md, tighten “${name}”…`,
 } as const;
 
 function cleanPersona(raw: Persona): Persona {
@@ -232,11 +210,19 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setSkillDraft(null);
     setEditingAgent(null);
     setEditingSkill(null);
-    setHostDraft({
-      prompt: settings.hostPrompt?.trim() ?? "",
-      mcps: settings.hostMcps ?? [...DEFAULT_HOST_MCPS],
-      skills: settings.hostSkills ?? [],
-    });
+    {
+      const saved = settings.hostPrompt?.trim() ?? "";
+      const prompt = !saved
+        ? HOST_DEFAULT_PROMPT
+        : saved.startsWith(`You are ${BOT_NAME}`)
+          ? saved
+          : `${HOST_DEFAULT_PROMPT}\n\n${saved}`;
+      setHostDraft({
+        prompt,
+        mcps: settings.hostMcps ?? [],
+        skills: settings.hostSkills?.length ? settings.hostSkills : [...DEFAULT_HOST_SKILLS],
+      });
+    }
     setReady(true);
     setAiOpen(withAi);
   };
@@ -358,8 +344,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
             if (reply.draft) {
               setHostDraft({
                 prompt: reply.draft.prompt ?? hostDraft?.prompt ?? "",
-                mcps: reply.draft.mcps ?? hostDraft?.mcps ?? [...DEFAULT_HOST_MCPS],
-                skills: reply.draft.skills ?? hostDraft?.skills ?? [],
+                mcps: reply.draft.mcps ?? hostDraft?.mcps ?? [],
+                skills: reply.draft.skills ?? hostDraft?.skills ?? [...DEFAULT_HOST_SKILLS],
               });
             }
           }),
@@ -406,9 +392,9 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
 
   const saveHost = () => {
     const prompt = hostDraft?.prompt.trim() ?? "";
-    const mcps = hostDraft?.mcps ?? [...DEFAULT_HOST_MCPS];
-    const hostSkills = hostDraft?.skills ?? [];
-    void save({ hostPrompt: prompt, hostMcps: mcps, hostSkills }, "Host agent saved").then(() => {
+    const mcps = hostDraft?.mcps ?? [];
+    const hostSkills = hostDraft?.skills?.length ? hostDraft.skills : [...DEFAULT_HOST_SKILLS];
+    void save({ hostPrompt: prompt || null, hostMcps: mcps, hostSkills }, "Host agent saved").then(() => {
       notify("Host agent updated");
       reset("agent");
     });
@@ -533,14 +519,16 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         : INTRO[kind];
 
   const hasDraft = Boolean(hostDraft || agentDraft || skillDraft);
-  const hostTools = settings.hostMcps ?? [...DEFAULT_HOST_MCPS];
+  const hostTools = settings.hostMcps?.length
+    ? settings.hostMcps
+    : ["all tools", ...(settings.hostSkills?.length ? settings.hostSkills : DEFAULT_HOST_SKILLS).map((s) => `skill:${s}`)];
   const focusForm = hasDraft;
 
   const toggleList = (list: string[] | undefined, id: string) =>
     (list ?? []).includes(id) ? (list ?? []).filter((x) => x !== id) : [...(list ?? []), id];
 
   return (
-    <section className="create-ai" aria-label="Agents and skills">
+    <section className={`create-ai${focusForm ? " create-ai--editing" : ""}`} aria-label="Agents and skills">
       <div className="create-ai-top">
         <div className="create-ai-kinds" role="tablist" aria-label="What to manage">
           <button type="button" role="tab" aria-selected={kind === "agent"} className={kind === "agent" ? "on" : ""} onClick={() => reset("agent")}>
@@ -562,6 +550,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         )}
       </div>
 
+      <div className="create-ai-workspace">
       <section className="create-ai-catalog" aria-label={kind === "agent" ? "Agents" : "Skills"}>
         {kind === "skill" && (
           <form
@@ -599,7 +588,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         )}
         {kind === "agent" ? (
           <>
-            {!focusForm && (
+            {!focusForm && STARTERS.length > 0 && (
               <div className="create-ai-starters" aria-label="Starters">
                 <h3 className="muted small">Starters</h3>
                 <p className="muted small create-ai-starters-hint">
@@ -740,8 +729,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         </section>
 
       {(focusForm || aiOpen) && (
-        <div className={`create-ai-layout${focusForm ? " focus-form" : ""}`}>
-          <section className="create-ai-draft" aria-label="Editor">
+        <div className="create-ai-layout">
+          <section className={`create-ai-draft${aiOpen ? " with-ai" : ""}`} aria-label="Editor">
             <div className="create-ai-draft-head">
               <div>
                 <h3>
@@ -758,7 +747,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                             : "Draft"}
                 </h3>
                 <p className="muted small create-ai-draft-sub">
-                  {editingHost ? "Main agent — cannot be deleted" : ready ? "Ready to save" : "Fill the form or use AI →"}
+                  {editingHost ? "Main agent — cannot be deleted" : ready ? "Ready to save" : "Fill the form or use AI"}
                 </p>
               </div>
               {focusForm && (
@@ -776,17 +765,13 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   saveHost();
                 }}
               >
-                <details className="create-ai-builtin">
-                  <summary>Built-in system prompt</summary>
-                  <pre className="create-ai-builtin-body">{HOST_BUILTIN_PROMPT}</pre>
-                </details>
                 <label className="field">
-                  <span>Extra system prompt</span>
+                  <span>System prompt</span>
                   <textarea
-                    rows={5}
+                    rows={8}
                     value={hostDraft.prompt}
                     onChange={(e) => setHostDraft({ ...hostDraft, prompt: e.target.value })}
-                    placeholder="Tone, domain rules, never-dos…"
+                    placeholder={HOST_DEFAULT_PROMPT}
                     autoFocus
                   />
                 </label>
@@ -809,7 +794,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   />
                   <span className="muted small">None selected = all tools.</span>
                 </fieldset>
-                <div className="create-ai-sticky">
+                <div className="create-ai-actions-bar">
                   <button className="btn primary">Save host</button>
                   <button type="button" className="btn" onClick={() => reset("agent")}>
                     Cancel
@@ -824,8 +809,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   saveAgent();
                 }}
               >
-                <div className="row">
-                  <label className="field narrow">
+                <div className="row create-ai-pair">
+                  <label className="field">
                     <span>Name</span>
                     <input
                       className="mono"
@@ -836,7 +821,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                       autoFocus={!editingAgent}
                     />
                   </label>
-                  <label className="field grow">
+                  <label className="field">
                     <span>Model (optional)</span>
                     <input
                       className="mono"
@@ -846,8 +831,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                     />
                   </label>
                 </div>
-                <div className="row">
-                  <label className="field grow">
+                <div className="row create-ai-pair">
+                  <label className="field">
                     <span>Listens</span>
                     <select
                       value={agentDraft.listen ?? "mentions"}
@@ -857,7 +842,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                       <option value="all">Every message</option>
                     </select>
                   </label>
-                  <label className="field grow">
+                  <label className="field">
                     <span>Answers</span>
                     <select
                       value={agentDraft.respondTo ?? "anyone"}
@@ -871,7 +856,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                 <label className="field">
                   <span>Role</span>
                   <textarea
-                    rows={5}
+                    rows={4}
                     value={agentDraft.prompt}
                     onChange={(e) => setAgentDraft({ ...agentDraft, prompt: e.target.value })}
                     required
@@ -883,22 +868,24 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   value={agentDraft.avatar}
                   onChange={(avatar) => setAgentDraft({ ...agentDraft, avatar })}
                 />
-                {skillOpts.length > 0 && (
+                <div className="create-ai-form-split">
+                  {skillOpts.length > 0 && (
+                    <fieldset className="field">
+                      <legend>Skills</legend>
+                      <ToggleChips
+                        options={skillOpts}
+                        selected={agentDraft.skills ?? []}
+                        onToggle={(id) => setAgentDraft({ ...agentDraft, skills: toggleList(agentDraft.skills, id) })}
+                      />
+                      <span className="muted small">Packs bring their own tools automatically.</span>
+                    </fieldset>
+                  )}
                   <fieldset className="field">
-                    <legend>Skills</legend>
-                    <ToggleChips
-                      options={skillOpts}
-                      selected={agentDraft.skills ?? []}
-                      onToggle={(id) => setAgentDraft({ ...agentDraft, skills: toggleList(agentDraft.skills, id) })}
-                    />
-                    <span className="muted small">Packs bring their own tools automatically.</span>
+                    <legend>Extra tools</legend>
+                    <ToggleChips options={toolOpts} selected={agentDraft.mcps ?? []} onToggle={toggleAgentTools} />
+                    <span className="muted small">None selected = every tool. Turn on “Ask other agents” to pick who they may ask.</span>
                   </fieldset>
-                )}
-                <fieldset className="field">
-                  <legend>Extra tools</legend>
-                  <ToggleChips options={toolOpts} selected={agentDraft.mcps ?? []} onToggle={toggleAgentTools} />
-                  <span className="muted small">None selected = every tool. Turn on “Ask other agents” to pick who they may ask.</span>
-                </fieldset>
+                </div>
                 {canAsk && (
                   <fieldset className="field">
                     <legend>Can ask</legend>
@@ -914,7 +901,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                     <span className="muted small">None selected = any other agent.</span>
                   </fieldset>
                 )}
-                <div className="create-ai-sticky">
+                <div className="create-ai-actions-bar">
                   <button className="btn primary" disabled={!agentDraft.name.trim() || !agentDraft.prompt.trim()}>
                     {editingAgent ? "Save changes" : "Save agent"}
                   </button>
@@ -1119,7 +1106,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                     </button>
                   </div>
                 </fieldset>
-                <div className="create-ai-sticky">
+                <div className="create-ai-actions-bar">
                   <button className="btn primary" disabled={!skillDraft.name.trim() || !skillDraft.body.trim()}>
                     {editingSkill ? "Save changes" : "Save skill"}
                   </button>
@@ -1131,89 +1118,71 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
             ) : (
               <p className="empty">Pick an agent above, or start a new one.</p>
             )}
-          </section>
 
-          {aiOpen && (
-            <section className="create-ai-chat" aria-label="Refine with AI">
-              <div className="create-ai-chat-head">
-                <h3>{editingSkill || editingAgent || editingHost ? "Edit with AI" : "Create with AI"}</h3>
-                <p className="muted small">
-                  {editingSkill || editingAgent || editingHost
-                    ? "Say what to change — the form updates, then Save."
-                    : "Chat builds the draft — then Save."}
-                </p>
-              </div>
-              <div className="create-ai-thread">
-                <div className="create-ai-msg assistant">
-                  <p>{intro}</p>
-                </div>
-                {messages.map((m, i) => (
-                  <div key={`${m.role}-${i}`} className={`create-ai-msg ${m.role}`}>
-                    <span className="create-ai-role">{m.role === "user" ? "You" : "AI"}</span>
-                    <p>{m.content}</p>
-                  </div>
-                ))}
-                {busy && (
-                  <div className="create-ai-msg assistant muted">
-                    <p>Thinking…</p>
+            {aiOpen && (
+              <div className="create-ai-chat create-ai-chat--dock" aria-label="Refine with AI">
+                {(messages.length > 0 || busy) && (
+                  <div className="create-ai-thread">
+                    {messages.map((m, i) => (
+                      <div key={`${m.role}-${i}`} className={`create-ai-msg ${m.role}`}>
+                        <span className="create-ai-role">{m.role === "user" ? "You" : "AI"}</span>
+                        <p>{m.content}</p>
+                      </div>
+                    ))}
+                    {busy && (
+                      <div className="create-ai-msg assistant muted">
+                        <p>Thinking…</p>
+                      </div>
+                    )}
+                    <div ref={bottom} />
                   </div>
                 )}
-                <div ref={bottom} />
-              </div>
-              <form
-                className="create-ai-composer"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  send();
-                }}
-              >
-                <textarea
-                  rows={2}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
+                <form
+                  className="create-ai-composer"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    send();
                   }}
-                  placeholder={
-                    editingHost
-                      ? "e.g. prefer Spanish, always offer to code…"
-                      : kind === "agent"
-                        ? editingAgent
-                          ? "e.g. make it shorter, add Drive, only answer people…"
-                          : "e.g. B2B sales agent that quotes from Drive…"
-                        : editingSkill
-                          ? "e.g. add a references/sla.md, tighten never-dos, need a JS script…"
-                          : "e.g. pricing skill with discount rules…"
-                  }
-                  disabled={busy}
-                  aria-label="Message"
-                />
-                <div className="row">
-                  <button className="btn primary" disabled={!input.trim() || busy}>
-                    {busy ? "…" : "Send"}
-                  </button>
-                  {messages.length > 0 && (
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy}
-                      onClick={() => {
-                        setMessages([]);
-                        setInput("");
-                      }}
-                    >
-                      Clear chat
+                >
+                  <textarea
+                    rows={2}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        send();
+                      }
+                    }}
+                    placeholder={intro}
+                    disabled={busy}
+                    aria-label="Message"
+                  />
+                  <div className="create-ai-composer-actions">
+                    <button className="btn primary" disabled={!input.trim() || busy}>
+                      {busy ? "…" : "Send"}
                     </button>
-                  )}
-                </div>
-              </form>
-            </section>
-          )}
+                    {messages.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={busy}
+                        onClick={() => {
+                          setMessages([]);
+                          setInput("");
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </form>
+              </div>
+            )}
+          </section>
         </div>
       )}
+      </div>
     </section>
   );
 }

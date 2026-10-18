@@ -23,16 +23,14 @@ export interface Settings {
   mcpServers?: McpServer[];
   personas: Persona[];
   templates?: PersonaTemplate[];
-  /** Extra system prompt for the host (main Pi agent). */
   hostPrompt?: string | null;
-  /** Tool groups for the host. Omit = coding+switchboard+engram. Empty = every tool. */
   hostMcps?: string[] | null;
-  /** Skill packs attached to the host. */
   hostSkills?: string[];
 }
 
-/** Default host tools when `hostMcps` is unset. */
 export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "agents", "google-drive"];
+
+export const DEFAULT_HOST_SKILLS = ["artifacts"];
 
 export interface PersonaAvatar {
   color: string;

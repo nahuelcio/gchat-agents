@@ -22,7 +22,6 @@ const defaultModel = process.env.PI_MODEL ?? "";
 const threadsFile = join(dataDir, "harness-threads.json");
 const SECRET = /KEY|TOKEN|SECRET|PASSWORD|SERVICE_ACCOUNT|CREDENTIAL/i;
 
-// Prefer the workspace `ado` shim from `@cioffinahuel/opencode-ado` over a global one.
 const localBin = join(process.cwd(), "node_modules", ".bin");
 if (existsSync(localBin)) {
   const sep = process.platform === "win32" ? ";" : ":";
@@ -30,7 +29,6 @@ if (existsSync(localBin)) {
 }
 
 function loadAdoPat() {
-  // Prefer an already-exported AZURE_DEVOPS_PAT (shell / Azure DevOps settings).
   if (process.env.AZURE_DEVOPS_PAT?.trim()) return;
   try {
     const file = join(dataDir, "ado.json");
@@ -38,7 +36,7 @@ function loadAdoPat() {
     const stored = JSON.parse(readFileSync(file, "utf8")) as { pat?: string };
     if (stored.pat?.trim()) process.env.AZURE_DEVOPS_PAT = stored.pat.trim();
   } catch {
-    /* ignore malformed ado.json */
+    /* ignore */
   }
 }
 loadAdoPat();

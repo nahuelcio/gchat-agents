@@ -513,7 +513,6 @@ struct AdoConfigBody {
 async fn post_ado_config(State(state): State<Arc<AppState>>, Json(body): Json<AdoConfigBody>) -> Response {
     let org = body.org.unwrap_or_default();
     let mut pat = body.pat.unwrap_or_default();
-    // Empty PAT: keep previous stored token, else AZURE_DEVOPS_PAT from the environment.
     if pat.trim().is_empty() {
         if let Some(prev) = crate::integrations::load_stored_ado(&state.data_dir) {
             pat = prev.pat;

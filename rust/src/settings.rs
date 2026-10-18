@@ -117,13 +117,10 @@ pub struct Settings {
     pub personas: Vec<Persona>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<PersonaTemplate>,
-    /// Extra system prompt for the host (Switchboard / Pi) — appended to the built-in host preamble.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_prompt: Option<String>,
-    /// Tool groups for the host. `None` = default (coding, switchboard, engram). Empty = every tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_mcps: Option<Vec<String>>,
-    /// Skill packs attached to the host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub host_skills: Vec<String>,
     #[serde(default)]

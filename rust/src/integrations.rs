@@ -39,7 +39,6 @@ pub struct DetectedAdo {
     pub projects: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
-    /// "settings" (saved in Switchboard) or "cli" (ado init / env).
     pub source: String,
 }
 
@@ -56,7 +55,6 @@ pub fn ado_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("ado.json")
 }
 
-/// PAT from the process environment (Settings / agents prefer this when set).
 pub fn env_ado_pat() -> Option<String> {
     std::env::var("AZURE_DEVOPS_PAT")
         .ok()
@@ -153,7 +151,6 @@ fn ado_cli_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Mirror Settings → `@cioffinahuel/opencode-ado` so `ado wi …` / Pi tools work without a separate init.
 fn sync_ado_cli_config(org: &str, pat: &str, project: Option<&str>) -> Result<(), String> {
     let home = ado_cli_home().ok_or_else(|| "home directory not found".to_string())?;
     let cli_dir = home.join(".azure-devops-cli");
@@ -176,7 +173,6 @@ fn sync_ado_cli_config(org: &str, pat: &str, project: Option<&str>) -> Result<()
 
     let oc_dir = home.join(".config").join("opencode");
     std::fs::create_dir_all(&oc_dir).map_err(|e| e.to_string())?;
-    // CLI `ado` prefers ~/.config/opencode/ado.json; Pi falls back to ~/.azure-devops-cli/config.json
     for path in [oc_dir.join("ado.json"), cli_dir.join("config.json")] {
         upsert_switchboard_ado_profile(&path, &profile)?;
     }
@@ -193,7 +189,6 @@ fn upsert_switchboard_ado_profile(path: &Path, profile: &serde_json::Value) -> R
     if !value.is_object() {
         value = serde_json::json!({});
     }
-    // Unwrap nested `{ "ado": { … } }` (Pi settings shape) into a flat profiles doc.
     if value.get("profiles").is_none() {
         if let Some(ado) = value.get("ado").cloned() {
             if ado.get("profiles").is_some() {
@@ -258,7 +253,6 @@ fn clear_ado_cli_switchboard_profile() -> Result<(), String> {
     Ok(())
 }
 
-/// Prefer Switchboard-saved credentials; fall back to `ado` CLI / env.
 pub fn resolve_ado(data_dir: &Path) -> Option<DetectedAdo> {
     load_stored_ado(data_dir).or_else(detect_ado_from_env)
 }
@@ -464,7 +458,6 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    /// Env-based CLI home override is process-global — serialize tests that touch it.
     static ADO_CLI_HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -491,7 +484,6 @@ mod tests {
         let _guard = ADO_CLI_HOME_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         let cli_home = tempdir().unwrap();
-        // Isolate CLI mirror so the test never writes the developer's real ~/.config
         unsafe { std::env::set_var("SWITCHBOARD_ADO_CLI_HOME", cli_home.path()) };
 
         let oc = cli_home.path().join(".config/opencode");
@@ -515,7 +507,6 @@ mod tests {
             "ui-pat"
         );
 
-        // resolve prefers data_dir ado.json over any CLI profile under home
         let resolved = resolve_ado(dir.path()).unwrap();
         assert_eq!(resolved.org, "from-ui");
         assert_eq!(resolved.pat, "ui-pat");
