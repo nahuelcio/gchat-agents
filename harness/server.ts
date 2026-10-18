@@ -137,7 +137,9 @@ async function turn(body: TurnBody) {
   const submission = await conv.submit({ type: "input", content: body.text, requestId: body.requestId }, ctx);
   const settled = await submission.wait(ctx);
   if (settled.status !== "done" || settled.type !== "input") {
-    return { conversationId: String(conv.id), status: settled.status, error: (settled as { reason?: unknown }).reason ?? "unanswered" };
+    const { reason, detail } = settled as { reason?: unknown; detail?: unknown };
+    const why = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : "";
+    return { conversationId: String(conv.id), status: settled.status, error: [reason ?? "unanswered", why].filter(Boolean).join(": ") };
   }
   return { conversationId: String(conv.id), status: "done", reply: await answerText(conv, settled.answer) };
 }
