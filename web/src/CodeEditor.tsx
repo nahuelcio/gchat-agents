@@ -3,11 +3,13 @@ import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
+import { StreamLanguage } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
 import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 
-export type EditorLang = "markdown" | "html" | "javascript" | "typescript" | "python" | "json" | "text";
+export type EditorLang = "markdown" | "html" | "javascript" | "typescript" | "python" | "json" | "shell" | "text";
 
 export function langFromPath(path: string): EditorLang {
   const p = path.replace(/\\/g, "/").toLowerCase();
@@ -16,6 +18,7 @@ export function langFromPath(path: string): EditorLang {
   if (p.endsWith(".json")) return "json";
   if (p.endsWith(".ts") || p.endsWith(".tsx")) return "typescript";
   if (p.endsWith(".js") || p.endsWith(".jsx") || p.endsWith(".mjs") || p.endsWith(".cjs")) return "javascript";
+  if (p.endsWith(".sh") || p.endsWith(".bash") || p.endsWith(".zsh")) return "shell";
   if (p.endsWith(".md") || p.endsWith(".markdown") || p.endsWith("skill.md")) return "markdown";
   return "text";
 }
@@ -35,6 +38,8 @@ function extensionsFor(lang: EditorLang): Extension[] {
       return [javascript({ jsx: true }), wrap];
     case "markdown":
       return [markdown(), wrap];
+    case "shell":
+      return [StreamLanguage.define(shell), wrap];
     default:
       return [wrap];
   }

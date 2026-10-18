@@ -785,7 +785,18 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 }
 
 .create-ai-item-face { flex: none; display: grid; place-items: center; }
-.create-ai-install { margin-bottom: 0; }
+.create-ai-install {
+  margin-bottom: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
+}
+.create-ai-install input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.create-ai-install .btn { flex: none; }
 .create-ai-skill-browse {
   display: flex;
   flex-direction: column;
@@ -795,6 +806,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
   border: 2px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--soft);
+  min-width: 0;
 }
 .create-ai-skill-search-row {
   display: grid;
@@ -802,6 +814,13 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
   gap: 8px;
   min-width: 0;
 }
+/* Narrow catalog while editing — stack so placeholders aren't clipped */
+.create-ai--editing .create-ai-skill-search-row { grid-template-columns: 1fr; }
+.create-ai--editing .create-ai-install {
+  flex-direction: column;
+  align-items: stretch;
+}
+.create-ai--editing .create-ai-install .btn { width: 100%; }
 @media (max-width: 640px) {
   .create-ai-skill-search-row { grid-template-columns: 1fr; }
 }
@@ -814,6 +833,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .create-ai-skill-search input {
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
 }
 .create-ai-search-status { margin: 0; }
 .create-ai-search-hits {
