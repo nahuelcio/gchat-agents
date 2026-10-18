@@ -133,14 +133,14 @@ export function Overview({ settings, notify }: ViewProps) {
                   <strong>Schedule a job</strong>
                   {hasJobs && <span className="pill ok">Done</span>}
                 </div>
-                <p>Weekly close, incident summary, or standup — runs without anyone typing.</p>
+                <p>My board (Dev/QA), repo digest, or Friday ship check — runs without anyone typing.</p>
                 {!hasJobs && (
                   <div className="row setup-actions">
-                    <a className="btn small primary" href="#schedules?recipe=weekly-close">
-                      Weekly close
+                    <a className="btn small primary" href="#schedules?recipe=my-board">
+                      My board
                     </a>
-                    <a className="btn small primary" href="#schedules?recipe=incidents">
-                      Incidents
+                    <a className="btn small primary" href="#schedules?recipe=repo-digest">
+                      Repo digest
                     </a>
                     <a className="btn small" href="#schedules?new=1">
                       New job

@@ -16,26 +16,63 @@ const PRESETS = [
   { label: "Every day at 02:00", cron: "0 2 * * *" },
 ];
 
-const RECIPES: { id: string; label: string; cron: string; prompt: string }[] = [
+const RECIPES: {
+  id: string;
+  label: string;
+  blurb: string;
+  cron: string;
+  prompt: string;
+  /** Prefill the first configured repo when applying. */
+  preferRepo?: boolean;
+}[] = [
   {
-    id: "weekly-close",
-    label: "Weekly close",
-    cron: "0 9 * * 1",
-    prompt:
-      "Weekly finance close: use only amounts from the week (do not invent numbers). If the finanzas skill and Drive are available, create a closing .xlsx; if data is missing, list what is missing. Summarize sheets/rows or key points.",
-  },
-  {
-    id: "incidents",
-    label: "Incident summary",
-    cron: "0 17 * * 1-5",
-    prompt:
-      "End-of-day incident summary (support tone): open items, impact, workaround if any, and a clear next step. Use only what the chat or tools confirm; do not invent IDs. Keep it short.",
-  },
-  {
-    id: "standup",
-    label: "Standup commits",
+    id: "my-board",
+    label: "My board (Dev / QA)",
+    blurb: "Weekday AM: your ADO tickets In Dev and In QA via @cioffinahuel/opencode-ado.",
     cron: "0 9 * * 1-5",
-    prompt: "Summarize yesterday's commits and list open PRs. Call out blockers and open questions.",
+    prompt: [
+      "Use the shell (coding tools). Do NOT invent work items.",
+      "Prerequisite: Azure DevOps saved in Switchboard Settings (or `ado` already configured). The `ado` CLI is on PATH via `@cioffinahuel/opencode-ado`.",
+      "Run:",
+      `  ado wi list --assigned @Me --state "In Dev"`,
+      `  ado wi list --assigned @Me --state "In QA"`,
+      "If a state name fails, retry once with the board's real labels (still Dev/QA-like) and say which names worked.",
+      "If the CLI errors (no PAT / not configured), print the error and tell the user to save org+PAT in Settings → Repos.",
+      "Reply in Spanish, short:",
+      "## In Dev — con qué seguís",
+      "- one bullet per item: #id title (link). If none: (vacío)",
+      "## In QA — qué estuvo / está en prueba",
+      "- same shape",
+      "End with one line: Prioridad sugerida: … (at most one In Dev item, or nada urgente).",
+    ].join("\n"),
+  },
+  {
+    id: "repo-digest",
+    label: "Repo digest",
+    blurb: "Weekday AM: commits since yesterday, dirty tree, and concrete blockers.",
+    cron: "0 9 * * 1-5",
+    preferRepo: true,
+    prompt: [
+      "You have a git worktree for this job. Do the work with tools — do not invent commits or PR links.",
+      "1) git log --since='24 hours ago' --oneline --no-merges (and note the branch).",
+      "2) git status -sb; list dirty paths only if any.",
+      "3) If gh is available: gh pr list --state open --limit 10; otherwise say PRs unchecked.",
+      "Reply in 3 short sections: Shipped / In flight / Blockers. Max ~15 lines. No fluff.",
+    ].join("\n"),
+  },
+  {
+    id: "ship-check",
+    label: "Friday ship check",
+    blurb: "What can merge before the weekend, what is stuck, what is risky.",
+    cron: "0 16 * * 5",
+    preferRepo: true,
+    prompt: [
+      "Friday ship check on this worktree. Use git/gh tools; do not invent.",
+      "1) Current branch + git status -sb.",
+      "2) Commits on this branch not in main/master (pick the default): git log --oneline main..HEAD or master..HEAD.",
+      "3) If gh works: open PRs touching this repo and any failing checks you can see.",
+      "Reply as: Ready to merge / Needs work / Leave it (with one-line why each). Flag anything unsafe to leave over the weekend.",
+    ].join("\n"),
   },
 ];
 
@@ -85,16 +122,18 @@ export function Schedules({ settings, notify }: ViewProps) {
   const applyRecipe = (id: string) => {
     const recipe = RECIPES.find((r) => r.id === id);
     if (!recipe) return;
+    const firstRepo = Object.keys(settings.repos)[0] ?? "";
     setForm((f) => ({
       ...f,
       prompt: recipe.prompt,
       cron: recipe.cron,
       trigger: "cron",
       space: f.space || settings.allowedSpaces[0] || TEAM_ONLY,
+      repo: recipe.preferRepo ? f.repo || firstRepo : f.repo,
     }));
     setOpen(true);
     setAiDraft("");
-    notify(`Recipe: ${recipe.label} — review and create`);
+    notify(`Recipe: ${recipe.label} — review cron/repo, then create`);
   };
 
   useEffect(() => {
@@ -198,12 +237,13 @@ export function Schedules({ settings, notify }: ViewProps) {
         <section className="card schedule-recipes" aria-label="Recipes">
           <div className="card-title">
             <h2>Recipes</h2>
-            <p className="muted small">Prefill a job — review cron and prompt, then create.</p>
+            <p className="muted small">Starting points with a real prompt — tweak cron/repo, then create.</p>
           </div>
-          <div className="chips">
+          <div className="recipe-grid">
             {RECIPES.map((r) => (
-              <button key={r.id} type="button" className="chip" onClick={() => applyRecipe(r.id)}>
-                {r.label}
+              <button key={r.id} type="button" className="recipe" onClick={() => applyRecipe(r.id)}>
+                <strong>{r.label}</strong>
+                <span className="muted small">{r.blurb}</span>
               </button>
             ))}
           </div>

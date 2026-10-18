@@ -35,17 +35,33 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
     };
     let root = script.parent().and_then(|p| p.parent()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let data_dir = absolute(data_dir).unwrap_or_else(|| data_dir.to_path_buf());
+    let bin_dir = root.join("node_modules").join(".bin");
+    let path_with_bins = {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut joined = bin_dir.into_os_string();
+        if !existing.is_empty() {
+            joined.push(sep);
+            joined.push(existing);
+        }
+        joined
+    };
     tokio::spawn(async move {
         loop {
             let started = std::time::Instant::now();
-            let child = Command::new(crate::driver::spawn::resolve_bin("node"))
-                .args(["--experimental-strip-types", "--no-warnings", &script.to_string_lossy()])
+            let mut cmd = Command::new(crate::driver::spawn::resolve_bin("node"));
+            cmd.args(["--experimental-strip-types", "--no-warnings", &script.to_string_lossy()])
                 .current_dir(&root)
                 .env("DATA_DIR", &data_dir)
                 .env("PI_PORT", port().to_string())
                 .env("SWITCHBOARD_ADMIN_URL", format!("http://127.0.0.1:{admin_port}"))
                 .env("PI_PARENT_PIPE", "1")
                 .env("SWITCHBOARD_BIN", std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "switchboard".into()))
+                .env("PATH", &path_with_bins);
+            if let Some(pat) = crate::integrations::resolve_ado(&data_dir).map(|a| a.pat) {
+                cmd.env("AZURE_DEVOPS_PAT", pat);
+            }
+            let child = cmd
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())

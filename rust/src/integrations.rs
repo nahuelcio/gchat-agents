@@ -100,6 +100,9 @@ pub async fn save_ado(data_dir: &Path, org: &str, pat: &str, default_project: Op
     crate::atomic::write_atomic(&ado_config_path(data_dir), &raw)
         .await
         .map_err(|e| e.to_string())?;
+    if let Err(err) = sync_ado_cli_config(org, pat, default_project.as_deref()) {
+        tracing::warn!("could not sync @cioffinahuel/opencode-ado CLI config: {err}");
+    }
     Ok(DetectedAdo {
         org: org.into(),
         pat: pat.into(),
@@ -114,6 +117,128 @@ pub async fn clear_ado(data_dir: &Path) -> Result<(), String> {
     let path = ado_config_path(data_dir);
     if path.exists() {
         tokio::fs::remove_file(&path).await.map_err(|e| e.to_string())?;
+    }
+    if let Err(err) = clear_ado_cli_switchboard_profile() {
+        tracing::warn!("could not clear @cioffinahuel/opencode-ado CLI profile: {err}");
+    }
+    Ok(())
+}
+
+const SWITCHBOARD_ADO_PROFILE: &str = "switchboard";
+
+fn ado_cli_home() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SWITCHBOARD_ADO_CLI_HOME") {
+        let path = PathBuf::from(p);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+/// Mirror Settings → `@cioffinahuel/opencode-ado` so `ado wi …` / Pi tools work without a separate init.
+fn sync_ado_cli_config(org: &str, pat: &str, project: Option<&str>) -> Result<(), String> {
+    let home = ado_cli_home().ok_or_else(|| "home directory not found".to_string())?;
+    let cli_dir = home.join(".azure-devops-cli");
+    std::fs::create_dir_all(&cli_dir).map_err(|e| e.to_string())?;
+    std::fs::write(cli_dir.join("pat"), pat.trim()).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(cli_dir.join("active-profile"), SWITCHBOARD_ADO_PROFILE);
+
+    let org_url = if org.starts_with("http://") || org.starts_with("https://") {
+        org.trim_end_matches('/').to_string()
+    } else {
+        format!("https://dev.azure.com/{org}")
+    };
+    let profile = serde_json::json!({
+        "org": org_url,
+        "project": project.unwrap_or(""),
+        "patEnvVar": "AZURE_DEVOPS_PAT",
+        "repos": [],
+        "default": true,
+    });
+
+    let oc_dir = home.join(".config").join("opencode");
+    std::fs::create_dir_all(&oc_dir).map_err(|e| e.to_string())?;
+    // CLI `ado` prefers ~/.config/opencode/ado.json; Pi falls back to ~/.azure-devops-cli/config.json
+    for path in [oc_dir.join("ado.json"), cli_dir.join("config.json")] {
+        upsert_switchboard_ado_profile(&path, &profile)?;
+    }
+    Ok(())
+}
+
+fn upsert_switchboard_ado_profile(path: &Path, profile: &serde_json::Value) -> Result<(), String> {
+    let mut value = if path.exists() {
+        let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    // Unwrap nested `{ "ado": { … } }` (Pi settings shape) into a flat profiles doc.
+    if value.get("profiles").is_none() {
+        if let Some(ado) = value.get("ado").cloned() {
+            if ado.get("profiles").is_some() {
+                value = ado;
+            }
+        }
+    }
+    let obj = value.as_object_mut().ok_or_else(|| "invalid ado config".to_string())?;
+    let profiles = obj
+        .entry("profiles")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "profiles must be an object".to_string())?;
+    for p in profiles.values_mut() {
+        if let Some(o) = p.as_object_mut() {
+            o.insert("default".into(), serde_json::json!(false));
+        }
+    }
+    profiles.insert(SWITCHBOARD_ADO_PROFILE.into(), profile.clone());
+    obj.insert("defaultProfile".into(), serde_json::json!(SWITCHBOARD_ADO_PROFILE));
+    let pretty = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    std::fs::write(path, pretty).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn clear_ado_cli_switchboard_profile() -> Result<(), String> {
+    let Some(home) = ado_cli_home() else {
+        return Ok(());
+    };
+    for path in [
+        home.join(".azure-devops-cli").join("config.json"),
+        home.join(".config").join("opencode").join("ado.json"),
+    ] {
+        if !path.exists() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let was_default = value.get("defaultProfile").and_then(|d| d.as_str()) == Some(SWITCHBOARD_ADO_PROFILE);
+        let Some(profiles) = value.get_mut("profiles").and_then(|p| p.as_object_mut()) else {
+            continue;
+        };
+        profiles.remove(SWITCHBOARD_ADO_PROFILE);
+        if profiles.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        if was_default {
+            let next = profiles.keys().next().cloned();
+            match next {
+                Some(name) => value["defaultProfile"] = serde_json::json!(name),
+                None => {
+                    value.as_object_mut().map(|o| o.remove("defaultProfile"));
+                }
+            }
+        }
+        let pretty = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+        std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -321,7 +446,11 @@ pub fn detect_ado_from_env() -> Option<DetectedAdo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    /// Env-based CLI home override is process-global — serialize tests that touch it.
+    static ADO_CLI_HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn detects_ado_config() {
@@ -343,21 +472,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stored_ado_beats_cli() {
+    async fn stored_ado_beats_cli_and_mirrors_opencode_ado() {
+        let _guard = ADO_CLI_HOME_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
-        save_ado(dir.path(), "from-ui", "ui-pat", Some("P1")).await.unwrap();
-        let cfg = dir.path().join(".config/opencode");
-        std::fs::create_dir_all(&cfg).unwrap();
+        let cli_home = tempdir().unwrap();
+        // Isolate CLI mirror so the test never writes the developer's real ~/.config
+        unsafe { std::env::set_var("SWITCHBOARD_ADO_CLI_HOME", cli_home.path()) };
+
+        let oc = cli_home.path().join(".config/opencode");
+        std::fs::create_dir_all(&oc).unwrap();
         std::fs::write(
-            cfg.join("ado.json"),
-            r#"{"defaultProfile":"x","profiles":{"x":{"org":"cli-org","project":"cli","pat":"cli-pat"}}}"#,
+            oc.join("ado.json"),
+            r#"{"defaultProfile":"work","profiles":{"work":{"org":"https://dev.azure.com/keep","project":"K","patEnvVar":"AZURE_DEVOPS_PAT","default":true}}}"#,
         )
         .unwrap();
-        // resolve prefers data_dir ado.json; detect_ado still sees cli under home
+
+        save_ado(dir.path(), "from-ui", "ui-pat", Some("P1")).await.unwrap();
+        let raw = std::fs::read_to_string(oc.join("ado.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(v["profiles"]["work"].is_object());
+        assert!(v["profiles"]["switchboard"].is_object());
+        assert_eq!(v["defaultProfile"], "switchboard");
+        assert_eq!(v["profiles"]["work"]["default"], false);
+        assert!(raw.contains("dev.azure.com/from-ui"));
+        assert_eq!(
+            std::fs::read_to_string(cli_home.path().join(".azure-devops-cli/pat")).unwrap(),
+            "ui-pat"
+        );
+
+        // resolve prefers data_dir ado.json over any CLI profile under home
         let resolved = resolve_ado(dir.path()).unwrap();
         assert_eq!(resolved.org, "from-ui");
         assert_eq!(resolved.pat, "ui-pat");
         assert_eq!(resolved.source, "settings");
+        unsafe { std::env::remove_var("SWITCHBOARD_ADO_CLI_HOME") };
     }
 
     #[test]

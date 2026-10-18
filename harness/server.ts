@@ -22,6 +22,25 @@ const defaultModel = process.env.PI_MODEL ?? "";
 const threadsFile = join(dataDir, "harness-threads.json");
 const SECRET = /KEY|TOKEN|SECRET|PASSWORD|SERVICE_ACCOUNT|CREDENTIAL/i;
 
+// Prefer the workspace `ado` shim from `@cioffinahuel/opencode-ado` over a global one.
+const localBin = join(process.cwd(), "node_modules", ".bin");
+if (existsSync(localBin)) {
+  const sep = process.platform === "win32" ? ";" : ":";
+  process.env.PATH = `${localBin}${sep}${process.env.PATH ?? ""}`;
+}
+
+function loadAdoPat() {
+  try {
+    const file = join(dataDir, "ado.json");
+    if (!existsSync(file)) return;
+    const stored = JSON.parse(readFileSync(file, "utf8")) as { pat?: string };
+    if (stored.pat?.trim()) process.env.AZURE_DEVOPS_PAT = stored.pat.trim();
+  } catch {
+    /* ignore malformed ado.json */
+  }
+}
+loadAdoPat();
+
 mkdirSync(dataDir, { recursive: true });
 function loadSaved(): { threads: Record<string, string>; requests: Record<string, string> } {
   try {
@@ -230,13 +249,16 @@ const registry = createRegistry();
 registry.install(CodingTools);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
 
-const shellEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET.test(k)));
 const harness = await Harness.open(
   await openNodeSqliteStorage(join(dataDir, "harness.sqlite")),
   {
     models: models(),
     registry,
-    env: (target) => new NodeExecutionEnv({ cwd: target.cwd ?? dataDir, shellEnv }),
+    env: (target) => {
+      loadAdoPat();
+      const shellEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET.test(k)));
+      return new NodeExecutionEnv({ cwd: target.cwd ?? dataDir, shellEnv });
+    },
     settings: { compaction: { reserveTokens: 16384, backgroundTokens: 32768 }, retry: { maxRetries: 3 }, stream: { timeoutMs: 180_000 } },
   },
   ctx,
@@ -295,6 +317,7 @@ function loadKeys() {
   for (const [name, value] of Object.entries(JSON.parse(readFileSync(file, "utf8")) as Record<string, string>)) {
     if (value) process.env[name] = value;
   }
+  loadAdoPat();
 }
 
 const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>();

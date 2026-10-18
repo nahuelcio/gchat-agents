@@ -906,7 +906,7 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           {ado?.connected
             ? `Azure DevOps · ${ado.org}${sourceLabel ? ` (${sourceLabel})` : ""}.`
             : ado
-              ? "Paste your org and PAT below, or run ado init on this machine."
+              ? "Paste your org and PAT below to enable clones and the ado CLI for agents."
               : " "}
         </p>
       </summary>
@@ -981,7 +981,8 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           )}
         </div>
         <span className="muted small">
-          Create a PAT in Azure DevOps → User settings → Personal access tokens (scope: Code → Read). Stored only in this machine&apos;s data folder.
+          Create a PAT in Azure DevOps → User settings → Personal access tokens (Code Read &amp; Write; Work Items Read for board recipes).
+          Saving here installs the shared <code>ado</code> profile (<code>@cioffinahuel/opencode-ado</code> ships with Switchboard) — agents can run <code>ado wi list</code> without a separate <code>ado init</code>.
         </span>
       </form>
       {entries.length === 0 && <p className="empty">No repos yet. Add one from Azure DevOps, then use /repo &lt;name&gt; in a thread.</p>}
