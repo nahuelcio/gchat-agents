@@ -481,6 +481,7 @@ mod tests {
             skills: vec![],
             mcps: vec![],
             delegates: vec![],
+            avatar: None,
         }
     }
 

@@ -29,29 +29,46 @@ pub async fn install(source: &str, dir: &Path) -> Result<Vec<String>, String> {
 
 pub async fn install_at(source: &str, dir: &Path, ends: &Endpoints) -> Result<Vec<String>, String> {
     let query = parse_source(source)?;
-    let files = if let Some(url) = &query.file_url {
-        vec![("skill".into(), get_text(url).await?)]
+    let packs = if let Some(url) = &query.file_url {
+        vec![SkillPack {
+            skill_md_path: "SKILL.md".into(),
+            skill_md: get_text(url).await?,
+            files: vec![],
+        }]
     } else {
         let tree_url = format!("{}/repos/{}/{}/git/trees/{}?recursive=1", ends.api.trim_end_matches('/'), query.owner, query.repo, query.rev);
         let tree = get_text(&tree_url).await?;
-        let paths = skill_paths(&tree, query.skill.as_deref(), query.prefix.as_deref())?;
-        let mut files = Vec::new();
-        for path in paths {
-            let url = format!("{}/{}/{}/{}/{}", ends.raw.trim_end_matches('/'), query.owner, query.repo, query.rev, path);
-            files.push((path, get_text(&url).await?));
+        let md_paths = skill_md_paths(&tree, query.skill.as_deref(), query.prefix.as_deref())?;
+        let mut packs = Vec::new();
+        for md_path in md_paths {
+            let root = md_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+            let md_url = format!("{}/{}/{}/{}/{}", ends.raw.trim_end_matches('/'), query.owner, query.repo, query.rev, md_path);
+            let skill_md = get_text(&md_url).await?;
+            let bundle_paths = bundle_paths(&tree, root);
+            let mut files = Vec::new();
+            for path in bundle_paths {
+                let url = format!("{}/{}/{}/{}/{}", ends.raw.trim_end_matches('/'), query.owner, query.repo, query.rev, path);
+                let content = get_text(&url).await?;
+                let rel = path.strip_prefix(&format!("{root}/")).unwrap_or(&path).to_string();
+                if skills::valid_file_path(&rel) {
+                    files.push(skills::SkillFile { path: rel, content });
+                }
+            }
+            packs.push(SkillPack { skill_md_path: md_path, skill_md, files });
         }
-        files
+        packs
     };
     let mut names = Vec::new();
-    for (path, raw) in files {
-        let mut skill = skills::parse(&raw);
+    for pack in packs {
+        let mut skill = skills::parse(&pack.skill_md);
         if skill.name.is_empty() {
-            skill.name = path.rsplit('/').nth(1).unwrap_or("skill").to_string();
+            skill.name = pack.skill_md_path.rsplit('/').nth(1).unwrap_or("skill").to_string();
         }
         skill.name = slug(&skill.name);
         if skill.name.is_empty() || !skills::valid_name(&skill.name) {
-            return Err(format!("could not use the skill name from {path}"));
+            return Err(format!("could not use the skill name from {}", pack.skill_md_path));
         }
+        skill.files = pack.files;
         let base = skill.name.clone();
         let mut i = 2u32;
         while names.iter().any(|n| n == &skill.name) {
@@ -64,6 +81,12 @@ pub async fn install_at(source: &str, dir: &Path, ends: &Endpoints) -> Result<Ve
         names.push(skill.name);
     }
     Ok(names)
+}
+
+struct SkillPack {
+    skill_md_path: String,
+    skill_md: String,
+    files: Vec<skills::SkillFile>,
 }
 
 fn parse_source(raw: &str) -> Result<Query, String> {
@@ -146,7 +169,7 @@ fn is_slug_piece(s: &str) -> bool {
     !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
-fn skill_paths(tree_json: &str, skill: Option<&str>, prefix: Option<&str>) -> Result<Vec<String>, String> {
+fn skill_md_paths(tree_json: &str, skill: Option<&str>, prefix: Option<&str>) -> Result<Vec<String>, String> {
     let value: serde_json::Value = serde_json::from_str(tree_json).map_err(|e| format!("GitHub tree was not JSON ({e})"))?;
     if value.get("truncated").and_then(|v| v.as_bool()) == Some(true) && skill.is_none() && prefix.is_none() {
         return Err("that repo is too big to list; pick one skill with owner/repo@skill".into());
@@ -187,6 +210,34 @@ fn skill_paths(tree_json: &str, skill: Option<&str>, prefix: Option<&str>) -> Re
         return Err(format!("that repo has {} skills; install one with owner/repo@skill-name", paths.len()));
     }
     Ok(paths)
+}
+
+/// Files under `root/` in references/, scripts/, or assets/.
+fn bundle_paths(tree_json: &str, root: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(tree_json) else {
+        return vec![];
+    };
+    let prefix = if root.is_empty() { String::new() } else { format!("{root}/") };
+    let mut paths: Vec<String> = value
+        .get("tree")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let path = n.get("path")?.as_str()?;
+            if n.get("type").and_then(|t| t.as_str()) != Some("blob") {
+                return None;
+            }
+            let rel = path.strip_prefix(&prefix).unwrap_or(path);
+            if !skills::valid_file_path(rel) {
+                return None;
+            }
+            Some(path.to_string())
+        })
+        .collect();
+    paths.sort();
+    paths.truncate(40);
+    paths
 }
 
 fn slug(name: &str) -> String {
@@ -241,8 +292,16 @@ mod tests {
     async fn installs_one_skill_from_a_listed_tree() {
         let dir = tempfile::tempdir().unwrap();
         let base = mock(&[
-            ("/repos/acme/pack/git/trees/HEAD", r#"{"truncated":false,"tree":[{"path":"skills/quotes/SKILL.md","type":"blob"},{"path":"README.md","type":"blob"}]}"#),
-            ("/acme/pack/HEAD/skills/quotes/SKILL.md", "---\nname: Quotes\ndescription: Short lines\n---\n\nBe brief.\n"),
+            (
+                "/repos/acme/pack/git/trees/HEAD",
+                r#"{"truncated":false,"tree":[
+                  {"path":"skills/quotes/SKILL.md","type":"blob"},
+                  {"path":"skills/quotes/references/tone.md","type":"blob"},
+                  {"path":"README.md","type":"blob"}
+                ]}"#,
+            ),
+            ("/acme/pack/HEAD/skills/quotes/SKILL.md", "---\nname: Quotes\ndescription: Short lines\n---\n\nBe brief. See references/tone.md.\n"),
+            ("/acme/pack/HEAD/skills/quotes/references/tone.md", "Stay short.\n"),
         ])
         .await;
         let names = install_at("acme/pack@quotes", dir.path(), &Endpoints { api: base.clone(), raw: base }).await.unwrap();
@@ -250,6 +309,9 @@ mod tests {
         let saved = skills::load_from(dir.path(), "quotes").unwrap();
         assert_eq!(saved.description, "Short lines");
         assert!(saved.body.contains("Be brief."));
+        assert_eq!(saved.files.len(), 1);
+        assert_eq!(saved.files[0].path, "references/tone.md");
+        assert!(saved.files[0].content.contains("Stay short"));
     }
 
     async fn mock(routes: &[(&str, &str)]) -> String {

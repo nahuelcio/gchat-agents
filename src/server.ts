@@ -13,8 +13,8 @@ export interface ShareOptions {
   token: ShareToken;
   webDir?: string;
   agents: () => Promise<DetectedAgent[]>;
-  /** Mention handles guests can @ in the composer (names only). */
-  personas?: () => { name: string }[];
+  /** Mention handles guests can @ in the composer (names + optional avatar). */
+  personas?: () => { name: string; avatar?: { color: string; shape: string; expression: string } }[];
   transcripts: TranscriptStore;
 }
 
@@ -68,7 +68,7 @@ async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string
     return;
   }
   if (req.method === "GET" && url === "/play/api/personas") {
-    send(res, 200, (share.personas?.() ?? []).map(({ name }) => ({ name })));
+    send(res, 200, (share.personas?.() ?? []).map(({ name, avatar }) => ({ name, ...(avatar ? { avatar } : {}) })));
     return;
   }
   if (req.method === "GET" && url === "/play/api/thread") {

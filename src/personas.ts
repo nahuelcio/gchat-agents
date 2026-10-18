@@ -4,6 +4,12 @@ import type { RoomEntry, RoomMember } from "./store.js";
 export const BOT_NAME = "Switchi";
 
 /** Named agents (@ventas, @dev…) that live inside a chat thread, each with its own session. */
+export interface PersonaAvatar {
+  color: string;
+  shape: "round" | "soft" | "tall" | "bean";
+  expression: "idle" | "wink" | "happy" | "sleepy" | "curious";
+}
+
 export interface Persona {
   name: string;
   prompt: string;
@@ -11,6 +17,7 @@ export interface Persona {
   model?: string;
   listen?: "mentions" | "all";
   respondTo?: "anyone" | "people";
+  avatar?: PersonaAvatar;
 }
 
 /** What a room-mode agent answers when a message is not for it; never posted. */

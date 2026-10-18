@@ -19,6 +19,13 @@ pub enum ContextFooter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersonaAvatar {
+    pub color: String,
+    pub shape: String,
+    pub expression: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Persona {
     pub name: String,
     pub prompt: String,
@@ -38,6 +45,8 @@ pub struct Persona {
     pub mcps: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegates: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<PersonaAvatar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,6 +66,8 @@ pub struct PersonaTemplate {
     pub mcps: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegates: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<PersonaAvatar>,
 }
 
 impl PersonaTemplate {
@@ -71,6 +82,7 @@ impl PersonaTemplate {
             skills: p.skills.clone(),
             mcps: p.mcps.clone(),
             delegates: p.delegates.clone(),
+            avatar: p.avatar.clone(),
         }
     }
 
@@ -86,6 +98,7 @@ impl PersonaTemplate {
             skills: self.skills.clone(),
             mcps: self.mcps.clone(),
             delegates: self.delegates.clone(),
+            avatar: self.avatar.clone(),
         }
     }
 }
@@ -521,6 +534,7 @@ mod tests {
             skills: vec!["finanzas".into()],
             mcps: vec!["google-drive".into()],
             delegates: vec!["qa".into()],
+            avatar: None,
         }
     }
 

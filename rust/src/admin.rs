@@ -941,7 +941,18 @@ async fn delete_pi_custom_provider(State(state): State<Arc<AppState>>, Query(q):
 }
 
 fn skill_list() -> Vec<Value> {
-    crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps, "body": s.body })).collect()
+    crate::skills::available()
+        .into_iter()
+        .map(|s| {
+            json!({
+                "name": s.name,
+                "description": s.description,
+                "mcps": s.mcps,
+                "body": s.body,
+                "files": s.files,
+            })
+        })
+        .collect()
 }
 
 async fn get_skills() -> Response {
@@ -991,6 +1002,8 @@ struct SkillBody {
     description: Option<String>,
     mcps: Option<Vec<String>>,
     body: Option<String>,
+    #[serde(default)]
+    files: Option<Vec<crate::skills::SkillFile>>,
 }
 
 async fn put_skill(Json(b): Json<SkillBody>) -> Response {
@@ -999,6 +1012,7 @@ async fn put_skill(Json(b): Json<SkillBody>) -> Response {
         description: b.description.unwrap_or_default().trim().to_string(),
         mcps: b.mcps.unwrap_or_default(),
         body: b.body.unwrap_or_default(),
+        files: b.files.unwrap_or_default(),
     };
     match crate::skills::save(&crate::skills::writable_dir(), &skill) {
         Ok(()) => get_skills().await,

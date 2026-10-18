@@ -41,6 +41,7 @@ fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Person
             .clone()
             .unwrap_or_else(|| DEFAULT_HOST_MCPS.iter().map(|s| (*s).to_string()).collect()),
         delegates: vec![],
+        avatar: None,
     }
 }
 

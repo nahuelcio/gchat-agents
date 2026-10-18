@@ -32,6 +32,12 @@ export interface Settings {
 /** Default host tools when `hostMcps` is unset. */
 export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "agents", "google-drive"];
 
+export interface PersonaAvatar {
+  color: string;
+  shape: "round" | "soft" | "tall" | "bean";
+  expression: "idle" | "wink" | "happy" | "sleepy" | "curious";
+}
+
 export interface Persona {
   name: string;
   prompt: string;
@@ -41,6 +47,8 @@ export interface Persona {
   skills?: string[];
   mcps?: string[];
   delegates?: string[];
+  /** Custom blob avatar (color / shape / expression). */
+  avatar?: PersonaAvatar;
 }
 
 export interface PersonaTemplate extends Persona {
@@ -90,11 +98,18 @@ export interface DriveMcpStatus {
   redirectUri: string;
 }
 
+/** Bundled skill resource (Anthropic layout: references/, scripts/, assets/). */
+export interface SkillFile {
+  path: string;
+  content: string;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
   mcps: string[];
   body: string;
+  files?: SkillFile[];
 }
 
 export interface DraftChatMessage {
@@ -445,7 +460,7 @@ export interface TeamTransport {
   send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
   /** Agents you can @mention in chat (names without @). */
-  personas?: () => Promise<{ name: string }[]>;
+  personas?: () => Promise<{ name: string; avatar?: PersonaAvatar }[]>;
   /** Absolute or same-origin URL for a saved attachment id. */
   mediaUrl: (id: string) => string;
   /** Stops agents talking among themselves in this thread after the current turn. */
@@ -462,7 +477,10 @@ export const ownerTransport: TeamTransport = {
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
   send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
-  personas: () => call<Settings>("/api/settings").then((s) => (s.personas ?? []).map((p) => ({ name: p.name }))),
+  personas: () =>
+    call<Settings>("/api/settings").then((s) =>
+      (s.personas ?? []).map((p) => ({ name: p.name, ...(p.avatar ? { avatar: p.avatar } : {}) })),
+    ),
   mediaUrl: (id) => `/api/media/${id}`,
   stopAgents: (id) => call("/api/team/stop", { thread: id }),
   members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),

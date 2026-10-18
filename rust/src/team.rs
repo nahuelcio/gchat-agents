@@ -327,7 +327,7 @@ pub async fn apply_member_op(deps: &HandlerDeps, thread_key: &str, op: &str, mem
                 .iter()
                 .find(|p| p.name.eq_ignore_ascii_case(persona_name))
                 .ok_or_else(|| {
-                    format!("no agent @{persona_name} in Settings › Agents in chat")
+                    format!("no agent @{persona_name} — add it under Create")
                 })?;
             let id = format!("agent:{}", found.name.to_lowercase());
             members = if op == "add" {
@@ -534,6 +534,7 @@ mod presence_tests {
                 skills: vec![],
                 mcps: vec![],
                 delegates: vec![],
+                avatar: None,
             }],
             host_prompt: None,
         };

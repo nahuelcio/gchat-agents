@@ -115,7 +115,19 @@ async fn play_agents(State(_state): State<Arc<AppState>>) -> Response {
 }
 
 async fn play_personas(State(state): State<Arc<AppState>>) -> Response {
-    let names: Vec<_> = state.settings.get().personas.into_iter().map(|p| json!({ "name": p.name })).collect();
+    let names: Vec<_> = state
+        .settings
+        .get()
+        .personas
+        .into_iter()
+        .map(|p| {
+            let mut o = json!({ "name": p.name });
+            if let Some(avatar) = p.avatar {
+                o["avatar"] = json!(avatar);
+            }
+            o
+        })
+        .collect();
     Json(names).into_response()
 }
 

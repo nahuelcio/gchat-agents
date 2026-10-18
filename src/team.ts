@@ -192,7 +192,7 @@ export async function teamMembers(
   let members = record?.members ?? (record ? catalog.reduce((m, p) => withAgent(m, p.name), [] as RoomMember[]) : []);
   if (member.kind === "agent") {
     const persona = catalog.find((p) => p.name.toLowerCase() === member.persona.replace(/^@/, "").toLowerCase());
-    if (!persona) throw new Error(`no agent @${member.persona} in Settings › Agents in chat`);
+    if (!persona) throw new Error(`no agent @${member.persona} — add it under Create`);
     const id = `agent:${persona.name.toLowerCase()}`;
     members = op === "add" ? withAgent(members, persona.name) : members.filter((m) => m.id !== id);
     const kicked = (record?.kicked ?? []).filter((n) => n.toLowerCase() !== persona.name.toLowerCase());

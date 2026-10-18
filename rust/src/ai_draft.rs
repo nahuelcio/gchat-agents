@@ -33,6 +33,9 @@ pub struct SkillDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcps: Vec<String>,
     pub body: String,
+    /// Bundled resources: references/, scripts/, assets/ (Anthropic skill layout).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<crate::skills::SkillFile>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -53,8 +56,27 @@ pub fn available_mcps(settings: &crate::settings::Settings) -> Vec<String> {
     names
 }
 
+/// Meta-pack that steers Create → Skills AI. Not attachable to chat agents.
+pub const SKILL_CREATOR: &str = "skill-creator";
+
 pub fn available_skill_names() -> Vec<String> {
-    skills::available().into_iter().map(|s| s.name).collect()
+    skills::available()
+        .into_iter()
+        .map(|s| s.name)
+        .filter(|n| n != SKILL_CREATOR)
+        .collect()
+}
+
+/// Body + references from the skill-creator pack, if installed.
+fn skill_creator_guide() -> String {
+    let Some(s) = skills::load(SKILL_CREATOR) else {
+        return String::new();
+    };
+    let mut out = format!("\n\n---\n# Follow the skill-creator pack\n\n{}\n", s.body.trim());
+    for f in s.files.iter().filter(|f| f.path.starts_with("references/")) {
+        out.push_str(&format!("\n## {}\n{}\n", f.path, f.content.trim()));
+    }
+    out
 }
 
 fn slug(raw: &str) -> String {
@@ -180,6 +202,7 @@ pub fn parse_skill_draft(reply: &str, ctx: &DraftContext) -> Result<SkillDraft, 
         draft.description = draft.name.clone();
     }
     draft.mcps = filter_known(&draft.mcps, &ctx.available_mcps);
+    draft.files.retain(|f| crate::skills::valid_file_path(&f.path) && f.content.len() <= 200_000);
     Ok(draft)
 }
 
@@ -220,21 +243,23 @@ fn skill_instructions(ctx: &DraftContext, improve: bool) -> String {
     let mode = if improve {
         "Improve the existing skill pack using the brief. Keep what still fits; rewrite what does not."
     } else {
-        "Create a new skill pack (SKILL.md) from the brief."
+        "Create a new skill pack (SKILL.md + optional references/) from the brief."
     };
+    let guide = skill_creator_guide();
     format!(
-        r#"You draft reusable skill packs for Switchboard agents (Pi runtime).
+        r#"You draft reusable skill packs for Switchboard agents (Pi runtime). You are steered by the skill-creator pack.
 {mode}
 
 Rules:
 - Reply with ONLY one JSON object (no markdown, no commentary).
 - name: lowercase letters, digits or - only (no underscores), max 40.
-- description: one short line.
-- body: markdown instructions — what to do, never do, and how to answer.
+- description: pushy trigger text — what it does AND when to use it (edge cases welcome).
+- body: imperative markdown — workflow, why it matters, when to open references. Point to files by path.
 - mcps: subset of [{mcps}] that this pack needs. Empty is fine.
+- files: optional array of {{"path":"references/foo.md","content":"..."}}. Prefer moving long domain docs into references/.
 
 JSON shape:
-{{"name":"cotizaciones","description":"Precios y planes","mcps":["google-drive"],"body":"..."}}"#
+{{"name":"cotizaciones","description":"Precios y planes. Use whenever the user mentions quotes, pricing, or discounts.","mcps":["google-drive"],"body":"...","files":[{{"path":"references/discounts.md","content":"..."}}]}}{guide}"#
     )
 }
 
@@ -376,25 +401,27 @@ Example:
 
 fn skill_chat_instructions(ctx: &DraftContext) -> String {
     let mcps = ctx.available_mcps.join(", ");
+    let guide = skill_creator_guide();
     format!(
-        r#"You help the user design a reusable skill pack (SKILL.md) for Switchboard agents through a short conversation.
+        r#"You help the user create OR improve a reusable skill pack in Create → Skills. Follow the skill-creator pack below.
 
-Goal: clarify the procedure, then produce a solid draft. One brief is rarely enough — ask follow-ups.
+Goal: clarify the procedure, then produce a solid draft. When a Current draft JSON is provided, treat this as an EDIT — keep the name, preserve what still fits, change only what the user asks (or clear gaps).
 
 Rules:
 - Reply with ONLY one JSON object (no markdown fences, no commentary outside JSON).
 - Shape: {{"message":"...","draft":{{...}}|null,"ready":false|true}}
 - message: short, in the user's language (default English). Ask at most 2 focused questions when info is missing. When updating the draft, say what changed.
-- draft: null until you know a name and the core procedure. Then always include the best draft so far.
-- ready: true only when name + body instructions are clear enough to save.
+- draft: null only for a brand-new skill with no name/procedure yet. If a current draft exists, ALWAYS return a full updated draft (merge edits into the whole skill, including files you keep).
+- ready: true when name + body are clear enough to save (edits can be ready immediately after a clear change).
 - Draft fields:
-  - name: lowercase letters, digits or - only (no underscores), max 40.
-  - description: one short line.
-  - body: markdown instructions — what to do, never do, and how to answer.
+  - name: lowercase letters, digits or - only (no underscores), max 40. On edit, keep the existing name unless the user renames.
+  - description: pushy — what it does AND when to trigger.
+  - body: lean imperative markdown; point to references/ for long docs.
   - mcps: subset of [{mcps}] that this pack needs. Empty is fine.
+  - files: optional [{{"path":"references/x.md","content":"..."}}]. On edit, include files you still want; omit only those the user asked to remove.
 
-Example:
-{{"message":"What discount rules or price sources should it follow?","draft":{{"name":"pricing","description":"Prices and plans","mcps":["google-drive"],"body":"..."}},"ready":false}}"#
+Example (edit):
+{{"message":"Updated the SLA reference and tightened the body. Ready to save?","draft":{{"name":"soporte","description":"…","mcps":["switchboard"],"body":"…","files":[{{"path":"references/sla.md","content":"…"}}]}},"ready":true}}{guide}"#
     )
 }
 
@@ -634,6 +661,24 @@ mod tests {
             workdir: ".".into(),
             model: None,
         }
+    }
+
+    #[test]
+    fn skill_creator_is_not_attachable_to_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("skill-creator")).unwrap();
+        std::fs::write(
+            dir.path().join("skill-creator/SKILL.md"),
+            "---\nname: skill-creator\ndescription: meta\n---\nGuide.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("finanzas")).unwrap();
+        std::fs::write(dir.path().join("finanzas/SKILL.md"), "---\nname: finanzas\n---\nBody.\n").unwrap();
+        crate::skills::set_dirs(vec![dir.path().to_path_buf()]);
+        let names = available_skill_names();
+        assert!(names.contains(&"finanzas".into()));
+        assert!(!names.contains(&"skill-creator".into()));
+        assert!(!skill_creator_guide().is_empty());
     }
 
     #[test]

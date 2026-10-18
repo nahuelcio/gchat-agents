@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { AgentBlob } from "../AgentBlob";
 import { agentTint, BOT_NAME } from "../agent-color";
 import {
   ago,
@@ -7,6 +8,7 @@ import {
   type MessageAttachment,
   type MemberChange,
   type Persona,
+  type PersonaAvatar,
   type TeamAttachmentInput,
   type TeamThreadState,
   type TeamThreadSummary,
@@ -201,6 +203,9 @@ interface Props {
   personas?: Persona[];
 }
 
+/** Name + optional blob face — enough for @mentions and avatars. */
+type PersonaRef = { name: string; avatar?: PersonaAvatar; prompt?: string };
+
 export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos, personas: personasProp }: Props) {
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
@@ -220,7 +225,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
-  const [guestPersonas, setGuestPersonas] = useState<{ name: string }[]>([]);
+  const [guestPersonas, setGuestPersonas] = useState<PersonaRef[]>([]);
   const [speechIn] = useState(canListen);
   const [speechOut] = useState(canSpeak);
   const bottom = useRef<HTMLDivElement>(null);
@@ -647,7 +652,12 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             const agent = tagged?.[1] ?? (m.bot && m.author.startsWith("@") ? m.author : undefined);
             return (
               <div key={i} className={`message ${agent ? "agent-tint" : ""}`} style={agent ? agentTint(agent) : undefined}>
-                <Face host={m.bot && !agent} name={agent ?? m.author} />
+                <Face
+                  host={m.bot && !agent}
+                  agent={Boolean(agent)}
+                  name={agent ?? m.author}
+                  avatar={agent ? avatarOf(catalog, agent) : undefined}
+                />
                 <div className="message-body">
                   <div>
                     <span className="strong author" data-testid="message-author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
@@ -683,16 +693,32 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             );
           })}
           {working && (
-            <p className="muted small working">
-              {state?.answering?.length
-                ? `${state.answering.map((n) => `@${n}`).join(", ")} ${state.answering.length > 1 ? "are" : "is"} answering…`
-                : `${BOT_NAME} is working…`}{" "}
+            <div className="working" role="status" aria-live="polite">
+              {(state?.answering?.length ? state.answering : [BOT_NAME]).map((n) => {
+                const handle = n.replace(/^@/, "");
+                const host = handle.toLowerCase() === BOT_NAME.toLowerCase();
+                return (
+                  <span key={handle} className="working-agent">
+                    <AgentBlob
+                      name={host ? BOT_NAME : handle}
+                      avatar={host ? undefined : avatarOf(catalog, handle)}
+                      size={28}
+                      busy
+                    />
+                    <span className="muted small">{host ? BOT_NAME : `@${handle}`}</span>
+                  </span>
+                );
+              })}
               {activeId && (
-                <button className="btn linkish" onClick={() => void transport.stopAgents(activeId).catch(() => {})} title="Agents stop handing off to each other after the current reply">
+                <button
+                  className="btn linkish"
+                  onClick={() => void transport.stopAgents(activeId).catch(() => {})}
+                  title="Agents stop handing off to each other after the current reply"
+                >
                   Stop
                 </button>
               )}
-            </p>
+            </div>
           )}
           <div ref={bottom} />
         </div>
@@ -740,7 +766,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                     </button>
                   ))
                 ) : personas.length === 0 ? (
-                  <span className="muted small">No agents yet — add them in Settings → Agents in chat</span>
+                  <span className="muted small">No agents yet — add them under Create</span>
                 ) : (
                   <span className="muted small">No agent matches @{mention?.query}</span>
                 )}
@@ -861,7 +887,7 @@ function MembersSection({
   onMember,
 }: {
   state?: TeamThreadState;
-  catalog: { name: string }[];
+  catalog: PersonaRef[];
   onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
 }) {
   const members = state?.members;
@@ -883,7 +909,9 @@ function MembersSection({
         <ul className="member-list">
           {members.map((m) => (
             <li key={m.id} className={`member ${m.kind === "agent" ? "agent-tint" : ""}`} style={m.kind === "agent" ? agentTint(m.persona) : undefined}>
-              {m.kind === "agent" ? <Face name={m.persona} /> : (
+              {m.kind === "agent" ? (
+                <Face name={m.persona} agent avatar={avatarOf(catalog, m.persona)} busy={presenceOf(m.id)?.status === "speaking"} />
+              ) : (
                 <span className="member-avatar" aria-hidden="true">{m.name.slice(0, 2).toUpperCase()}</span>
               )}
               <span className="grow">
@@ -913,7 +941,7 @@ function MembersSection({
       {members && !members.some((m) => m.kind === "agent") && <p className="empty small">No agents in this room yet.{onMember ? " Add one to bring it in." : ""}</p>}
       {onMember &&
         (catalog.length === 0 ? (
-          <p className="muted small">Create agents in Settings › Agents in chat.</p>
+          <p className="muted small">Create agents under Create in the sidebar.</p>
         ) : adding || !members ? (
           <div className="model-chips">
             {(members ? addable : catalog).map((p) => (
@@ -952,29 +980,52 @@ function contextText(run: NonNullable<TeamThreadState["runs"]>[number]): string 
   return `window ${formatTokens(window!)}`;
 }
 
-function Face({ name, host = false }: { name: string; host?: boolean }) {
-  const letters = name.replace(/^@/, "").slice(0, 2).toUpperCase();
-  if (host) {
+function avatarOf(catalog: PersonaRef[], name: string): PersonaAvatar | undefined {
+  const key = name.replace(/^@/, "").toLowerCase();
+  return catalog.find((p) => p.name.toLowerCase() === key)?.avatar;
+}
+
+function Face({
+  name,
+  host = false,
+  agent = false,
+  avatar,
+  busy = false,
+}: {
+  name: string;
+  host?: boolean;
+  agent?: boolean;
+  avatar?: PersonaAvatar;
+  busy?: boolean;
+}) {
+  if (host || agent) {
     return (
-      <span className="avatar bot mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="16" height="16">
-          <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" fill="none" />
-          <circle cx="9" cy="9" r="3.2" fill="#00f0ff" />
-          <circle cx="23" cy="9" r="3.2" fill="#7107e7" />
-          <circle cx="16" cy="24" r="3.2" fill="#f59e0b" />
-          <circle cx="16" cy="16" r="3.6" fill="#16a34a" />
-        </svg>
+      <span className={`avatar blob${host ? " bot mark" : ""}`} aria-hidden="true">
+        <AgentBlob
+          name={host ? BOT_NAME : name}
+          avatar={avatar}
+          size={32}
+          animate={!busy}
+          busy={busy}
+        />
       </span>
     );
   }
-  return <span className="avatar" aria-hidden="true">{letters}</span>;
+  const letters = name.replace(/^@/, "").slice(0, 2).toUpperCase();
+  return (
+    <span className="avatar" aria-hidden="true">
+      {letters}
+    </span>
+  );
 }
 
 function RunsSection({
   runs,
+  catalog,
   onCommand,
 }: {
   runs: NonNullable<TeamThreadState["runs"]>;
+  catalog: PersonaRef[];
   onCommand?: (text: string) => void;
 }) {
   return (
@@ -986,7 +1037,7 @@ function RunsSection({
         return (
           <details key={`${run.role}:${run.name}`} className={`run ${host ? "" : "agent-tint"}`} style={host ? undefined : agentTint(run.name)} open>
             <summary>
-              <Face host={host} name={run.name} />
+              <Face host={host} agent={!host} name={run.name} avatar={host ? undefined : avatarOf(catalog, run.name)} />
               <span className="run-name">{label}</span>
               <span className="muted small run-hint">{run.session ? shortId(run.session) : "no session"}</span>
             </summary>
@@ -1047,7 +1098,7 @@ function ThreadContextPanel({
 }: {
   state?: TeamThreadState;
   guest: boolean;
-  catalog: { name: string }[];
+  catalog: PersonaRef[];
   onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
   onCommand?: (text: string) => void;
 }) {
@@ -1094,7 +1145,7 @@ function ThreadContextPanel({
           </div>
         )}
       </dl>
-      {!!state?.runs?.length && <RunsSection runs={state.runs} onCommand={onCommand} />}
+      {!!state?.runs?.length && <RunsSection runs={state.runs} catalog={catalog} onCommand={onCommand} />}
 
       {(wi || state?.worktree) && <h2>Work item</h2>}
       {!wi && !state?.worktree ? null : wi ? (

@@ -132,7 +132,7 @@ function OwnerApp() {
           ))}
         </div>
         {settings && (
-          <a className="agent-card" href="#settings/agents" title="Change the Pi model">
+          <a className="agent-card" href="#settings/runtime" title="Change the Pi model">
             <small>Pi</small>
             <span>Pi (durable)</span>
             <code>{model ?? "default model"}</code>

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { AgentBlob, AvatarPicker, avatarFromName } from "../AgentBlob";
 import { agentTint, BOT_NAME } from "../agent-color";
 import {
   api,
   type DraftChatMessage,
   type HostDraft,
   type Persona,
+  type PersonaTemplate,
+  type SkillFile,
   type SkillInfo,
   BUILTIN_MCPS,
   DEFAULT_HOST_MCPS,
@@ -15,9 +18,42 @@ import type { ViewProps } from "../App";
 type Kind = "agent" | "skill";
 
 const EMPTY_PERSONA: Persona = { name: "", prompt: "", mcps: [...DEFAULT_PERSONA_MCPS] };
-const EMPTY_SKILL: SkillInfo = { name: "", description: "", mcps: [], body: "" };
+const EMPTY_SKILL: SkillInfo = { name: "", description: "", mcps: [], body: "", files: [] };
 
-/** Built-in host system prompt (roster line is filled per room at runtime). */
+const SCRIPT_STUBS: Record<string, { path: string; content: string }> = {
+  js: {
+    path: "scripts/format-pdf.js",
+    content: `#!/usr/bin/env node
+/**
+ * Custom skill tool — example: format / transform a PDF (or any file).
+ * Usage: node scripts/format-pdf.js <input> <output>
+ * Replace the body with your real logic (pdf-lib, puppeteer, etc.).
+ */
+const [,, input, output] = process.argv;
+if (!input || !output) {
+  console.error("Usage: node scripts/format-pdf.js <input> <output>");
+  process.exit(1);
+}
+console.log(JSON.stringify({ ok: true, input, output, note: "stub — implement me" }));
+`,
+  },
+  py: {
+    path: "scripts/format_pdf.py",
+    content: `#!/usr/bin/env python3
+"""Custom skill tool — example PDF/file transform. Usage: python scripts/format_pdf.py <input> <output>"""
+import json, sys
+if len(sys.argv) < 3:
+    print("Usage: python scripts/format_pdf.py <input> <output>", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({"ok": True, "input": sys.argv[1], "output": sys.argv[2], "note": "stub — implement me"}))
+`,
+  },
+};
+
+function ensureCoding(mcps: string[]): string[] {
+  return mcps.includes("coding") ? mcps : [...mcps, "coding"];
+}
+
 const HOST_BUILTIN_PROMPT = `You are ${BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.
 Agents in this room: (filled from the current room).
 When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.
@@ -25,11 +61,14 @@ Every agent here reads every message and answers on its own when it fits. If the
 If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again.`;
 
 const INTRO = {
-  host: "This is the main host (Pi / Switchboard) — it can code, use tools, and answer when people talk to the bot. Describe tone, domain rules, never-dos, and which tools/skills it needs. Built-in room/@mention rules stay; your text is layered on top.",
-  agent:
-    "Tell me what agent you need: domain, tone, whether it listens to every message or only @mentions, and which tools or skills it should use. We can refine it over a few turns.",
-  skill:
-    "Tell me the procedure you want to package: when it applies, what to do, what never to do, and which tools it needs. We’ll build it across a few messages.",
+  host: "Describe changes to the host — tone, rules, tools. Edits land in the form on the left.",
+  agent: "Describe the agent you want. I’ll draft fields on the left; keep chatting to refine.",
+  skill: "Describe the skill. I’ll draft it with the skill-creator pack (SKILL.md + references/scripts).",
+  editAgent: (name: string) => `Editing @${name}. Say what to change, or edit the form.`,
+  editSkill: (name: string) =>
+    name === "skill-creator"
+      ? "Editing skill-creator — this pack steers Create → Skills AI. Change carefully."
+      : `Editing “${name}”. Tell me what to change (tone, tools, references, scripts) — I’ll update the draft.`,
 } as const;
 
 function cleanPersona(raw: Persona): Persona {
@@ -40,13 +79,58 @@ function cleanPersona(raw: Persona): Persona {
   if (!draft.model?.trim()) delete draft.model;
   if (draft.listen !== "all") delete draft.listen;
   if (draft.respondTo !== "people") delete draft.respondTo;
+  if (!draft.avatar?.color) delete draft.avatar;
   return draft;
 }
 
-function editIntro(kind: Kind, name: string): string {
-  return kind === "agent"
-    ? `Editing @${name}. Ask for changes (tone, tools, listen…) or edit the draft on the right. Save when it looks right.`
-    : `Editing skill “${name}”. Ask for changes to the instructions or tools, or edit the draft on the right. Save when it looks right.`;
+function templateIdFrom(name: string, existing: PersonaTemplate[]): string {
+  const root =
+    (name || "template")
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "template";
+  const ids = new Set(existing.map((t) => t.id));
+  if (!ids.has(root)) return root;
+  for (let n = 2; n < 100; n++) {
+    const id = `${root}-${n}`.slice(0, 48);
+    if (!ids.has(id)) return id;
+  }
+  return `${root}-${Date.now().toString(36)}`.slice(0, 48);
+}
+
+function personaFromTemplate(t: PersonaTemplate): Persona {
+  const { id: _id, ...fields } = t;
+  return cleanPersona({ ...fields });
+}
+
+function ToggleChips({
+  options,
+  selected,
+  onToggle,
+  emptyHint,
+}: {
+  options: { id: string; label: string }[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  emptyHint?: string;
+}) {
+  if (options.length === 0) return emptyHint ? <p className="muted small">{emptyHint}</p> : null;
+  return (
+    <div className="create-ai-chips" role="group">
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          className={`chip ${selected.includes(o.id) ? "on" : ""}`}
+          aria-pressed={selected.includes(o.id)}
+          onClick={() => onToggle(o.id)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function CreateView(props: ViewProps) {
@@ -55,7 +139,7 @@ export function CreateView(props: ViewProps) {
       <header className="page-head">
         <div>
           <h1>Create</h1>
-          <p className="sub">Create or edit agents and skills — with an AI chat or by hand.</p>
+          <p className="sub">Agents and skills — edit the form, or refine with AI.</p>
         </div>
       </header>
       <CreateWithAiCard {...props} />
@@ -77,6 +161,9 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   const [editingSkill, setEditingSkill] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [skillSource, setSkillSource] = useState("");
+  const [installing, setInstalling] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -99,6 +186,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setEditingAgent(null);
     setEditingSkill(null);
     setReady(false);
+    setAiOpen(false);
   };
 
   const startEditHost = () => {
@@ -117,6 +205,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
       skills: settings.hostSkills ?? [],
     });
     setReady(true);
+    setAiOpen(false);
   };
 
   const startEditAgent = (p: Persona) => {
@@ -128,12 +217,13 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setHostDraft(null);
     setSkillDraft(null);
     setEditingSkill(null);
-    setAgentDraft({ ...EMPTY_PERSONA, ...p });
+    setAgentDraft({ ...EMPTY_PERSONA, ...p, avatar: p.avatar ?? avatarFromName(p.name) });
     setEditingAgent(p.name);
     setReady(true);
+    setAiOpen(false);
   };
 
-  const startEditSkill = (sk: SkillInfo) => {
+  const startEditSkill = (sk: SkillInfo, withAi = false) => {
     setKind("skill");
     setMessages([]);
     setInput("");
@@ -142,17 +232,19 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setHostDraft(null);
     setAgentDraft(null);
     setEditingAgent(null);
-    setSkillDraft({ ...EMPTY_SKILL, ...sk });
+    setSkillDraft({ ...EMPTY_SKILL, ...sk, files: sk.files ?? [] });
     setEditingSkill(sk.name);
     setReady(true);
+    setAiOpen(withAi);
   };
 
   const startBlank = () => {
     setMessages([]);
     setEditingHost(false);
     setHostDraft(null);
+    setAiOpen(false);
     if (kind === "agent") {
-      setAgentDraft({ ...EMPTY_PERSONA });
+      setAgentDraft({ ...EMPTY_PERSONA, avatar: avatarFromName("agent") });
       setEditingAgent(null);
       setReady(false);
     } else {
@@ -160,6 +252,11 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
       setEditingSkill(null);
       setReady(false);
     }
+  };
+
+  const startWithAi = () => {
+    reset(kind);
+    setAiOpen(true);
   };
 
   const send = () => {
@@ -200,9 +297,12 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         .then((reply) =>
           finish(reply.message, Boolean(reply.ready) || Boolean(reply.draft) || Boolean(agentDraft), () => {
             if (reply.draft) {
-              const next = { ...EMPTY_PERSONA, ...reply.draft };
-              if (editingAgent) next.name = editingAgent;
-              setAgentDraft(next);
+              setAgentDraft((prev) => {
+                const next = { ...EMPTY_PERSONA, ...prev, ...reply.draft };
+                if (editingAgent) next.name = editingAgent;
+                if (!next.avatar) next.avatar = prev?.avatar ?? avatarFromName(next.name || "agent");
+                return next;
+              });
             }
           }),
         )
@@ -215,9 +315,11 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
       .then((reply) =>
         finish(reply.message, Boolean(reply.ready) || Boolean(reply.draft) || Boolean(skillDraft), () => {
           if (reply.draft) {
-            const next = { ...EMPTY_SKILL, ...reply.draft };
-            if (editingSkill) next.name = editingSkill;
-            setSkillDraft(next);
+            setSkillDraft((prev) => {
+              const next = { ...EMPTY_SKILL, ...prev, ...reply.draft, files: reply.draft?.files ?? prev?.files ?? [] };
+              if (editingSkill) next.name = editingSkill;
+              return next;
+            });
           }
         }),
       )
@@ -228,11 +330,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   const saveHost = () => {
     const prompt = hostDraft?.prompt.trim() ?? "";
     const mcps = hostDraft?.mcps ?? [...DEFAULT_HOST_MCPS];
-    const skills = hostDraft?.skills ?? [];
-    void save(
-      { hostPrompt: prompt, hostMcps: mcps, hostSkills: skills },
-      prompt || mcps.length || skills.length ? "Host agent saved" : "Host agent cleared",
-    ).then(() => {
+    const hostSkills = hostDraft?.skills ?? [];
+    void save({ hostPrompt: prompt, hostMcps: mcps, hostSkills }, "Host agent saved").then(() => {
       notify("Host agent updated");
       reset("agent");
     });
@@ -272,10 +371,14 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
 
   const saveSkill = () => {
     if (!skillDraft?.name.trim() || !skillDraft.body.trim()) return;
-    const skill = {
+    const files = (skillDraft.files ?? []).filter((f) => f.path.trim() && f.content.trim());
+    const hasScripts = files.some((f) => f.path.startsWith("scripts/"));
+    const skill: SkillInfo = {
       ...skillDraft,
       name: (editingSkill ?? skillDraft.name).trim().toLowerCase(),
       description: skillDraft.description.trim() || skillDraft.name.trim(),
+      mcps: hasScripts ? ensureCoding(skillDraft.mcps) : skillDraft.mcps,
+      files,
     };
     void api.saveSkill(skill).then(
       (list) => {
@@ -298,181 +401,254 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     );
   };
 
-  const toolNames = [
-    ...new Set(["engram", ...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)]),
-  ];
+  const toolLabels = new Map<string, string>([
+    ...BUILTIN_MCPS.map((m) => [m.name, m.label] as const),
+    ...(settings.mcpServers ?? []).map((m) => [m.name, `${m.name} — custom MCP`] as const),
+    ["engram", "engram — your MCP server"] as const,
+  ]);
+  const toolNames = [...new Set(["engram", ...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)])];
+  const toolOpts = toolNames.map((id) => ({ id, label: toolLabels.get(id) ?? id }));
+  // skill-creator steers Create AI; don't attach it to agents/host.
+  const attachableSkills = skills.filter((s) => s.name !== "skill-creator");
+  const skillOpts = attachableSkills.map((s) => ({
+    id: s.name,
+    label: s.mcps.length ? `${s.name} (${s.mcps.join(", ")})` : s.name,
+  }));
+  const templates = settings.templates ?? [];
+  const canAsk = (agentDraft?.mcps ?? []).includes("agents");
+  const peerAgents = personas.filter((p) => p.name.toLowerCase() !== (agentDraft?.name || editingAgent || "").toLowerCase());
+
+  const toggleAgentTools = (id: string) => {
+    if (!agentDraft) return;
+    const mcps = toggleList(agentDraft.mcps, id);
+    const next: Persona = { ...agentDraft, mcps };
+    if (!mcps.includes("agents")) delete next.delegates;
+    setAgentDraft(next);
+  };
+
+  const saveAsTemplate = () => {
+    if (!agentDraft) return;
+    const cleaned = cleanPersona(agentDraft);
+    if (!cleaned.name || !cleaned.prompt) return;
+    const id = templateIdFrom(cleaned.name, templates);
+    const tpl: PersonaTemplate = { id, ...cleaned };
+    void save({ templates: [...templates, tpl] }, `Template ${id} saved`).then(() => notify(`Template ${id} saved`));
+  };
+
+  const applyTemplate = (t: PersonaTemplate) => {
+    const next = personaFromTemplate(t);
+    const list = [...personas];
+    const idx = list.findIndex((p) => p.name.toLowerCase() === next.name.toLowerCase());
+    if (idx >= 0) list[idx] = next;
+    else list.push(next);
+    void save({ personas: list }, `@${next.name} from template`).then(() => {
+      notify(idx >= 0 ? `@${next.name} updated from template` : `@${next.name} created from template`);
+      startEditAgent(next);
+    });
+  };
+
   const intro = editingHost
-    ? settings.hostPrompt?.trim()
-      ? "Editing the host system prompt. Ask for changes or edit the draft on the right. Save when it looks right."
-      : INTRO.host
+    ? INTRO.host
     : kind === "agent" && editingAgent
-      ? editIntro("agent", editingAgent)
+      ? INTRO.editAgent(editingAgent)
       : kind === "skill" && editingSkill
-        ? editIntro("skill", editingSkill)
+        ? INTRO.editSkill(editingSkill)
         : INTRO[kind];
-  const editing = editingHost || Boolean(editingAgent || editingSkill);
+
   const hasDraft = Boolean(hostDraft || agentDraft || skillDraft);
   const hostTools = settings.hostMcps ?? [...DEFAULT_HOST_MCPS];
-  const hostSnippet = [
-    hostTools.length ? `tools: ${hostTools.join(", ")}` : "all tools",
-    settings.hostSkills?.length ? `skills: ${settings.hostSkills.join(", ")}` : "",
-    settings.hostPrompt?.trim()
-      ? settings.hostPrompt.trim().slice(0, 80) + (settings.hostPrompt.trim().length > 80 ? "…" : "")
-      : "default host preamble",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const focusForm = hasDraft;
+
+  const toggleList = (list: string[] | undefined, id: string) =>
+    (list ?? []).includes(id) ? (list ?? []).filter((x) => x !== id) : [...(list ?? []), id];
 
   return (
-    <details className="card" open>
-      <summary className="card-title">
-        <h2>Agents & skills</h2>
-        <p className="muted small">List, edit by hand, or refine with the AI chat. The host is always present and cannot be deleted.</p>
-      </summary>
-
-      <div className="create-ai-kinds" role="tablist" aria-label="What to manage">
-        <button type="button" role="tab" aria-selected={kind === "agent"} className={kind === "agent" ? "on" : ""} onClick={() => reset("agent")}>
-          Agents
-        </button>
-        <button type="button" role="tab" aria-selected={kind === "skill"} className={kind === "skill" ? "on" : ""} onClick={() => reset("skill")}>
-          Skills
-        </button>
+    <section className="create-ai" aria-label="Agents and skills">
+      <div className="create-ai-top">
+        <div className="create-ai-kinds" role="tablist" aria-label="What to manage">
+          <button type="button" role="tab" aria-selected={kind === "agent"} className={kind === "agent" ? "on" : ""} onClick={() => reset("agent")}>
+            Agents
+          </button>
+          <button type="button" role="tab" aria-selected={kind === "skill"} className={kind === "skill" ? "on" : ""} onClick={() => reset("skill")}>
+            Skills
+          </button>
+        </div>
+        {!focusForm && (
+          <div className="create-ai-actions">
+            <button className="btn" type="button" onClick={startBlank}>
+              + New {kind === "agent" ? "agent" : "skill"}
+            </button>
+            <button className="btn primary" type="button" onClick={startWithAi}>
+              + New with AI
+            </button>
+          </div>
+        )}
       </div>
 
       <section className="create-ai-catalog" aria-label={kind === "agent" ? "Agents" : "Skills"}>
+        {kind === "skill" && (
+          <form
+            className="row create-ai-install"
+            aria-label="Install skill"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const spec = skillSource.trim();
+              if (!spec || installing) return;
+              setInstalling(true);
+              api
+                .installSkill(spec)
+                .then(
+                  ({ installed, skills: list }) => {
+                    setSkills(list);
+                    setSkillSource("");
+                    notify(installed.length ? `Installed ${installed.join(", ")}` : "Nothing new to install");
+                  },
+                  (err: Error) => notify(err.message, true),
+                )
+                .finally(() => setInstalling(false));
+            }}
+          >
+            <input
+              className="mono grow"
+              value={skillSource}
+              onChange={(e) => setSkillSource(e.target.value)}
+              placeholder="owner/repo@skill, or a skills.sh / GitHub link"
+              aria-label="Skill source"
+            />
+            <button className="btn" disabled={!skillSource.trim() || installing}>
+              {installing ? "Installing…" : "Install"}
+            </button>
+          </form>
+        )}
         {kind === "agent" ? (
           <>
-            <div className={`persona-row${editingHost ? " on" : ""}`}>
-              <div className="grow">
+            <button type="button" className={`create-ai-item${editingHost ? " on" : ""}`} onClick={startEditHost}>
+              <span className="create-ai-item-face" aria-hidden="true">
+                <AgentBlob name={BOT_NAME} size={36} animate />
+              </span>
+              <span className="create-ai-item-main">
                 <span className="strong">Host (Pi)</span>
-                <span className="muted small">{hostSnippet}</span>
-              </div>
-              <button className="btn small" type="button" onClick={startEditHost}>
-                Edit
-              </button>
-            </div>
+                <span className="muted small">{hostTools.join(" · ")}</span>
+              </span>
+              <span className="create-ai-item-meta">
+                <span className="pill accent">locked</span>
+                <span className="btn small">Edit</span>
+              </span>
+            </button>
             {personas.map((p) => (
-              <div key={p.name} className={`persona-row${editingAgent === p.name ? " on" : ""}`}>
-                <div className="grow">
+              <div key={p.name} className={`create-ai-item${editingAgent === p.name ? " on" : ""}`}>
+                <span className="create-ai-item-face" aria-hidden="true">
+                  <AgentBlob name={p.name} avatar={p.avatar} size={36} />
+                </span>
+                <button type="button" className="create-ai-item-main" onClick={() => startEditAgent(p)}>
                   <span className="strong agent-tint author" style={agentTint(p.name)}>
                     @{p.name}
                   </span>
-                  <span className="muted small">{p.prompt ? p.prompt.slice(0, 100) + (p.prompt.length > 100 ? "…" : "") : "No role yet"}</span>
-                </div>
-                <button className="btn small" type="button" onClick={() => startEditAgent(p)}>
-                  Edit
+                  <span className="muted small">{p.prompt ? p.prompt.slice(0, 90) + (p.prompt.length > 90 ? "…" : "") : "No role yet"}</span>
                 </button>
-                <button className="btn small" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
-                  Delete
-                </button>
+                <span className="create-ai-item-meta">
+                  <button className="btn small" type="button" onClick={() => startEditAgent(p)}>
+                    Edit
+                  </button>
+                  <button className="btn small" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
+                    Delete
+                  </button>
+                </span>
               </div>
             ))}
           </>
         ) : skills.length === 0 ? (
-          <p className="empty">No skills yet.</p>
+          <p className="empty">No skills yet. Create one with AI or manually.</p>
         ) : (
           skills.map((sk) => (
-            <div key={sk.name} className={`persona-row${editingSkill === sk.name ? " on" : ""}`}>
-              <div className="grow">
+            <div key={sk.name} className={`create-ai-item${editingSkill === sk.name ? " on" : ""}`}>
+              <button type="button" className="create-ai-item-main" onClick={() => startEditSkill(sk)}>
                 <span className="strong">{sk.name}</span>
-                <span className="muted small">{sk.description}</span>
-              </div>
-              <button className="btn small" type="button" onClick={() => startEditSkill(sk)}>
-                Edit
+                <span className="muted small">
+                  {sk.description}
+                  {(sk.files?.length ?? 0) > 0 ? ` · ${sk.files!.length} bundled` : ""}
+                </span>
               </button>
-              <button className="btn small" type="button" aria-label={`Delete skill ${sk.name}`} onClick={() => removeSkill(sk.name)}>
-                Delete
-              </button>
+              <span className="create-ai-item-meta">
+                {sk.name === "skill-creator" && <span className="pill accent">Create AI</span>}
+                <button className="btn small" type="button" onClick={() => startEditSkill(sk, false)}>
+                  Edit
+                </button>
+                <button className="btn small primary" type="button" onClick={() => startEditSkill(sk, true)}>
+                  Edit with AI
+                </button>
+                {sk.name !== "skill-creator" && (
+                  <button className="btn small" type="button" aria-label={`Delete skill ${sk.name}`} onClick={() => removeSkill(sk.name)}>
+                    Delete
+                  </button>
+                )}
+              </span>
             </div>
-          ))
-        )}
-        <div className="row" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
-          <button className="btn" type="button" onClick={startBlank}>
-            + New {kind === "agent" ? "agent" : "skill"} (manual)
-          </button>
-          <button className="btn" type="button" onClick={() => reset(kind)}>
-            + New with AI
-          </button>
-        </div>
-      </section>
-
-      <div className="create-ai-layout">
-        <section className="create-ai-chat" aria-label="Creation chat">
-          <div className="create-ai-thread">
-            <div className="create-ai-msg assistant">
-              <span className="create-ai-role">AI</span>
-              <p>{intro}</p>
-            </div>
-            {messages.map((m, i) => (
-              <div key={`${m.role}-${i}`} className={`create-ai-msg ${m.role}`}>
-                <span className="create-ai-role">{m.role === "user" ? "You" : "AI"}</span>
-                <p>{m.content}</p>
+            ))
+          )}
+        {kind === "agent" && templates.length > 0 && !focusForm && (
+          <div className="create-ai-templates">
+            <h3 className="muted small">Templates</h3>
+            {templates.map((t) => (
+              <div key={t.id} className="create-ai-item">
+                <span className="create-ai-item-main">
+                  <span className="strong">{t.id}</span>
+                  <span className="muted small">→ @{t.name}</span>
+                </span>
+                <span className="create-ai-item-meta">
+                  <button type="button" className="btn small primary" onClick={() => applyTemplate(t)}>
+                    Apply
+                  </button>
+                  <button
+                    type="button"
+                    className="btn small"
+                    aria-label={`Remove template ${t.id}`}
+                    onClick={() =>
+                      void save(
+                        { templates: templates.filter((x) => x.id !== t.id) },
+                        `Template ${t.id} removed`,
+                      ).then(() => notify(`Template ${t.id} removed`))
+                    }
+                  >
+                    Delete
+                  </button>
+                </span>
               </div>
             ))}
-            {busy && (
-              <div className="create-ai-msg assistant muted">
-                <span className="create-ai-role">AI</span>
-                <p>Thinking…</p>
-              </div>
-            )}
-            <div ref={bottom} />
           </div>
-          <form
-            className="create-ai-composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send();
-            }}
-          >
-            <textarea
-              rows={2}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder={
-                editingHost
-                  ? "e.g. stay concise, prefer Spanish, route billing to @finanzas…"
-                  : editing
-                    ? "e.g. make it shorter and use Drive…"
-                    : kind === "agent"
-                      ? "e.g. B2B sales agent that quotes from Drive…"
-                      : "e.g. pricing skill with discount rules…"
-              }
-              disabled={busy}
-              aria-label="Message"
-            />
-            <div className="row">
-              <button className="btn primary" disabled={!input.trim() || busy}>
-                {busy ? "…" : "Send"}
-              </button>
-              <button type="button" className="btn" disabled={busy || (messages.length === 0 && !hasDraft)} onClick={() => reset(kind)}>
-                Reset
-              </button>
-            </div>
-          </form>
+        )}
         </section>
 
-        <section className="create-ai-draft" aria-label="Draft">
-          <div className="create-ai-draft-head">
-            <h3>{editingHost ? "Host system prompt" : editingAgent || editingSkill ? "Editing" : "Draft"}</h3>
-            {editingHost ? (
-              <span className="pill accent">Host</span>
-            ) : editingAgent || editingSkill ? (
-              <span className="pill accent">{editingAgent ? `@${editingAgent}` : editingSkill}</span>
-            ) : ready ? (
-              <span className="pill ok">Ready to save</span>
-            ) : (
-              <span className="pill">In conversation</span>
-            )}
-          </div>
+      {(focusForm || aiOpen) && (
+        <div className={`create-ai-layout${focusForm ? " focus-form" : ""}`}>
+          <section className="create-ai-draft" aria-label="Editor">
+            <div className="create-ai-draft-head">
+              <div>
+                <h3>
+                  {editingHost
+                    ? "Host"
+                    : editingAgent
+                      ? `@${editingAgent}`
+                      : editingSkill
+                        ? editingSkill
+                        : agentDraft
+                          ? "New agent"
+                          : skillDraft
+                            ? "New skill"
+                            : "Draft"}
+                </h3>
+                <p className="muted small create-ai-draft-sub">
+                  {editingHost ? "Main agent — cannot be deleted" : ready ? "Ready to save" : "Fill the form or use AI →"}
+                </p>
+              </div>
+              {focusForm && (
+                <button type="button" className={`btn small${aiOpen ? " primary" : ""}`} onClick={() => setAiOpen((o) => !o)}>
+                  {aiOpen ? "Hide AI" : editingSkill || editingAgent || editingHost ? "Edit with AI" : "Create with AI"}
+                </button>
+              )}
+            </div>
 
-          {editingHost ? (
-            hostDraft ? (
+            {editingHost && hostDraft ? (
               <form
                 className="persona-form"
                 onSubmit={(e) => {
@@ -480,76 +656,47 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   saveHost();
                 }}
               >
-                <label className="field">
-                  <span>Built-in system prompt</span>
-                  <textarea className="mono" rows={8} value={HOST_BUILTIN_PROMPT} readOnly aria-readonly="true" />
-                  <span className="muted small">Always applied. The agents line is filled from the room at runtime.</span>
-                </label>
+                <details className="create-ai-builtin">
+                  <summary>Built-in system prompt</summary>
+                  <pre className="create-ai-builtin-body">{HOST_BUILTIN_PROMPT}</pre>
+                </details>
                 <label className="field">
                   <span>Extra system prompt</span>
                   <textarea
-                    rows={6}
+                    rows={5}
                     value={hostDraft.prompt}
                     onChange={(e) => setHostDraft({ ...hostDraft, prompt: e.target.value })}
-                    placeholder="Optional layer on top: tone, domain rules, never-dos…"
+                    placeholder="Tone, domain rules, never-dos…"
+                    autoFocus
                   />
-                  <span className="muted small">
-                    Appended after the built-in prompt. Applies on the next fresh host session (/clear).
-                  </span>
                 </label>
-                {skills.length > 0 && (
+                {skillOpts.length > 0 && (
                   <fieldset className="field">
-                    <legend>Skill packs</legend>
-                    {skills.map((sk) => (
-                      <label key={sk.name} className="inline check">
-                        <input
-                          type="checkbox"
-                          checked={(hostDraft.skills ?? []).includes(sk.name)}
-                          onChange={() => {
-                            const cur = hostDraft.skills ?? [];
-                            setHostDraft({
-                              ...hostDraft,
-                              skills: cur.includes(sk.name) ? cur.filter((x) => x !== sk.name) : [...cur, sk.name],
-                            });
-                          }}
-                        />
-                        <span>{sk.name}</span>
-                      </label>
-                    ))}
+                    <legend>Skills</legend>
+                    <ToggleChips
+                      options={skillOpts}
+                      selected={hostDraft.skills ?? []}
+                      onToggle={(id) => setHostDraft({ ...hostDraft, skills: toggleList(hostDraft.skills, id) })}
+                    />
                   </fieldset>
                 )}
                 <fieldset className="field">
                   <legend>Tools</legend>
-                  {toolNames.map((name) => (
-                    <label key={name} className="inline check">
-                      <input
-                        type="checkbox"
-                        checked={(hostDraft.mcps ?? []).includes(name)}
-                        onChange={() => {
-                          const cur = hostDraft.mcps ?? [];
-                          setHostDraft({
-                            ...hostDraft,
-                            mcps: cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name],
-                          });
-                        }}
-                      />
-                      <span>{name}</span>
-                    </label>
-                  ))}
-                  <span className="muted small">None checked = every tool. Default is coding, switchboard, engram, agents, google-drive.</span>
+                  <ToggleChips
+                    options={toolOpts}
+                    selected={hostDraft.mcps ?? []}
+                    onToggle={(id) => setHostDraft({ ...hostDraft, mcps: toggleList(hostDraft.mcps, id) })}
+                  />
+                  <span className="muted small">None selected = all tools.</span>
                 </fieldset>
-                <div className="row">
+                <div className="create-ai-sticky">
                   <button className="btn primary">Save host</button>
                   <button type="button" className="btn" onClick={() => reset("agent")}>
                     Cancel
                   </button>
                 </div>
               </form>
-            ) : (
-              <p className="empty">Pick Edit on Host (Pi) to load the prompt editor.</p>
-            )
-          ) : kind === "agent" ? (
-            agentDraft ? (
+            ) : kind === "agent" && agentDraft ? (
               <form
                 className="persona-form"
                 onSubmit={(e) => {
@@ -557,25 +704,28 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   saveAgent();
                 }}
               >
-                <label className="field narrow">
-                  <span>Name</span>
-                  <input
-                    className="mono"
-                    value={agentDraft.name}
-                    onChange={(e) => setAgentDraft({ ...agentDraft, name: e.target.value })}
-                    disabled={Boolean(editingAgent)}
-                    required
-                  />
-                </label>
-                <label className="field">
-                  <span>Role</span>
-                  <textarea
-                    rows={5}
-                    value={agentDraft.prompt}
-                    onChange={(e) => setAgentDraft({ ...agentDraft, prompt: e.target.value })}
-                    required
-                  />
-                </label>
+                <div className="row">
+                  <label className="field narrow">
+                    <span>Name</span>
+                    <input
+                      className="mono"
+                      value={agentDraft.name}
+                      onChange={(e) => setAgentDraft({ ...agentDraft, name: e.target.value })}
+                      disabled={Boolean(editingAgent)}
+                      required
+                      autoFocus={!editingAgent}
+                    />
+                  </label>
+                  <label className="field grow">
+                    <span>Model (optional)</span>
+                    <input
+                      className="mono"
+                      value={agentDraft.model ?? ""}
+                      onChange={(e) => setAgentDraft({ ...agentDraft, model: e.target.value })}
+                      placeholder="e.g. haiku — empty = default Pi"
+                    />
+                  </label>
+                </div>
                 <div className="row">
                   <label className="field grow">
                     <span>Listens</span>
@@ -598,122 +748,352 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                     </select>
                   </label>
                 </div>
-                {skills.length > 0 && (
+                <label className="field">
+                  <span>Role</span>
+                  <textarea
+                    rows={5}
+                    value={agentDraft.prompt}
+                    onChange={(e) => setAgentDraft({ ...agentDraft, prompt: e.target.value })}
+                    required
+                    autoFocus={Boolean(editingAgent)}
+                  />
+                </label>
+                <AvatarPicker
+                  name={agentDraft.name || editingAgent || "agent"}
+                  value={agentDraft.avatar}
+                  onChange={(avatar) => setAgentDraft({ ...agentDraft, avatar })}
+                />
+                {skillOpts.length > 0 && (
                   <fieldset className="field">
-                    <legend>Skill packs</legend>
-                    {skills.map((sk) => (
-                      <label key={sk.name} className="inline check">
-                        <input
-                          type="checkbox"
-                          checked={(agentDraft.skills ?? []).includes(sk.name)}
-                          onChange={() => {
-                            const cur = agentDraft.skills ?? [];
-                            setAgentDraft({
-                              ...agentDraft,
-                              skills: cur.includes(sk.name) ? cur.filter((x) => x !== sk.name) : [...cur, sk.name],
-                            });
-                          }}
-                        />
-                        <span>{sk.name}</span>
-                      </label>
-                    ))}
+                    <legend>Skills</legend>
+                    <ToggleChips
+                      options={skillOpts}
+                      selected={agentDraft.skills ?? []}
+                      onToggle={(id) => setAgentDraft({ ...agentDraft, skills: toggleList(agentDraft.skills, id) })}
+                    />
+                    <span className="muted small">Packs bring their own tools automatically.</span>
                   </fieldset>
                 )}
                 <fieldset className="field">
-                  <legend>Tools</legend>
-                  {toolNames.map((name) => (
-                    <label key={name} className="inline check">
-                      <input
-                        type="checkbox"
-                        checked={(agentDraft.mcps ?? []).includes(name)}
-                        onChange={() => {
-                          const cur = agentDraft.mcps ?? [];
-                          setAgentDraft({
-                            ...agentDraft,
-                            mcps: cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name],
-                          });
-                        }}
-                      />
-                      <span>{name}</span>
-                    </label>
-                  ))}
+                  <legend>Extra tools</legend>
+                  <ToggleChips options={toolOpts} selected={agentDraft.mcps ?? []} onToggle={toggleAgentTools} />
+                  <span className="muted small">None selected = every tool. Turn on “Ask other agents” to pick who they may ask.</span>
                 </fieldset>
-                <div className="row">
+                {canAsk && (
+                  <fieldset className="field">
+                    <legend>Can ask</legend>
+                    {peerAgents.length === 0 ? (
+                      <p className="muted small">No other agents yet — add peers first.</p>
+                    ) : (
+                      <ToggleChips
+                        options={peerAgents.map((p) => ({ id: p.name, label: `@${p.name}` }))}
+                        selected={agentDraft.delegates ?? []}
+                        onToggle={(id) => setAgentDraft({ ...agentDraft, delegates: toggleList(agentDraft.delegates, id) })}
+                      />
+                    )}
+                    <span className="muted small">None selected = any other agent.</span>
+                  </fieldset>
+                )}
+                <div className="create-ai-sticky">
                   <button className="btn primary" disabled={!agentDraft.name.trim() || !agentDraft.prompt.trim()}>
                     {editingAgent ? "Save changes" : "Save agent"}
                   </button>
                   {editingAgent && (
-                    <button type="button" className="btn" onClick={() => reset("agent")}>
-                      Cancel
+                    <button type="button" className="btn" onClick={saveAsTemplate} disabled={!agentDraft.name.trim() || !agentDraft.prompt.trim()}>
+                      Save as template
+                    </button>
+                  )}
+                  <button type="button" className="btn" onClick={() => reset("agent")}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : kind === "skill" && skillDraft ? (
+              <form
+                className="persona-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveSkill();
+                }}
+              >
+                <div className="row">
+                  <label className="field grow">
+                    <span>Name</span>
+                    <input
+                      value={skillDraft.name}
+                      onChange={(e) => setSkillDraft({ ...skillDraft, name: e.target.value })}
+                      disabled={Boolean(editingSkill)}
+                      required
+                      autoFocus={!editingSkill}
+                    />
+                  </label>
+                  <label className="field grow">
+                    <span>Description</span>
+                    <input
+                      value={skillDraft.description}
+                      onChange={(e) => setSkillDraft({ ...skillDraft, description: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <fieldset className="field">
+                  <legend>Needs tools</legend>
+                  <ToggleChips
+                    options={toolOpts}
+                    selected={skillDraft.mcps}
+                    onToggle={(id) =>
+                      setSkillDraft({
+                        ...skillDraft,
+                        mcps: skillDraft.mcps.includes(id) ? skillDraft.mcps.filter((x) => x !== id) : [...skillDraft.mcps, id],
+                      })
+                    }
+                  />
+                  <span className="muted small">
+                    Built-in packs (Drive, code…). External MCP apps:{" "}
+                    <a href="#settings/tools">Settings → Tools</a>. For your own JS/Python helpers, use Custom tools below.
+                  </span>
+                </fieldset>
+                <label className="field">
+                  <span>Instructions (SKILL.md body)</span>
+                  <textarea rows={8} value={skillDraft.body} onChange={(e) => setSkillDraft({ ...skillDraft, body: e.target.value })} required />
+                  <span className="muted small">Tell the agent when to run your scripts (e.g. “format PDFs with scripts/format-pdf.js”).</span>
+                </label>
+                <fieldset className="field skill-bundles">
+                  <legend>Custom tools (scripts)</legend>
+                  <span className="muted small">
+                    Your code — JS/Python the agent runs with <code>node</code> / <code>python</code> (needs Code tools). Example: format a PDF.
+                  </span>
+                  {(skillDraft.files ?? [])
+                    .map((f, i) => ({ f, i }))
+                    .filter(({ f }) => f.path.startsWith("scripts/"))
+                    .map(({ f, i }) => (
+                      <div key={`script-${i}`} className="skill-bundle-row">
+                        <input
+                          className="mono"
+                          value={f.path}
+                          placeholder="scripts/format-pdf.js"
+                          aria-label={`Script path ${i + 1}`}
+                          onChange={(e) => {
+                            const files = [...(skillDraft.files ?? [])];
+                            files[i] = { ...f, path: e.target.value };
+                            setSkillDraft({ ...skillDraft, files });
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn small"
+                          aria-label={`Remove ${f.path || "script"}`}
+                          onClick={() =>
+                            setSkillDraft({
+                              ...skillDraft,
+                              files: (skillDraft.files ?? []).filter((_, j) => j !== i),
+                            })
+                          }
+                        >
+                          Remove
+                        </button>
+                        <textarea
+                          rows={6}
+                          className="mono"
+                          value={f.content}
+                          placeholder="// node script…"
+                          aria-label={`Script source ${f.path || ""}`}
+                          onChange={(e) => {
+                            const files = [...(skillDraft.files ?? [])];
+                            files[i] = { ...f, content: e.target.value };
+                            setSkillDraft({ ...skillDraft, files });
+                          }}
+                        />
+                      </div>
+                    ))}
+                  <div className="row">
+                    {(Object.keys(SCRIPT_STUBS) as (keyof typeof SCRIPT_STUBS)[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className="btn small"
+                        onClick={() => {
+                          const stub = SCRIPT_STUBS[key]!;
+                          setSkillDraft({
+                            ...skillDraft,
+                            mcps: ensureCoding(skillDraft.mcps),
+                            files: [...(skillDraft.files ?? []), { ...stub }],
+                          });
+                        }}
+                      >
+                        + {key === "js" ? "JS tool" : "Python tool"}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+                <fieldset className="field skill-bundles">
+                  <legend>Docs &amp; assets</legend>
+                  <span className="muted small">
+                    <code>references/</code> (long docs) and <code>assets/</code> (templates) — read on demand, not run.
+                  </span>
+                  {(skillDraft.files ?? [])
+                    .map((f, i) => ({ f, i }))
+                    .filter(({ f }) => !f.path.startsWith("scripts/"))
+                    .map(({ f, i }) => (
+                      <div key={`doc-${i}`} className="skill-bundle-row">
+                        <input
+                          className="mono"
+                          value={f.path}
+                          placeholder="references/rules.md"
+                          aria-label={`File path ${i + 1}`}
+                          onChange={(e) => {
+                            const files = [...(skillDraft.files ?? [])];
+                            files[i] = { ...f, path: e.target.value };
+                            setSkillDraft({ ...skillDraft, files });
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn small"
+                          aria-label={`Remove ${f.path || "file"}`}
+                          onClick={() =>
+                            setSkillDraft({
+                              ...skillDraft,
+                              files: (skillDraft.files ?? []).filter((_, j) => j !== i),
+                            })
+                          }
+                        >
+                          Remove
+                        </button>
+                        <textarea
+                          rows={4}
+                          value={f.content}
+                          placeholder="File contents…"
+                          aria-label={`Content for ${f.path || "file"}`}
+                          onChange={(e) => {
+                            const files = [...(skillDraft.files ?? [])];
+                            files[i] = { ...f, content: e.target.value };
+                            setSkillDraft({ ...skillDraft, files });
+                          }}
+                        />
+                      </div>
+                    ))}
+                  <div className="row">
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() =>
+                        setSkillDraft({
+                          ...skillDraft,
+                          files: [...(skillDraft.files ?? []), { path: "references/notes.md", content: "" }],
+                        })
+                      }
+                    >
+                      + references/
+                    </button>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() =>
+                        setSkillDraft({
+                          ...skillDraft,
+                          files: [...(skillDraft.files ?? []), { path: "assets/template.txt", content: "" }],
+                        })
+                      }
+                    >
+                      + assets/
+                    </button>
+                  </div>
+                </fieldset>
+                <div className="create-ai-sticky">
+                  <button className="btn primary" disabled={!skillDraft.name.trim() || !skillDraft.body.trim()}>
+                    {editingSkill ? "Save changes" : "Save skill"}
+                  </button>
+                  <button type="button" className="btn" onClick={() => reset("skill")}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <p className="empty">Pick an agent above, or start a new one.</p>
+            )}
+          </section>
+
+          {aiOpen && (
+            <section className="create-ai-chat" aria-label="Refine with AI">
+              <div className="create-ai-chat-head">
+                <h3>{editingSkill || editingAgent || editingHost ? "Edit with AI" : "Create with AI"}</h3>
+                <p className="muted small">
+                  {editingSkill || editingAgent || editingHost
+                    ? "Say what to change — the form updates, then Save."
+                    : "Chat builds the draft — then Save."}
+                </p>
+              </div>
+              <div className="create-ai-thread">
+                <div className="create-ai-msg assistant">
+                  <p>{intro}</p>
+                </div>
+                {messages.map((m, i) => (
+                  <div key={`${m.role}-${i}`} className={`create-ai-msg ${m.role}`}>
+                    <span className="create-ai-role">{m.role === "user" ? "You" : "AI"}</span>
+                    <p>{m.content}</p>
+                  </div>
+                ))}
+                {busy && (
+                  <div className="create-ai-msg assistant muted">
+                    <p>Thinking…</p>
+                  </div>
+                )}
+                <div ref={bottom} />
+              </div>
+              <form
+                className="create-ai-composer"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  send();
+                }}
+              >
+                <textarea
+                  rows={2}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  placeholder={
+                    editingHost
+                      ? "e.g. prefer Spanish, always offer to code…"
+                      : kind === "agent"
+                        ? editingAgent
+                          ? "e.g. make it shorter, add Drive, only answer people…"
+                          : "e.g. B2B sales agent that quotes from Drive…"
+                        : editingSkill
+                          ? "e.g. add a references/sla.md, tighten never-dos, need a JS script…"
+                          : "e.g. pricing skill with discount rules…"
+                  }
+                  disabled={busy}
+                  aria-label="Message"
+                />
+                <div className="row">
+                  <button className="btn primary" disabled={!input.trim() || busy}>
+                    {busy ? "…" : "Send"}
+                  </button>
+                  {messages.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        setMessages([]);
+                        setInput("");
+                      }}
+                    >
+                      Clear chat
                     </button>
                   )}
                 </div>
               </form>
-            ) : (
-              <p className="empty">Pick Edit above, or chat / create a new one to see the draft here.</p>
-            )
-          ) : skillDraft ? (
-            <form
-              className="persona-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                saveSkill();
-              }}
-            >
-              <label className="field">
-                <span>Name</span>
-                <input
-                  value={skillDraft.name}
-                  onChange={(e) => setSkillDraft({ ...skillDraft, name: e.target.value })}
-                  disabled={Boolean(editingSkill)}
-                  required
-                />
-              </label>
-              <label className="field">
-                <span>Description</span>
-                <input
-                  value={skillDraft.description}
-                  onChange={(e) => setSkillDraft({ ...skillDraft, description: e.target.value })}
-                />
-              </label>
-              <fieldset className="field">
-                <legend>Needs tools</legend>
-                {toolNames.map((g) => (
-                  <label key={g} className="inline check">
-                    <input
-                      type="checkbox"
-                      checked={skillDraft.mcps.includes(g)}
-                      onChange={() =>
-                        setSkillDraft({
-                          ...skillDraft,
-                          mcps: skillDraft.mcps.includes(g) ? skillDraft.mcps.filter((x) => x !== g) : [...skillDraft.mcps, g],
-                        })
-                      }
-                    />
-                    <span>{g}</span>
-                  </label>
-                ))}
-              </fieldset>
-              <label className="field">
-                <span>Instructions</span>
-                <textarea rows={8} value={skillDraft.body} onChange={(e) => setSkillDraft({ ...skillDraft, body: e.target.value })} required />
-              </label>
-              <div className="row">
-                <button className="btn primary" disabled={!skillDraft.name.trim() || !skillDraft.body.trim()}>
-                  {editingSkill ? "Save changes" : "Save skill"}
-                </button>
-                {editingSkill && (
-                  <button type="button" className="btn" onClick={() => reset("skill")}>
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </form>
-          ) : (
-            <p className="empty">Pick Edit above, or chat / create a new one to see the draft here.</p>
+            </section>
           )}
-        </section>
-      </div>
-    </details>
+        </div>
+      )}
+    </section>
   );
 }
