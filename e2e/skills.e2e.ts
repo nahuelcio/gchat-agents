@@ -8,7 +8,7 @@ test("a Finance agent gets the finanzas skill and the Drive folder is saved", as
   await screen.getByRole("button", "+ Add agent").tap();
   await screen.getByLabel("Name").fill("finanzas-e2e");
   await screen.getByLabel("Role and knowledge").fill("Sos el agente de Finanzas.");
-  await screen.getByText("finanzas", { exact: true }).tap();
+  await screen.getByRole("form", "Agent in chat").getByText("finanzas", { exact: true }).tap();
   await screen.getByRole("form", "Agent in chat").getByRole("button", "Save").tap();
   await expect(screen.getByText("@finanzas-e2e")).toBeVisible({ timeout: 10000 });
 

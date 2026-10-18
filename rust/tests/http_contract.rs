@@ -476,3 +476,59 @@ async fn drive_tools_are_only_for_agents_with_the_drive_mcp() {
     let (_, settings) = get_json(admin, "/api/settings").await;
     assert_eq!(settings["personas"][0]["mcps"], json!(["google-drive"]));
 }
+
+#[tokio::test]
+async fn agents_delegate_to_the_specialists_they_may_ask() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    put_json(
+        admin,
+        "/api/settings",
+        json!({ "personas": [
+            { "name": "soporte", "prompt": "Soporte", "mcps": ["agents"], "delegates": ["finanzas"] },
+            { "name": "finanzas", "prompt": "Finanzas y cierres" },
+            { "name": "ventas", "prompt": "Ventas" }
+        ] }),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let tool = |thread: &str, name: &str, args: Value| {
+        let env = switchboard::mcp::mcp_env(thread, &format!("http://127.0.0.1:{admin}"));
+        let (client, name) = (client.clone(), name.to_string());
+        async move { switchboard::mcp::run_tool(&name, &args, &env, &client).await }
+    };
+    let listed = tool("share/r#soporte", "list_agents", json!({})).await.unwrap();
+    assert!(listed.contains("@finanzas") && !listed.contains("@ventas"), "{listed}");
+    let answer = tool("share/r#soporte", "ask_agent", json!({ "agent": "@finanzas", "question": "cuanto facturamos?" })).await.unwrap();
+    assert!(answer.contains("cuanto facturamos?"), "{answer}");
+    assert!(tool("share/r#soporte", "ask_agent", json!({ "agent": "ventas", "question": "x" })).await.unwrap_err().contains("cannot ask @ventas"));
+    assert!(tool("share/r#finanzas", "ask_agent", json!({ "agent": "soporte", "question": "x" })).await.unwrap_err().contains("add the agents tool"));
+    let (_, events) = get_json(admin, "/api/activity?kind=agent_ask").await;
+    assert_eq!(events.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn skills_are_created_and_deleted_from_the_api() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, _state) = start_servers(dir.path().to_path_buf()).await;
+    let res = reqwest::Client::new()
+        .put(format!("http://127.0.0.1:{admin}/api/skills"))
+        .header("host", format!("127.0.0.1:{admin}"))
+        .json(&json!({ "name": "ventas-e2e", "description": "Precios", "mcps": ["agents"], "body": "Respondé con precios." }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 200);
+    let list: Value = res.json().await.unwrap();
+    let skill = list.as_array().unwrap().iter().find(|s| s["name"] == "ventas-e2e").unwrap();
+    assert_eq!(skill["body"], "Respondé con precios.");
+    assert_eq!(skill["mcps"], json!(["agents"]));
+    let res = reqwest::Client::new()
+        .delete(format!("http://127.0.0.1:{admin}/api/skills?name=ventas-e2e"))
+        .header("host", format!("127.0.0.1:{admin}"))
+        .send()
+        .await
+        .unwrap();
+    let list: Value = res.json().await.unwrap();
+    assert!(list.as_array().unwrap().iter().all(|s| s["name"] != "ventas-e2e"));
+}

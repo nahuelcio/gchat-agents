@@ -132,7 +132,7 @@ function OwnerApp() {
         {settings && (
           <div className="agent-card">
             <small>Agent</small>
-            <span>{settings.agentDriver === "claude" ? "Claude Code" : "OpenCode"}</span>
+            <span>{{ opencode: "OpenCode", claude: "Claude Code", pi: "Pi (durable)" }[settings.agentDriver]}</span>
             <code>{model ?? "default model"}</code>
           </div>
         )}

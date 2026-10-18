@@ -476,6 +476,7 @@ mod tests {
             respond_to: None,
             skills: vec![],
             mcps: vec![],
+            delegates: vec![],
         }
     }
 

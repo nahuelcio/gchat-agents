@@ -63,7 +63,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/thread/app", post(post_thread_app).put(post_thread_app))
         .route("/api/work-item", axum::routing::put(put_work_item))
         .route("/api/drive/xlsx", post(post_drive_xlsx))
-        .route("/api/skills", get(get_skills))
+        .route("/api/skills", get(get_skills).put(put_skill).delete(delete_skill))
+        .route("/api/mcp/servers", get(get_mcp_servers))
+        .route("/api/agents/delegates", get(get_delegates))
+        .route("/api/agents/ask", post(post_ask_agent))
         .route("/api/pi/keys", get(get_pi_keys).post(post_pi_key))
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
@@ -900,8 +903,82 @@ async fn post_pi_key(State(state): State<Arc<AppState>>, Json(body): Json<PiKeyB
 }
 
 async fn get_skills() -> Response {
-    let list: Vec<Value> = crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps })).collect();
+    let list: Vec<Value> = crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps, "body": s.body })).collect();
     Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+struct SkillBody {
+    name: Option<String>,
+    description: Option<String>,
+    mcps: Option<Vec<String>>,
+    body: Option<String>,
+}
+
+async fn put_skill(Json(b): Json<SkillBody>) -> Response {
+    let skill = crate::skills::Skill {
+        name: b.name.unwrap_or_default().trim().to_string(),
+        description: b.description.unwrap_or_default().trim().to_string(),
+        mcps: b.mcps.unwrap_or_default(),
+        body: b.body.unwrap_or_default(),
+    };
+    match crate::skills::save(&crate::skills::writable_dir(), &skill) {
+        Ok(()) => get_skills().await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NameQuery {
+    name: Option<String>,
+}
+
+async fn delete_skill(Query(q): Query<NameQuery>) -> Response {
+    match crate::skills::delete(&crate::skills::writable_dir(), q.name.as_deref().unwrap_or("")) {
+        Ok(()) => get_skills().await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_mcp_servers(State(state): State<Arc<AppState>>) -> Response {
+    Json(state.settings.get().mcp_servers).into_response()
+}
+
+async fn get_delegates(State(state): State<Arc<AppState>>, Query(q): Query<ThreadKeyQuery>) -> Response {
+    let Some(key) = thread_key_of(q.thread_key) else {
+        return missing_thread_key();
+    };
+    let personas = state.settings.get().personas;
+    let Some(caller) = crate::google_drive::persona_of(&key, &personas) else {
+        return Json(json!([])).into_response();
+    };
+    let list: Vec<Value> = crate::handler::delegates_for(caller, &personas)
+        .into_iter()
+        .map(|p| json!({ "name": p.name, "about": p.prompt.chars().take(160).collect::<String>() }))
+        .collect();
+    Json(list).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AskBody {
+    thread_key: Option<String>,
+    agent: Option<String>,
+    question: Option<String>,
+}
+
+async fn post_ask_agent(State(state): State<Arc<AppState>>, Json(b): Json<AskBody>) -> Response {
+    let Some(key) = thread_key_of(b.thread_key) else {
+        return missing_thread_key();
+    };
+    let question = b.question.unwrap_or_default();
+    if question.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "question is required" }))).into_response();
+    }
+    match crate::handler::ask_persona(&state.handler, &key, b.agent.as_deref().unwrap_or(""), &question).await {
+        Ok(answer) => Json(json!({ "answer": answer })).into_response(),
+        Err(err) => (StatusCode::FORBIDDEN, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 async fn post_drive_xlsx(State(state): State<Arc<AppState>>, Json(body): Json<XlsxBody>) -> Response {

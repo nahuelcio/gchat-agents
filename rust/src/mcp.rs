@@ -81,8 +81,76 @@ fn tools() -> Value {
         {"name":"update_schedule","description":"Update a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"},"cron":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["id"]}},
         {"name":"delete_schedule","description":"Delete a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
         {"name":"create_xlsx","description":"Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. Calling it again for the same request returns the same file.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"sheets":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"rows":{"type":"array","items":{"type":"array"}}},"required":["name","rows"]}}},"required":["title","sheets"]}},
-        {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}}
+        {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"list_agents","description":"List the specialised agents you can ask, with what each one knows.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"ask_agent","description":"Ask another specialised agent a question and get its answer. Use it when the question belongs to that agent's field.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"question":{"type":"string"}},"required":["agent","question"]}}
     ])
+}
+
+pub fn group_of(tool: &str) -> &'static str {
+    match tool {
+        "create_xlsx" | "list_spreadsheets" => "google-drive",
+        "ask_agent" | "list_agents" => "agents",
+        _ => "switchboard",
+    }
+}
+
+fn allowed_groups(env: &HashMap<String, String>) -> Option<Vec<String>> {
+    env.get("SWITCHBOARD_MCPS").map(|v| v.split(',').map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect())
+}
+
+pub struct External {
+    pub child: crate::mcp_client::McpChild,
+    pub tools: Vec<Value>,
+}
+
+pub async fn start_external(env: &HashMap<String, String>, client: &reqwest::Client) -> Vec<External> {
+    let Ok(listed) = call_admin("/api/mcp/servers", "GET", None, false, env, client).await else {
+        return Vec::new();
+    };
+    let servers: Vec<crate::mcp_client::McpServer> = serde_json::from_value(listed).unwrap_or_default();
+    let wanted = allowed_groups(env);
+    let mut out = Vec::new();
+    for server in servers {
+        if wanted.as_ref().is_some_and(|w| !w.contains(&server.name)) {
+            continue;
+        }
+        let name = server.name.clone();
+        match crate::mcp_client::McpChild::start(server).await {
+            Ok(child) => {
+                let tools = child.tools().await.unwrap_or_default();
+                out.push(External { child, tools });
+            }
+            Err(err) => eprintln!("MCP {name}: {err}"),
+        }
+    }
+    out
+}
+
+pub fn listed_tools(env: &HashMap<String, String>, external: &[External]) -> Vec<Value> {
+    let wanted = allowed_groups(env);
+    let keep = |group: &str| wanted.as_ref().is_none_or(|w| w.iter().any(|g| g == group));
+    let mut out: Vec<Value> = tools()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| keep(group_of(t["name"].as_str().unwrap_or(""))))
+        .map(|t| {
+            let mut t = with_thread_arg(t);
+            t["_meta"] = json!({ "group": group_of(t["name"].as_str().unwrap_or("")) });
+            t
+        })
+        .collect();
+    for ext in external {
+        for tool in &ext.tools {
+            let mut t = tool.clone();
+            let name = t["name"].as_str().unwrap_or("").to_string();
+            t["name"] = json!(crate::mcp_client::prefixed(&ext.child.server.name, &name));
+            t["_meta"] = json!({ "group": ext.child.server.name });
+            out.push(t);
+        }
+    }
+    out
 }
 
 fn with_thread_arg(tool: &Value) -> Value {
@@ -119,7 +187,7 @@ pub async fn call_admin(
     let mut url = format!("{base}{path}");
     if method == "GET" && thread {
         if let Some(tk) = thread_key {
-            url.push_str(&format!("?threadKey={tk}"));
+            url.push_str(&format!("?threadKey={}", crate::cli::enc(tk)));
         }
     }
     let mut req = match method {
@@ -217,6 +285,19 @@ pub async fn run_tool(
                 .map(|f| format!("{} · {}", f["name"].as_str().unwrap_or(""), f["webViewLink"].as_str().unwrap_or("")))
                 .collect::<Vec<_>>()
                 .join("\n"))
+        }
+        "list_agents" => {
+            let data = call_admin("/api/agents/delegates", "GET", None, true, &env, client).await?;
+            let list = data.as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                return Ok("No other agents you can ask in this room.".into());
+            }
+            Ok(list.iter().map(|a| format!("@{} — {}", a["name"].as_str().unwrap_or(""), a["about"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n"))
+        }
+        "ask_agent" => {
+            let body = json!({ "agent": args.get("agent").cloned().unwrap_or(Value::Null), "question": args.get("question").cloned().unwrap_or(Value::Null) });
+            let data = call_admin("/api/agents/ask", "POST", Some(body), true, &env, client).await?;
+            Ok(data.get("answer").and_then(|v| v.as_str()).unwrap_or("").to_string())
         }
         "list_repos" => {
             let data = call_admin("/api/thread/repos", "GET", None, false, &env, client).await?;
@@ -388,6 +469,10 @@ fn frame(msg: &Value, line_mode: bool) -> String {
 }
 
 pub async fn handle_rpc(msg: &Value, env: &HashMap<String, String>, client: &reqwest::Client) -> Option<String> {
+    handle_rpc_with(msg, env, client, &[]).await
+}
+
+pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client: &reqwest::Client, external: &[External]) -> Option<String> {
     let method = msg.get("method")?.as_str()?;
     let id = msg.get("id").cloned();
     let line_mode = true;
@@ -406,12 +491,7 @@ pub async fn handle_rpc(msg: &Value, env: &HashMap<String, String>, client: &req
         )),
         "notifications/initialized" | "initialized" => None,
         "tools/list" => {
-            let listed: Vec<Value> = tools()
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(with_thread_arg)
-                .collect();
+            let listed = listed_tools(env, external);
             Some(frame(
                 &json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": listed } }),
                 line_mode,
@@ -426,6 +506,14 @@ pub async fn handle_rpc(msg: &Value, env: &HashMap<String, String>, client: &req
                 .pointer("/params/arguments")
                 .cloned()
                 .unwrap_or(json!({}));
+            if let Some(ext) = external.iter().find(|e| name.starts_with(&format!("{}__", e.child.server.name))) {
+                let tool = &name[ext.child.server.name.len() + 2..];
+                let reply = match ext.child.call(tool, args).await {
+                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": err } }),
+                };
+                return Some(frame(&reply, line_mode));
+            }
             match run_tool(name, &args, env, client).await {
                 Ok(text) => Some(frame(
                     &json!({
@@ -460,6 +548,7 @@ pub async fn handle_rpc(msg: &Value, env: &HashMap<String, String>, client: &req
 pub async fn serve_stdio() -> Result<(), String> {
     let env: HashMap<String, String> = std::env::vars().collect();
     let client = reqwest::Client::new();
+    let external = start_external(&env, &client).await;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -472,7 +561,7 @@ pub async fn serve_stdio() -> Result<(), String> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        if let Some(out) = handle_rpc(&msg, &env, &client).await {
+        if let Some(out) = handle_rpc_with(&msg, &env, &client, &external).await {
             stdout.write_all(out.as_bytes()).map_err(|e| e.to_string())?;
             stdout.flush().map_err(|e| e.to_string())?;
         }
@@ -490,6 +579,38 @@ pub type _Unused = AgentTurnResult;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proxies_an_external_server_and_filters_by_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-mcp.mjs");
+        std::fs::write(
+            &script,
+            crate::mcp_client::tests::FAKE_MCP,
+        )
+        .unwrap();
+        let child = crate::mcp_client::McpChild::start(crate::mcp_client::McpServer {
+            name: "fake".into(),
+            command: "node".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            env: Default::default(),
+        })
+        .await
+        .unwrap();
+        let tools = child.tools().await.unwrap();
+        let external = vec![External { child, tools }];
+        let mut env = HashMap::new();
+        let names = |env: &HashMap<String, String>| listed_tools(env, &external).iter().map(|t| (t["name"].as_str().unwrap().to_string(), t["_meta"]["group"].as_str().unwrap().to_string())).collect::<Vec<_>>();
+        let all = names(&env);
+        assert!(all.contains(&("fake__shout".into(), "fake".into())));
+        assert!(all.contains(&("ask_agent".into(), "agents".into())));
+        env.insert("SWITCHBOARD_MCPS".into(), "fake,google-drive".into());
+        let some = names(&env);
+        assert!(some.iter().all(|(_, g)| g == "fake" || g == "google-drive"), "{some:?}");
+        let call = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "fake__shout", "arguments": { "text": "hola" } } });
+        let out = handle_rpc_with(&call, &env, &reqwest::Client::new(), &external).await.unwrap();
+        assert!(out.contains("HOLA"), "{out}");
+    }
 
     #[test]
     fn mcp_config_json() {

@@ -1,4 +1,7 @@
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -55,52 +58,80 @@ function models(): MutableModels {
   return m;
 }
 
-async function admin(path: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`${adminUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const data = (await res.json().catch(() => ({}))) as { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-  return data;
+const SAFE = new Set(["create_xlsx", "list_spreadsheets", "list_agents", "list_repos", "thread_status", "list_schedules"]);
+
+type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; _meta?: { group?: string } };
+
+class McpClient {
+  private child: ChildProcessByStdio<Writable, Readable, null>;
+  private next = 1;
+  private pending = new Map<number, (msg: { result?: unknown; error?: { message?: string } }) => void>();
+  constructor(command: string, args: string[]) {
+    this.child = spawn(command, args, { env: { ...process.env, SWITCHBOARD_ADMIN_URL: adminUrl }, stdio: ["pipe", "pipe", "ignore"] });
+    createInterface({ input: this.child.stdout }).on("line", (line) => {
+      try {
+        const msg = JSON.parse(line) as { id?: number };
+        if (typeof msg.id === "number") this.pending.get(msg.id)?.(msg as never);
+      } catch {}
+    });
+  }
+  request(method: string, params: unknown): Promise<unknown> {
+    const id = this.next++;
+    return new Promise((ok, fail) => {
+      this.pending.set(id, (msg) => {
+        this.pending.delete(id);
+        msg.error ? fail(new Error(msg.error.message ?? "MCP error")) : ok(msg.result);
+      });
+      this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+  }
+  close() {
+    this.child.kill();
+  }
 }
 
-const createXlsx = defineTool({
-  name: "create_xlsx",
-  description: "Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. One sheet per table, first row headers.",
-  parameters: Type.Object({
-    title: Type.String(),
-    sheets: Type.Array(Type.Object({ name: Type.String(), rows: Type.Array(Type.Array(Type.Any())) })),
-  }),
-  replay: "safe",
-  execute: async (args, api) => {
-    const threadKey = threads[api.conversationId] ?? "";
-    const out = (await admin("/api/drive/xlsx", { threadKey, taskId: `pi:${api.taskId}`, title: args.title, sheets: args.sheets })) as {
-      file: { webViewLink?: string };
-      rows: number;
-    };
-    return { output: [{ type: "text", text: `Created: ${out.file.webViewLink ?? "(no link)"} (${out.rows} rows)` }] };
-  },
-});
+let mcp: McpClient | undefined;
+let mcpTools: { group: string; tool: ReturnType<typeof defineTool> }[] = [];
 
-const listSpreadsheets = defineTool({
-  name: "list_spreadsheets",
-  description: "List the .xlsx files in the shared Google Drive folder.",
-  parameters: Type.Object({}),
-  replay: "safe",
-  execute: async (_args, api) => {
-    const threadKey = threads[api.conversationId] ?? "";
-    const res = await fetch(`${adminUrl}/api/drive/spreadsheets?threadKey=${encodeURIComponent(threadKey)}`);
-    const data = (await res.json()) as { name: string; webViewLink?: string }[] | { error: string };
-    if (!res.ok || !Array.isArray(data)) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
-    return { output: [{ type: "text", text: data.map((f) => `${f.name} · ${f.webViewLink ?? ""}`).join("\n") || "No spreadsheets yet." }] };
-  },
-});
+async function loadMcp() {
+  mcp?.close();
+  const bin = process.env.SWITCHBOARD_BIN;
+  if (!bin) return;
+  mcp = new McpClient(bin, ["mcp"]);
+  await mcp.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "pi-harness", version: "1" } });
+  const listed = (await mcp.request("tools/list", {})) as { tools: McpTool[] };
+  const client = mcp;
+  mcpTools = listed.tools.map((t) => {
+    const schema = structuredClone(t.inputSchema ?? { type: "object", properties: {} }) as { properties?: Record<string, unknown>; required?: string[] };
+    delete schema.properties?.thread;
+    schema.required = schema.required?.filter((r) => r !== "thread");
+    const tool = defineTool({
+      name: t.name,
+      description: t.description ?? t.name,
+      parameters: Type.Unsafe<Record<string, unknown>>(schema),
+      ...(SAFE.has(t.name) ? { replay: "safe" as const } : {}),
+      execute: async (args, api) => {
+        const thread = threads[api.conversationId] ?? "";
+        const extra = SAFE.has(t.name) && t.name === "create_xlsx" ? { taskId: `pi:${api.taskId}` } : {};
+        const result = (await client.request("tools/call", { name: t.name, arguments: { ...args, ...extra, thread } })) as { content?: { type: string; text?: string }[] };
+        return { output: [{ type: "text", text: (result.content ?? []).map((c) => c.text ?? "").join("\n") || "(no output)" }] };
+      },
+    });
+    return { group: t._meta?.group ?? "switchboard", tool };
+  });
+  registry.install(defineExtension({ name: "mcp", tools: mcpTools.map((t) => t.tool) }));
+}
 
-const Switchboard = defineExtension({ name: "switchboard", tools: [createXlsx, listSpreadsheets] });
+function toolsFor(groups?: string[] | null) {
+  const all = !groups || groups.length === 0;
+  const coding = all || groups.includes("coding") ? [...(CodingTools.tools ?? [])] : [];
+  return [...coding, ...mcpTools.filter((t) => all || groups.includes(t.group)).map((t) => t.tool)];
+}
+
 const registry = createRegistry();
 registry.install(CodingTools);
-registry.install(Switchboard);
-const allTools = new Map([...(CodingTools.tools ?? []), ...(Switchboard.tools ?? [])].map((t) => [t.name, t]));
+await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
 
-loadKeys();
 const shellEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET.test(k)));
 const harness = await Harness.open(
   await openNodeSqliteStorage(join(dataDir, "harness.sqlite")),
@@ -126,7 +157,7 @@ async function answerText(conv: Conversation, answer: unknown): Promise<string> 
   return content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
 }
 
-type TurnBody = { conversationId?: string; threadKey: string; requestId: string; text: string; cwd?: string; model?: string; tools?: string[] };
+type TurnBody = { conversationId?: string; threadKey: string; requestId: string; text: string; cwd?: string; model?: string; mcps?: string[] | null };
 
 function loadKeys() {
   const file = join(dataDir, "pi-keys.json");
@@ -142,7 +173,7 @@ async function turn(body: TurnBody) {
   let conv = known ? await harness.conversation(known as never, ctx) : undefined;
   if (!conv) conv = await harness.createConversation({ ownership: { kind: "ownerless" } }, ctx);
   remember(String(conv.id), body.threadKey, body.requestId);
-  const tools = (body.tools ?? [...allTools.keys()]).flatMap((n) => (allTools.get(n) ? [allTools.get(n)!] : []));
+  const tools = toolsFor(body.mcps);
   await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools }, ctx);
   const submission = await conv.submit({ type: "input", content: body.text, requestId: body.requestId }, ctx);
   const settled = await submission.wait(ctx);
@@ -170,6 +201,11 @@ createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, faux: process.env.PI_FAUX === "1" });
     if (req.method === "POST" && req.url === "/turn") return send(res, 200, await turn(JSON.parse(await read(req)) as TurnBody));
+    if (req.method === "POST" && req.url === "/reload") {
+      await loadMcp();
+      return send(res, 200, { ok: true, tools: mcpTools.map((t) => t.tool.name) });
+    }
+    if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
     if (req.method === "POST" && req.url === "/abort") {
       const { conversationId } = JSON.parse(await read(req)) as { conversationId: string };
       const conv = await harness.conversation(conversationId as never, ctx);

@@ -7,9 +7,6 @@ use serde_json::{json, Value};
 use super::types::{AgentDriver, AgentTurnInput, AgentTurnResult};
 use crate::settings::SettingsStore;
 
-const CODING: &[&str] = &["read", "write", "edit", "bash"];
-const DRIVE: &[&str] = &["create_xlsx", "list_spreadsheets"];
-
 #[derive(Clone)]
 pub struct PiDriver {
     pub base_url: String,
@@ -19,28 +16,18 @@ pub struct PiDriver {
     pub retry_ms: u64,
 }
 
-pub fn tools_for(mcps: Option<Vec<String>>) -> Vec<&'static str> {
-    let Some(mcps) = mcps.filter(|m| !m.is_empty()) else {
-        return CODING.iter().chain(DRIVE).copied().collect();
-    };
-    let mut tools = Vec::new();
-    if mcps.iter().any(|m| m == "coding") {
-        tools.extend(CODING);
+pub fn pi_model(model: &str) -> String {
+    match model.split_once('/') {
+        Some(("zai-coding-plan", id)) => format!("zai/{id}"),
+        _ => model.to_string(),
     }
-    if mcps.iter().any(|m| m == "google-drive") {
-        tools.extend(DRIVE);
-    }
-    tools
 }
 
 impl PiDriver {
-    fn tools(&self, thread_key: &str) -> Vec<&'static str> {
-        let settings = self.settings.as_ref().map(|s| s.get());
-        let mcps = settings
-            .as_ref()
-            .and_then(|s| crate::google_drive::persona_of(thread_key, &s.personas))
-            .map(crate::skills::mcps);
-        tools_for(mcps)
+    fn groups(&self, thread_key: &str) -> Option<Vec<String>> {
+        let settings = self.settings.as_ref()?.get();
+        let persona = crate::google_drive::persona_of(thread_key, &settings.personas)?;
+        Some(crate::skills::mcps(persona)).filter(|m| !m.is_empty())
     }
 }
 
@@ -53,8 +40,8 @@ impl AgentDriver for PiDriver {
             "requestId": input.request_id.clone().unwrap_or_else(|| format!("{}:{}", input.thread_key, uuid::Uuid::new_v4())),
             "text": input.text,
             "cwd": input.workdir,
-            "model": input.model.clone().or_else(|| self.model.clone()),
-            "tools": self.tools(&input.thread_key),
+            "model": input.model.clone().or_else(|| self.model.clone()).map(|m| pi_model(&m)),
+            "mcps": self.groups(&input.thread_key),
         });
         let url = format!("{}/turn", self.base_url.trim_end_matches('/'));
         let deadline = std::time::Instant::now() + Duration::from_millis(self.retry_ms);
@@ -86,9 +73,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_follow_the_agent_mcps() {
-        assert_eq!(tools_for(None), vec!["read", "write", "edit", "bash", "create_xlsx", "list_spreadsheets"]);
-        assert_eq!(tools_for(Some(vec!["google-drive".into()])), vec!["create_xlsx", "list_spreadsheets"]);
-        assert_eq!(tools_for(Some(vec!["coding".into()])), vec!["read", "write", "edit", "bash"]);
+    fn opencode_zai_names_map_to_pi() {
+        assert_eq!(pi_model("zai-coding-plan/glm-5.3-flash"), "zai/glm-5.3-flash");
+        assert_eq!(pi_model("anthropic/claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5");
     }
 }

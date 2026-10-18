@@ -18,6 +18,7 @@ export interface Settings {
   autoCompactAt: number;
   tunnel: TunnelMode;
   googleDriveFolderId?: string | null;
+  mcpServers?: McpServer[];
   personas: Persona[];
 }
 
@@ -31,6 +32,14 @@ export interface Persona {
   respondTo?: "anyone" | "people";
   skills?: string[];
   mcps?: string[];
+  delegates?: string[];
+}
+
+export interface McpServer {
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
 }
 
 export interface PiKey {
@@ -44,11 +53,14 @@ export interface SkillInfo {
   name: string;
   description: string;
   mcps: string[];
+  body: string;
 }
 
 export const BUILTIN_MCPS = [
-  { name: "switchboard", label: "Switchboard (repos, schedules, work item, room)" },
-  { name: "google-drive", label: "Google Drive (create .xlsx in the shared folder)" },
+  { name: "coding", label: "Code — read, write, edit files and run commands" },
+  { name: "agents", label: "Ask other agents — delegate a question to a specialist" },
+  { name: "switchboard", label: "Switchboard — repos, schedules, work item, room" },
+  { name: "google-drive", label: "Google Drive — create .xlsx in the shared folder" },
 ];
 
 export interface SearchHit {
@@ -175,6 +187,8 @@ export const api = {
   save: (patch: Partial<Settings>) => call<Settings>("/api/settings", patch, "PUT"),
   threads: () => call<Thread[]>("/api/threads"),
   skills: () => call<SkillInfo[]>("/api/skills"),
+  saveSkill: (skill: SkillInfo) => call<SkillInfo[]>("/api/skills", skill, "PUT"),
+  deleteSkill: (name: string) => call<SkillInfo[]>(`/api/skills?name=${encodeURIComponent(name)}`, undefined, "DELETE"),
   piKeys: () => call<PiKey[]>("/api/pi/keys"),
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),

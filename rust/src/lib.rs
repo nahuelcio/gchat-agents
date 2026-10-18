@@ -12,6 +12,7 @@ pub mod handler;
 pub mod health;
 pub mod integrations;
 pub mod mcp;
+pub mod mcp_client;
 pub mod media;
 pub mod personas;
 pub mod pi_keys;
@@ -172,9 +173,17 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     {
         let handler = handler.clone();
         let workspaces = workspaces.clone();
+        let servers = std::sync::Mutex::new(settings.get().mcp_servers);
         settings.on_change(Arc::new(move |s| {
             handler.config.lock().unwrap().allowed_spaces = s.allowed_spaces.clone();
             workspaces.set_repos(s.repos.clone());
+            let mut known = servers.lock().unwrap();
+            if *known != s.mcp_servers {
+                *known = s.mcp_servers.clone();
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    crate::pi_sidecar::reload();
+                }
+            }
         }));
     }
 

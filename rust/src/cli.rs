@@ -60,7 +60,7 @@ impl<'a> Args<'a> {
     }
 }
 
-fn enc(v: &str) -> String {
+pub fn enc(v: &str) -> String {
     v.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),

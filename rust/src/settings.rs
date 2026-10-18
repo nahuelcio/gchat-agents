@@ -36,6 +36,8 @@ pub struct Persona {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +55,8 @@ pub struct Settings {
     pub tunnel: TunnelMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google_drive_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<crate::mcp_client::McpServer>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -122,6 +126,7 @@ impl SettingsStore {
             personas: saved.personas.or(defaults.personas).unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
+            mcp_servers: saved.mcp_servers.unwrap_or_default(),
         };
         Self {
             file_path,
@@ -168,6 +173,9 @@ impl SettingsStore {
             if let Some(v) = patch.tunnel {
                 current.tunnel = v;
             }
+            if let Some(v) = patch.mcp_servers {
+                current.mcp_servers = v;
+            }
             if let Some(v) = patch.google_drive_folder_id {
                 current.google_drive_folder_id = Some(v.trim().to_string()).filter(|f| !f.is_empty());
             }
@@ -197,6 +205,7 @@ struct PartialSettings {
     personas: Option<Vec<Persona>>,
     tunnel: Option<TunnelMode>,
     google_drive_folder_id: Option<String>,
+    mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -212,9 +221,22 @@ pub struct SettingsPatch {
     pub personas: Option<Vec<Persona>>,
     pub tunnel: Option<TunnelMode>,
     pub google_drive_folder_id: Option<String>,
+    pub mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
 
 fn validate(s: &Settings) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for m in &s.mcp_servers {
+        if !crate::mcp_client::valid_name(&m.name) {
+            return Err(format!("MCP server name \"{}\" must be lowercase letters, digits or - and not a built-in name", m.name));
+        }
+        if m.command.trim().is_empty() {
+            return Err(format!("MCP server {} needs a command", m.name));
+        }
+        if !seen.insert(m.name.clone()) {
+            return Err(format!("MCP server {} is listed twice", m.name));
+        }
+    }
     let repo_name = Regex::new(r"^[a-zA-Z0-9._-]+$").unwrap();
     let persona_name = Regex::new(r"(?i)^[a-z0-9][a-z0-9_-]{0,31}$").unwrap();
     let space_re = Regex::new(r"^spaces/[^/\s]+$").unwrap();

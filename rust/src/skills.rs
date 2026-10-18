@@ -78,6 +78,35 @@ pub fn available() -> Vec<Skill> {
     out
 }
 
+pub fn render(skill: &Skill) -> String {
+    let mcps = if skill.mcps.is_empty() { String::new() } else { format!("mcps: [{}]\n", skill.mcps.join(", ")) };
+    format!("---\nname: {}\ndescription: {}\n{mcps}---\n\n{}\n", skill.name, skill.description.replace('\n', " "), skill.body.trim())
+}
+
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+pub fn save(dir: &Path, skill: &Skill) -> Result<(), String> {
+    if !valid_name(&skill.name) {
+        return Err("skill name must be lowercase letters, digits or -".into());
+    }
+    let folder = dir.join(&skill.name);
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    std::fs::write(folder.join("SKILL.md"), render(skill)).map_err(|e| e.to_string())
+}
+
+pub fn delete(dir: &Path, name: &str) -> Result<(), String> {
+    if !valid_name(name) {
+        return Err("bad skill name".into());
+    }
+    std::fs::remove_dir_all(dir.join(name)).map_err(|e| e.to_string())
+}
+
+pub fn writable_dir() -> PathBuf {
+    dirs().into_iter().next().unwrap_or_else(|| PathBuf::from("data/skills"))
+}
+
 pub fn instructions(persona: &Persona) -> String {
     persona
         .skills
@@ -105,6 +134,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_skills_read_back_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = Skill { name: "ventas".into(), description: "Precios y planes".into(), mcps: vec!["google-drive".into()], body: "Responde con precios.".into() };
+        save(dir.path(), &skill).unwrap();
+        assert_eq!(load_from(dir.path(), "ventas").unwrap(), skill);
+        assert!(save(dir.path(), &Skill { name: "../x".into(), ..skill.clone() }).is_err());
+        delete(dir.path(), "ventas").unwrap();
+        assert!(load_from(dir.path(), "ventas").is_none());
+    }
+
+    #[test]
     fn reads_frontmatter_and_body() {
         let s = parse("---\nname: finanzas\ndescription: cierres\nmcps: [google-drive]\n---\n\nNo inventar cifras.\n");
         assert_eq!(s.name, "finanzas");
@@ -119,7 +159,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("finanzas")).unwrap();
         std::fs::write(dir.path().join("finanzas/SKILL.md"), "---\nname: finanzas\nmcps: [google-drive]\n---\nNo inventar cifras.").unwrap();
         set_dirs(vec![dir.path().to_path_buf()]);
-        let p = Persona { name: "fin".into(), prompt: "F".into(), driver: None, model: None, agent: None, listen: None, respond_to: None, skills: vec!["finanzas".into()], mcps: vec![] };
+        let p = Persona { name: "fin".into(), prompt: "F".into(), driver: None, model: None, agent: None, listen: None, respond_to: None, skills: vec!["finanzas".into()], mcps: vec![], delegates: vec![] };
         assert!(crate::personas::persona_preamble(&p, std::slice::from_ref(&p)).contains("## Skill: finanzas\nNo inventar cifras."));
         assert_eq!(mcps(&p), vec!["google-drive"]);
     }

@@ -45,6 +45,7 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
                 .env("PI_PORT", port().to_string())
                 .env("SWITCHBOARD_ADMIN_URL", format!("http://127.0.0.1:{admin_port}"))
                 .env("PI_PARENT_PIPE", "1")
+                .env("SWITCHBOARD_BIN", std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "switchboard".into()))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
@@ -66,5 +67,15 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
+    });
+}
+
+pub fn reload() {
+    tokio::spawn(async {
+        let _ = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/reload", port()))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await;
     });
 }

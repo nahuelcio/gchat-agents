@@ -1179,6 +1179,54 @@ async fn set_title(req: &TurnRequest, deps: &HandlerDeps, title: Option<String>)
         .await
 }
 
+pub fn delegates_for<'a>(caller: &Persona, all: &'a [Persona]) -> Vec<&'a Persona> {
+    all.iter()
+        .filter(|p| !p.name.eq_ignore_ascii_case(&caller.name))
+        .filter(|p| caller.delegates.is_empty() || caller.delegates.iter().any(|d| d.eq_ignore_ascii_case(&p.name)))
+        .collect()
+}
+
+pub async fn ask_persona(deps: &HandlerDeps, thread_key: &str, agent: &str, question: &str) -> Result<String, String> {
+    let options = (deps.options)();
+    let (base, caller) = thread_key.rsplit_once('#').ok_or("ask_agent works from an agent's turn")?;
+    let caller = options.personas.iter().find(|p| p.name.eq_ignore_ascii_case(caller)).ok_or("unknown calling agent")?;
+    if !crate::skills::mcps(caller).iter().any(|m| m == "agents") {
+        return Err(format!("@{} cannot ask other agents (add the agents tool)", caller.name));
+    }
+    let target = delegates_for(caller, &options.personas)
+        .into_iter()
+        .find(|p| p.name.eq_ignore_ascii_case(agent.trim_start_matches('@')))
+        .ok_or_else(|| format!("@{} cannot ask @{agent}", caller.name))?
+        .clone();
+    let record = deps.store.get(base);
+    let key = format!("{base}#{}", target.name);
+    let session = record.as_ref().and_then(|r| r.persona_sessions.as_ref()).and_then(|m| m.get(&target.name).cloned());
+    let preamble = if session.is_none() { format!("{}\n\n---\n\n", persona_preamble(&target, &options.personas)) } else { String::new() };
+    let _talking = Speaking::start(base, &format!("@{}", target.name));
+    let out = deps
+        .driver
+        .run_turn(AgentTurnInput {
+            thread_key: key,
+            session_ref: session,
+            text: format!("{preamble}@{} asks you: {question}", caller.name),
+            workdir: record.as_ref().and_then(|r| r.worktree.clone()).unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone()),
+            model: target.model.clone(),
+            agent: target.agent.clone(),
+            driver: target.driver,
+            answer_questions: false,
+            request_id: None,
+        })
+        .await?;
+    if let Some(s) = out.session_ref {
+        let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+        sessions.insert(target.name.clone(), s);
+        let space = record.map(|r| r.space).unwrap_or_else(|| "team-chat".into());
+        let _ = deps.store.update(base, &space, SessionPatch { persona_sessions: Some(Some(sessions)), ..Default::default() }).await;
+    }
+    note(deps, "agent_ask", base, format!("@{} asked @{}", caller.name, target.name), question.chars().take(120).collect::<String>()).await;
+    Ok(out.reply)
+}
+
 pub async fn thread_command(deps: &HandlerDeps, thread_key: &str, text: &str) -> Result<String, String> {
     let space = deps.store.get(thread_key).map(|r| r.space).unwrap_or_else(|| "team-chat".into());
     let req = TurnRequest {
@@ -1480,6 +1528,7 @@ mod tests {
             respond_to: None,
             skills: vec![],
             mcps: vec![],
+            delegates: vec![],
         }
     }
 

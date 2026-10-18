@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type McpServer, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -37,6 +37,8 @@ export function SettingsView(props: ViewProps) {
       <GoogleChatCard {...props} />
       <AgentCard {...props} />
       <PersonasCard {...props} />
+      <SkillsCard {...props} />
+      <McpServersCard {...props} />
       <ContextCard {...props} />
       <TunnelCard {...props} />
       <DriveCard {...props} />
@@ -379,7 +381,7 @@ function PersonasCard({ settings, save }: ViewProps) {
     void loadOcAgents();
     api.skills().then(setSkills, () => setSkills([]));
   }, []);
-  const toggle = (key: "skills" | "mcps", value: string) =>
+  const toggle = (key: "skills" | "mcps" | "delegates", value: string) =>
     editing &&
     setEditing({
       ...editing,
@@ -402,6 +404,7 @@ function PersonasCard({ settings, save }: ViewProps) {
     const draft = { ...editing.draft, name: editing.draft.name.trim().replace(/^@/, ""), prompt: editing.draft.prompt.trim() };
     if (!draft.skills?.length) delete draft.skills;
     if (!draft.mcps?.length) delete draft.mcps;
+    if (!draft.delegates?.length || !draft.mcps?.includes("agents")) delete draft.delegates;
     if (!draft.model?.trim()) delete draft.model;
     if (!draft.driver) delete draft.driver;
     if (!draft.agent || draft.driver === "claude" || draft.driver === "pi") delete draft.agent;
@@ -570,15 +573,29 @@ function PersonasCard({ settings, save }: ViewProps) {
             ))}
           </fieldset>
           <fieldset className="field">
-            <legend>Tools (MCP)</legend>
-            {BUILTIN_MCPS.map((m) => (
+            <legend>Tools</legend>
+            {[...BUILTIN_MCPS, ...(settings.mcpServers ?? []).map((m) => ({ name: m.name, label: `${m.name} — your MCP server (${m.command})` }))].map((m) => (
               <label key={m.name} className="inline check">
                 <input type="checkbox" checked={(editing.draft.mcps ?? []).includes(m.name)} onChange={() => toggle("mcps", m.name)} />
                 <span>{m.label}</span>
               </label>
             ))}
-            <span className="muted small">Skills turn on the tools they need by themselves.</span>
+            <span className="muted small">None checked = every tool. Skills turn on the tools they need by themselves.</span>
           </fieldset>
+          {(editing.draft.mcps ?? []).includes("agents") && (
+            <fieldset className="field">
+              <legend>Can ask</legend>
+              {personas
+                .filter((p) => p.name !== editing.draft.name)
+                .map((p) => (
+                  <label key={p.name} className="inline check">
+                    <input type="checkbox" checked={(editing.draft.delegates ?? []).includes(p.name)} onChange={() => toggle("delegates", p.name)} />
+                    <span>@{p.name}</span>
+                  </label>
+                ))}
+              <span className="muted small">None checked = any other agent.</span>
+            </fieldset>
+          )}
           <div className="row">
             <button className="btn primary">Save</button>
             <button type="button" className="btn" onClick={() => setEditing(null)}>
@@ -618,6 +635,167 @@ function PersonasCard({ settings, save }: ViewProps) {
             )}
           </div>
         </>
+      )}
+    </details>
+  );
+}
+
+const EMPTY_SKILL: SkillInfo = { name: "", description: "", mcps: [], body: "" };
+
+function SkillsCard({ settings, notify }: ViewProps) {
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [draft, setDraft] = useState<SkillInfo | null>(null);
+  const [isNew, setIsNew] = useState(false);
+  useEffect(() => {
+    api.skills().then(setSkills, () => setSkills([]));
+  }, []);
+  const groups = [...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)];
+  const run = (p: Promise<SkillInfo[]>, ok: string) =>
+    p.then(
+      (list) => {
+        setSkills(list);
+        setDraft(null);
+        notify(ok);
+      },
+      (e: Error) => notify(e.message, true),
+    );
+  return (
+    <details className="card" open aria-label="Skills">
+      <summary className="card-title">
+        <h2>Skills</h2>
+        <p className="muted small">Reusable know-how you give to agents: instructions plus the tools they need. Pick them per agent above.</p>
+      </summary>
+      {skills.map((sk) => (
+        <div key={sk.name} className="persona-row">
+          <div className="grow">
+            <span className="strong">{sk.name}</span> <span className="muted small">{sk.description}</span>
+            {sk.mcps.length > 0 && <div className="muted small">Tools: {sk.mcps.join(", ")}</div>}
+          </div>
+          <button className="btn small" onClick={() => { setIsNew(false); setDraft({ ...sk }); }}>
+            Edit
+          </button>
+          <button className="x" aria-label={`Delete skill ${sk.name}`} onClick={() => void run(api.deleteSkill(sk.name), `Skill ${sk.name} deleted`)}>
+            ×
+          </button>
+        </div>
+      ))}
+      {draft ? (
+        <form
+          className="persona-form"
+          aria-label="Skill"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(api.saveSkill({ ...draft, name: draft.name.trim().toLowerCase() }), `Skill ${draft.name} saved`);
+          }}
+        >
+          <label className="field">
+            <span>Name</span>
+            <input value={draft.name} disabled={!isNew} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="ventas" required />
+          </label>
+          <label className="field">
+            <span>Description</span>
+            <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="Precios, planes y cotizaciones" />
+          </label>
+          <fieldset className="field">
+            <legend>Needs tools</legend>
+            {groups.map((g) => (
+              <label key={g} className="inline check">
+                <input
+                  type="checkbox"
+                  checked={draft.mcps.includes(g)}
+                  onChange={() => setDraft({ ...draft, mcps: draft.mcps.includes(g) ? draft.mcps.filter((x) => x !== g) : [...draft.mcps, g] })}
+                />
+                <span>{g}</span>
+              </label>
+            ))}
+          </fieldset>
+          <label className="field">
+            <span>Instructions</span>
+            <textarea rows={8} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} placeholder="What the agent must do, never do, and how to answer." />
+          </label>
+          <div className="row">
+            <button className="btn primary">Save skill</button>
+            <button type="button" className="btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button className="btn" onClick={() => { setIsNew(true); setDraft({ ...EMPTY_SKILL }); }}>
+          + New skill
+        </button>
+      )}
+    </details>
+  );
+}
+
+const EMPTY_SERVER = { name: "", command: "", args: "", env: "" };
+
+function McpServersCard({ settings, save }: ViewProps) {
+  const servers = settings.mcpServers ?? [];
+  const [draft, setDraft] = useState<typeof EMPTY_SERVER | null>(null);
+  const commit = (list: McpServer[], ok: string) => save({ mcpServers: list }, ok);
+  return (
+    <details className="card" open aria-label="MCP servers">
+      <summary className="card-title">
+        <h2>MCP servers</h2>
+        <p className="muted small">Bring any MCP server (stdio). Its tools show up as name__tool for the agents you allow, on every runtime.</p>
+      </summary>
+      {servers.map((m) => (
+        <div key={m.name} className="persona-row">
+          <div className="grow">
+            <span className="strong">{m.name}</span> <code className="muted small">{[m.command, ...m.args].join(" ")}</code>
+            {m.env && Object.keys(m.env).length > 0 && <div className="muted small">env: {Object.keys(m.env).join(", ")}</div>}
+          </div>
+          <button className="x" aria-label={`Remove MCP ${m.name}`} onClick={() => void commit(servers.filter((x) => x.name !== m.name), `${m.name} removed`)}>
+            ×
+          </button>
+        </div>
+      ))}
+      {draft ? (
+        <form
+          className="persona-form"
+          aria-label="MCP server"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const env = Object.fromEntries(
+              draft.env
+                .split("\n")
+                .map((l) => l.trim())
+                .filter((l) => l.includes("="))
+                .map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]),
+            );
+            const server: McpServer = { name: draft.name.trim().toLowerCase(), command: draft.command.trim(), args: draft.args.split(" ").filter(Boolean), env };
+            void commit([...servers, server], `${server.name} added`).then(() => setDraft(null));
+          }}
+        >
+          <label className="field">
+            <span>Name</span>
+            <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="github" required />
+          </label>
+          <label className="field">
+            <span>Command</span>
+            <input className="mono" value={draft.command} onChange={(e) => setDraft({ ...draft, command: e.target.value })} placeholder="npx" required />
+          </label>
+          <label className="field">
+            <span>Arguments</span>
+            <input className="mono" value={draft.args} onChange={(e) => setDraft({ ...draft, args: e.target.value })} placeholder="-y @modelcontextprotocol/server-github" />
+          </label>
+          <label className="field">
+            <span>Environment (one KEY=value per line)</span>
+            <textarea className="mono" rows={3} value={draft.env} onChange={(e) => setDraft({ ...draft, env: e.target.value })} placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=..." />
+          </label>
+          <div className="row">
+            <button className="btn primary">Add server</button>
+            <button type="button" className="btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button className="btn" onClick={() => setDraft({ ...EMPTY_SERVER })}>
+          + Add MCP server
+        </button>
       )}
     </details>
   );

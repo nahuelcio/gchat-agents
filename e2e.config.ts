@@ -6,7 +6,7 @@ import { web } from "@e2e-dev/web";
 
 const dataDir = process.env.E2E_DATA_DIR ?? (process.env.E2E_DATA_DIR = mkdtempSync(join(tmpdir(), "switchboard-e2e-")));
 const driver = process.env.E2E_DRIVER ?? "echo";
-const bin = join("rust", "target", "debug", process.platform === "win32" ? "switchboard.exe" : "switchboard");
+const bin = process.env.E2E_BIN ?? join("rust", "target", "debug", process.platform === "win32" ? "switchboard.exe" : "switchboard");
 
 export default {
   tests: ["e2e/**/*.e2e.ts"],
