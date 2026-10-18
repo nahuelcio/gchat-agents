@@ -891,12 +891,17 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
   }, [project]);
 
   const entries = Object.entries(settings.repos);
+  const hasEnvPat = !!ado?.hasEnvPat;
   const sourceLabel =
     ado?.connected && ado.source === "settings"
       ? "saved in Switchboard"
-      : ado?.connected
-        ? "from ado CLI / env"
-        : null;
+      : ado?.connected && ado.source === "env"
+        ? "AZURE_DEVOPS_PAT from environment"
+        : ado?.connected
+          ? "from ado CLI / env"
+          : null;
+  const patOptional =
+    hasEnvPat || (ado?.connected === true && (ado.source === "settings" || ado.source === "env"));
 
   return (
     <details className="card" open>
@@ -906,7 +911,9 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           {ado?.connected
             ? `Azure DevOps · ${ado.org}${sourceLabel ? ` (${sourceLabel})` : ""}.`
             : ado
-              ? "Paste your org and PAT below to enable clones and the ado CLI for agents."
+              ? hasEnvPat
+                ? "AZURE_DEVOPS_PAT is set — enter org (and optional project) to connect."
+                : "Paste your org and PAT below to enable clones and the ado CLI for agents."
               : " "}
         </p>
       </summary>
@@ -940,12 +947,14 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           value={patDraft}
           onChange={(e) => setPatDraft(e.target.value)}
           placeholder={
-            ado?.connected && ado.source === "settings"
-              ? "PAT saved — paste a new one to replace it"
-              : "Personal access token (Code Read)"
+            hasEnvPat
+              ? "AZURE_DEVOPS_PAT in env — leave blank to use it, or paste to override"
+              : ado?.connected && ado.source === "settings"
+                ? "PAT saved — paste a new one to replace it"
+                : "Personal access token (Code Read)"
           }
           autoComplete="off"
-          required={!ado?.connected || ado.source !== "settings"}
+          required={!patOptional}
         />
         <input
           className="mono"
@@ -958,7 +967,7 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
           <button className="btn primary" disabled={busyKey || !orgDraft.trim()}>
             {busyKey ? "Saving…" : "Save key"}
           </button>
-          {ado?.connected && ado.source === "settings" && (
+          {ado?.connected && (ado.source === "settings" || ado.source === "env") && (
             <button
               type="button"
               className="btn"
@@ -982,7 +991,8 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
         </div>
         <span className="muted small">
           Create a PAT in Azure DevOps → User settings → Personal access tokens (Code Read &amp; Write; Work Items Read for board recipes).
-          Saving here installs the shared <code>ado</code> profile (<code>@cioffinahuel/opencode-ado</code> ships with Switchboard) — agents can run <code>ado wi list</code> without a separate <code>ado init</code>.
+          If <code>AZURE_DEVOPS_PAT</code> is already in the environment, Settings reads it automatically.
+          Saving installs the shared <code>ado</code> profile so agents can run <code>ado wi list</code>.
         </span>
       </form>
       {entries.length === 0 && <p className="empty">No repos yet. Add one from Azure DevOps, then use /repo &lt;name&gt; in a thread.</p>}

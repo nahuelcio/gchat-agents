@@ -58,8 +58,14 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
                 .env("PI_PARENT_PIPE", "1")
                 .env("SWITCHBOARD_BIN", std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "switchboard".into()))
                 .env("PATH", &path_with_bins);
-            if let Some(pat) = crate::integrations::resolve_ado(&data_dir).map(|a| a.pat) {
-                cmd.env("AZURE_DEVOPS_PAT", pat);
+            // Don't clobber a PAT the user already exported (e.g. from Azure DevOps / shell).
+            let env_has_pat = std::env::var("AZURE_DEVOPS_PAT")
+                .ok()
+                .is_some_and(|s| !s.trim().is_empty());
+            if !env_has_pat {
+                if let Some(pat) = crate::integrations::resolve_ado(&data_dir).map(|a| a.pat) {
+                    cmd.env("AZURE_DEVOPS_PAT", pat);
+                }
             }
             let child = cmd
                 .stdin(Stdio::piped())

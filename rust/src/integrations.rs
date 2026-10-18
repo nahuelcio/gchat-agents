@@ -56,14 +56,29 @@ pub fn ado_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("ado.json")
 }
 
+/// PAT from the process environment (Settings / agents prefer this when set).
+pub fn env_ado_pat() -> Option<String> {
+    std::env::var("AZURE_DEVOPS_PAT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn load_stored_ado(data_dir: &Path) -> Option<DetectedAdo> {
     let raw = std::fs::read_to_string(ado_config_path(data_dir)).ok()?;
     let stored: StoredAdo = serde_json::from_str(&raw).ok()?;
     let org = stored.org.trim().to_string();
-    let pat = stored.pat.trim().to_string();
-    if org.is_empty() || pat.is_empty() {
+    if org.is_empty() {
         return None;
     }
+    let stored_pat = stored.pat.trim().to_string();
+    let (pat, source) = if !stored_pat.is_empty() {
+        (stored_pat, "settings")
+    } else if let Some(p) = env_ado_pat() {
+        (p, "env")
+    } else {
+        return None;
+    };
     let default_project = stored
         .default_project
         .map(|s| s.trim().to_string())
@@ -74,7 +89,7 @@ pub fn load_stored_ado(data_dir: &Path) -> Option<DetectedAdo> {
         profile: "settings".into(),
         projects: default_project.iter().cloned().collect(),
         default_project,
-        source: "settings".into(),
+        source: source.into(),
     })
 }
 
@@ -512,5 +527,22 @@ mod tests {
     fn auth_header_is_basic() {
         let h = ado_auth_header("pat");
         assert!(h.starts_with("Basic "));
+    }
+
+    #[test]
+    fn load_stored_reads_azure_devops_pat_env_when_pat_blank() {
+        let _guard = ADO_CLI_HOME_LOCK.lock().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            ado_config_path(dir.path()),
+            r#"{"org":"env-org","pat":"","defaultProject":"P"}"#,
+        )
+        .unwrap();
+        unsafe { std::env::set_var("AZURE_DEVOPS_PAT", "from-env-pat") };
+        let d = load_stored_ado(dir.path()).unwrap();
+        assert_eq!(d.org, "env-org");
+        assert_eq!(d.pat, "from-env-pat");
+        assert_eq!(d.source, "env");
+        unsafe { std::env::remove_var("AZURE_DEVOPS_PAT") };
     }
 }

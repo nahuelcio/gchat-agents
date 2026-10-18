@@ -30,6 +30,8 @@ if (existsSync(localBin)) {
 }
 
 function loadAdoPat() {
+  // Prefer an already-exported AZURE_DEVOPS_PAT (shell / Azure DevOps settings).
+  if (process.env.AZURE_DEVOPS_PAT?.trim()) return;
   try {
     const file = join(dataDir, "ado.json");
     if (!existsSync(file)) return;

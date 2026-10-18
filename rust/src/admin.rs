@@ -486,6 +486,7 @@ async fn post_google_test(State(state): State<Arc<AppState>>, Json(body): Json<G
 }
 
 async fn get_ado_status(State(state): State<Arc<AppState>>) -> Response {
+    let has_env_pat = crate::integrations::env_ado_pat().is_some();
     match crate::integrations::resolve_ado(&state.data_dir) {
         Some(ado) => Json(json!({
             "connected": true,
@@ -494,9 +495,10 @@ async fn get_ado_status(State(state): State<Arc<AppState>>) -> Response {
             "projects": ado.projects,
             "defaultProject": ado.default_project,
             "source": ado.source,
+            "hasEnvPat": has_env_pat,
         }))
         .into_response(),
-        None => Json(json!({ "connected": false })).into_response(),
+        None => Json(json!({ "connected": false, "hasEnvPat": has_env_pat })).into_response(),
     }
 }
 
@@ -511,10 +513,12 @@ struct AdoConfigBody {
 async fn post_ado_config(State(state): State<Arc<AppState>>, Json(body): Json<AdoConfigBody>) -> Response {
     let org = body.org.unwrap_or_default();
     let mut pat = body.pat.unwrap_or_default();
-    // Empty PAT keeps the previous stored token when updating org/project.
+    // Empty PAT: keep previous stored token, else AZURE_DEVOPS_PAT from the environment.
     if pat.trim().is_empty() {
         if let Some(prev) = crate::integrations::load_stored_ado(&state.data_dir) {
             pat = prev.pat;
+        } else if let Some(env_pat) = crate::integrations::env_ado_pat() {
+            pat = env_pat;
         }
     }
     match crate::integrations::save_ado(
@@ -532,6 +536,7 @@ async fn post_ado_config(State(state): State<Arc<AppState>>, Json(body): Json<Ad
             "projects": ado.projects,
             "defaultProject": ado.default_project,
             "source": ado.source,
+            "hasEnvPat": crate::integrations::env_ado_pat().is_some(),
         }))
         .into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),

@@ -256,8 +256,14 @@ export interface GoogleStatus {
 }
 
 export type AdoStatus =
-  | { connected: false }
-  | { connected: true; org: string; defaultProject?: string; source?: "settings" | "cli" | string };
+  | { connected: false; hasEnvPat?: boolean }
+  | {
+      connected: true;
+      org: string;
+      defaultProject?: string;
+      source?: "settings" | "cli" | "env" | string;
+      hasEnvPat?: boolean;
+    };
 
 export interface AdoRepo {
   id: string;
