@@ -77,9 +77,10 @@ export function SettingsView(props: ViewProps) {
       )}
       {tab === "chat" && (
         <>
+          <BatchingCard {...props} />
+          <ContextCard {...props} />
           <GoogleChatCard {...props} />
           <SpacesCard {...props} />
-          <ContextCard {...props} />
         </>
       )}
       {tab === "connections" && (
@@ -1017,6 +1018,43 @@ function DriveCard({ settings, save }: ViewProps) {
           <button className="btn">Save</button>
         </div>
       </form>
+    </details>
+  );
+}
+
+const BATCH_OPTIONS = [
+  { value: 0, label: "Off" },
+  { value: 2000, label: "2 s" },
+  { value: 3000, label: "3 s" },
+  { value: 5000, label: "5 s" },
+];
+
+function BatchingCard({ settings, save }: ViewProps) {
+  const current = settings.debounceMs ?? 0;
+  const seconds = current / 1000;
+  return (
+    <details className="card" open aria-label="Message batching">
+      <summary className="card-title">
+        <h2>Message batching</h2>
+        <p className="muted small">When someone sends several messages in a row, wait a moment and hand them to the agent as one.</p>
+      </summary>
+      <div className="field">
+        <span>Wait after the last message</span>
+        <fieldset className="chips">
+          <legend className="sr-only">Batching delay</legend>
+          {BATCH_OPTIONS.map((o) => (
+            <label key={o.value} className={`chip ${current === o.value ? "on" : ""}`}>
+              <input type="radio" name="batching" checked={current === o.value} onChange={() => void save({ debounceMs: o.value }, o.value ? `Batching messages for ${o.label}` : "Batching off")} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">
+          {current
+            ? `Messages sent within ${seconds} s of each other reach the agent together, in one turn. Commands like /status still run right away.`
+            : "Every message reaches the agent on its own."}
+        </span>
+      </div>
     </details>
   );
 }

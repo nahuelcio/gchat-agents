@@ -16,6 +16,7 @@ export interface Settings {
   allowedSpaces: string[];
   contextFooter: ContextFooter;
   autoCompactAt: number;
+  debounceMs?: number;
   tunnel: TunnelMode;
   googleDriveFolderId?: string | null;
   mcpServers?: McpServer[];

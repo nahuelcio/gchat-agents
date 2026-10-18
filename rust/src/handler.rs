@@ -108,6 +108,7 @@ pub struct HandlerConfig {
 pub struct TurnOptions {
     pub context_footer: ContextFooter,
     pub auto_compact_at: u32,
+    pub debounce_ms: u32,
     pub default_model: Option<String>,
     pub default_driver: crate::config::AgentDriverKind,
     pub default_models: crate::settings::Models,
@@ -259,21 +260,20 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
             tracing::info!("message dropped: attachments could not be downloaded");
             return;
         }
-        let _ = tracked(&deps2.clone(), request_id.as_deref(), process_message(
-            TurnRequest {
-                thread_key: thread2,
-                space_name: space2,
-                text: prompt,
-                sender,
-                reply_via_chat: true,
-                thread,
-                room_n: None,
-                captured_replies: None,
-                request_id: request_id.clone(),
-            },
-            deps2,
-        ))
-        .await;
+        let request = TurnRequest {
+            thread_key: thread2,
+            space_name: space2,
+            text: prompt,
+            sender,
+            reply_via_chat: true,
+            thread,
+            room_n: None,
+            captured_replies: None,
+            request_id: request_id.clone(),
+        };
+        let Some(request) = debounce(&deps2, request).await else { return };
+        let id = request.request_id.clone();
+        let _ = tracked(&deps2.clone(), id.as_deref(), process_message(request, deps2)).await;
     });
     HandleResult {
         status: 200,
@@ -285,6 +285,60 @@ async fn mark(deps: &HandlerDeps, request_id: Option<&str>, state: crate::turn_l
     if let (Some(ledger), Some(id)) = (&deps.ledger, request_id) {
         ledger.set(id, state).await;
     }
+}
+
+struct Batch {
+    generation: u64,
+    items: Vec<(Option<String>, String, Option<String>)>,
+}
+
+static BATCHES: std::sync::Mutex<Option<std::collections::HashMap<String, Batch>>> = std::sync::Mutex::new(None);
+
+pub async fn debounce(deps: &HandlerDeps, req: TurnRequest) -> Option<TurnRequest> {
+    let ms = (deps.options)().debounce_ms;
+    if ms == 0 || req.text.trim_start().starts_with('/') {
+        return Some(req);
+    }
+    let generation = {
+        let mut guard = BATCHES.lock().unwrap();
+        let batch = guard.get_or_insert_with(std::collections::HashMap::new).entry(req.thread_key.clone()).or_insert(Batch { generation: 0, items: Vec::new() });
+        batch.generation += 1;
+        batch.items.push((req.sender.clone(), req.text.clone(), req.request_id.clone()));
+        batch.generation
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+    let items = {
+        let mut guard = BATCHES.lock().unwrap();
+        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+        if map.get(&req.thread_key).map(|b| b.generation) != Some(generation) {
+            return None;
+        }
+        map.remove(&req.thread_key).map(|b| b.items).unwrap_or_default()
+    };
+    if items.len() <= 1 {
+        return Some(req);
+    }
+    for (_, _, id) in &items[..items.len() - 1] {
+        mark(deps, id.as_deref(), crate::turn_ledger::TurnState::Posted).await;
+    }
+    let one_sender = items.iter().all(|(s, _, _)| *s == items[0].0);
+    let text = items
+        .iter()
+        .map(|(s, t, _)| match (one_sender, s) {
+            (false, Some(s)) => format!("{s}: {t}"),
+            _ => t.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sender = if one_sender { items[0].0.clone() } else { None };
+    if let (Some(ledger), Some(id)) = (&deps.ledger, &req.request_id) {
+        ledger.remember_prompt(id, &match &sender {
+            Some(s) => format!("{s}: {text}"),
+            None => text.clone(),
+        })
+        .await;
+    }
+    Some(TurnRequest { text, sender, ..req })
 }
 
 pub async fn tracked<F: std::future::Future<Output = Result<bool, String>>>(deps: &HandlerDeps, request_id: Option<&str>, turn: F) -> Result<bool, String> {
@@ -1520,6 +1574,7 @@ pub fn settings_to_options(s: &Settings) -> TurnOptions {
     TurnOptions {
         context_footer: s.context_footer,
         auto_compact_at: s.auto_compact_at,
+        debounce_ms: s.debounce_ms,
         default_model,
         default_driver: s.agent_driver,
         default_models: s.models.clone(),
@@ -1616,6 +1671,7 @@ mod tests {
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
+                debounce_ms: 0,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Opencode,
                 default_models: Default::default(),
@@ -1672,6 +1728,7 @@ mod tests {
             options: Arc::new(move || TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
+                debounce_ms: 0,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Opencode,
                 default_models: Default::default(),
@@ -1719,6 +1776,7 @@ mod tests {
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
+                debounce_ms: 0,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Opencode,
                 default_models: Default::default(),
@@ -1770,6 +1828,7 @@ mod tests {
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
+                debounce_ms: 0,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Opencode,
                 default_models: Default::default(),
@@ -2065,6 +2124,7 @@ mod tests {
             options: Arc::new(|| TurnOptions {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
+                debounce_ms: 0,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Opencode,
                 default_models: Default::default(),
@@ -2072,6 +2132,82 @@ mod tests {
             }),
             media: None,
         })
+    }
+
+    #[tokio::test]
+    async fn quick_messages_reach_the_agent_as_one_turn() {
+        let dir = tempdir().unwrap();
+        let base = ledger_deps(dir.path(), Arc::new(EchoDriver), Arc::new(crate::google::RecordingChat::new()));
+        let deps = Arc::new(HandlerDeps {
+            verifier: base.verifier.clone(),
+            driver: base.driver.clone(),
+            chat: base.chat.clone(),
+            store: base.store.clone(),
+            queue: base.queue.clone(),
+            config: std::sync::Mutex::new(HandlerConfig { allowed_spaces: vec![], workdir: dir.path().to_string_lossy().to_string() }),
+            workspaces: None,
+            activity: None,
+            scheduler: std::sync::OnceLock::new(),
+            ledger: base.ledger.clone(),
+            options: Arc::new(|| TurnOptions {
+                context_footer: ContextFooter::Never,
+                auto_compact_at: 0,
+                debounce_ms: 300,
+                default_model: None,
+                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_models: Default::default(),
+                personas: vec![],
+            }),
+            media: None,
+        });
+        let req = |thread: &str, sender: &str, text: &str, id: &str| TurnRequest {
+            thread_key: thread.into(),
+            space_name: "team-chat".into(),
+            text: text.into(),
+            sender: Some(sender.into()),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+            request_id: Some(id.into()),
+        };
+        let ledger = deps.ledger.clone().unwrap();
+        for id in ["a1", "a2", "a3"] {
+            ledger.begin(id, "share/d1", "team-chat", None).await;
+        }
+        let burst = ["hola", "tengo un problema", "con el webhook"].iter().zip(["a1", "a2", "a3"]).map(|(t, id)| {
+            let deps = deps.clone();
+            let r = req("share/d1", "Ana", t, id);
+            async move { debounce(&deps, r).await }
+        });
+        let mut out = Vec::new();
+        for f in burst {
+            out.push(tokio::spawn(f));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let results: Vec<_> = futures::future::join_all(out).await.into_iter().map(|r| r.unwrap()).collect();
+        let fired: Vec<_> = results.into_iter().flatten().collect();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].text, "hola
+tengo un problema
+con el webhook");
+        assert_eq!(fired[0].sender.as_deref(), Some("Ana"));
+        assert_eq!(fired[0].request_id.as_deref(), Some("a3"));
+        assert_eq!(ledger.state("a1"), Some(crate::turn_ledger::TurnState::Posted));
+
+        let two = futures::future::join(debounce(&deps, req("share/d2", "Ana", "che", "b1")), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            debounce(&deps, req("share/d2", "Beto", "yo tambien", "b2")).await
+        })
+        .await;
+        let merged = two.0.or(two.1).unwrap();
+        assert_eq!(merged.text, "Ana: che
+Beto: yo tambien");
+        assert!(merged.sender.is_none());
+
+        let started = std::time::Instant::now();
+        assert!(debounce(&deps, req("share/d3", "Ana", "/status", "c1")).await.is_some());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
     }
 
     #[tokio::test]

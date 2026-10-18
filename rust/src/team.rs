@@ -176,21 +176,19 @@ pub async fn team_send(
     tokio::spawn(async move {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let deps3 = deps2.clone();
-        let result = crate::handler::tracked(&deps3, Some(&request_id), process_message(
-            TurnRequest {
-                thread_key: thread_key2.clone(),
-                space_name: "team-chat".into(),
-                text: prompt,
-                sender: Some(sender),
-                reply_via_chat: false,
-                thread: None,
-                room_n: None,
-                captured_replies: Some(captured.clone()),
-                request_id: Some(request_id.clone()),
-            },
-            deps2,
-        ))
-        .await;
+        let request = TurnRequest {
+            thread_key: thread_key2.clone(),
+            space_name: "team-chat".into(),
+            text: prompt,
+            sender: Some(sender),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: Some(captured.clone()),
+            request_id: Some(request_id.clone()),
+        };
+        let Some(request) = crate::handler::debounce(&deps3, request).await else { return };
+        let result = crate::handler::tracked(&deps3, Some(&request_id), process_message(request, deps2)).await;
         match result {
             Ok(_) => {
                 let replies = captured.lock().await.clone();

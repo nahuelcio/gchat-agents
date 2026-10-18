@@ -50,6 +50,8 @@ pub struct Settings {
     pub allowed_spaces: Vec<String>,
     pub context_footer: ContextFooter,
     pub auto_compact_at: u32,
+    #[serde(default)]
+    pub debounce_ms: u32,
     pub personas: Vec<Persona>,
     #[serde(default)]
     pub tunnel: TunnelMode,
@@ -123,6 +125,7 @@ impl SettingsStore {
                 .or(defaults.context_footer)
                 .unwrap_or(ContextFooter::Every5),
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
+            debounce_ms: saved.debounce_ms.unwrap_or(0),
             personas: saved.personas.or(defaults.personas).unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
@@ -167,6 +170,9 @@ impl SettingsStore {
             if let Some(v) = patch.auto_compact_at {
                 current.auto_compact_at = v;
             }
+            if let Some(v) = patch.debounce_ms {
+                current.debounce_ms = v.min(30_000);
+            }
             if let Some(v) = patch.personas {
                 current.personas = v;
             }
@@ -202,6 +208,7 @@ struct PartialSettings {
     allowed_spaces: Option<Vec<String>>,
     context_footer: Option<ContextFooter>,
     auto_compact_at: Option<u32>,
+    debounce_ms: Option<u32>,
     personas: Option<Vec<Persona>>,
     tunnel: Option<TunnelMode>,
     google_drive_folder_id: Option<String>,
@@ -218,6 +225,7 @@ pub struct SettingsPatch {
     pub allowed_spaces: Option<Vec<String>>,
     pub context_footer: Option<ContextFooter>,
     pub auto_compact_at: Option<u32>,
+    pub debounce_ms: Option<u32>,
     pub personas: Option<Vec<Persona>>,
     pub tunnel: Option<TunnelMode>,
     pub google_drive_folder_id: Option<String>,
