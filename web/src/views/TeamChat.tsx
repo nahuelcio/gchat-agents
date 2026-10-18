@@ -647,18 +647,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             const agent = tagged?.[1] ?? (m.bot && m.author.startsWith("@") ? m.author : undefined);
             return (
               <div key={i} className={`message ${agent ? "agent-tint" : ""}`} style={agent ? agentTint(agent) : undefined}>
-                <span className={`avatar ${m.bot ? "bot" : ""}`} aria-hidden="true">
-                  {agent ? (
-                    agent.slice(1, 3).toUpperCase()
-                  ) : m.bot ? (
-                    <Icon>
-                      <rect x="5" y="8" width="14" height="11" rx="3" />
-                      <path d="M12 4v4" />
-                    </Icon>
-                  ) : (
-                    m.author.slice(0, 2).toUpperCase()
-                  )}
-                </span>
+                <Face host={m.bot && !agent} name={agent ?? m.author} />
                 <div className="message-body">
                   <div>
                     <span className="strong author" data-testid="message-author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
@@ -893,9 +882,9 @@ function MembersSection({
         <ul className="member-list">
           {members.map((m) => (
             <li key={m.id} className={`member ${m.kind === "agent" ? "agent-tint" : ""}`} style={m.kind === "agent" ? agentTint(m.persona) : undefined}>
-              <span className={`member-avatar ${m.kind}`} aria-hidden="true">
-                {(m.kind === "agent" ? m.persona : m.name).slice(0, 2).toUpperCase()}
-              </span>
+              {m.kind === "agent" ? <Face name={m.persona} /> : (
+                <span className="member-avatar" aria-hidden="true">{m.name.slice(0, 2).toUpperCase()}</span>
+              )}
               <span className="grow">
                 <span>{m.kind === "agent" ? `@${m.persona}` : m.name}</span>
                 {m.kind === "agent" && presenceOf(m.id) && (
@@ -942,6 +931,85 @@ function MembersSection({
   );
 }
 
+function shortId(id: string): string {
+  return id.length <= 14 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+function contextText(run: NonNullable<TeamThreadState["runs"]>[number]): string {
+  const used = run.contextTokens;
+  const window = run.contextWindow;
+  if (used == null && window == null) return "no usage yet";
+  const est = run.estimated ? " est." : "";
+  if (used != null && window) return `${formatTokens(used)} / ${formatTokens(window)} · ${Math.round((used * 100) / window)}%${est}`;
+  if (used != null) return `${formatTokens(used)}${est}`;
+  return `window ${formatTokens(window!)}`;
+}
+
+function Face({ name, host = false }: { name: string; host?: boolean }) {
+  const letters = name.replace(/^@/, "").slice(0, 2).toUpperCase();
+  if (host) {
+    return (
+      <span className="avatar bot mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="16" height="16">
+          <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" fill="none" />
+          <circle cx="9" cy="9" r="3.2" fill="#00f0ff" />
+          <circle cx="23" cy="9" r="3.2" fill="#7107e7" />
+          <circle cx="16" cy="24" r="3.2" fill="#f59e0b" />
+          <circle cx="16" cy="16" r="3.6" fill="#16a34a" />
+        </svg>
+      </span>
+    );
+  }
+  return <span className="avatar" aria-hidden="true">{letters}</span>;
+}
+
+function RunsSection({ runs }: { runs: NonNullable<TeamThreadState["runs"]> }) {
+  return (
+    <section className="runs" aria-label="Agents that ran">
+      <h2>Agents</h2>
+      {runs.map((run) => {
+        const host = run.role === "host";
+        const label = host ? BOT_NAME : `@${run.name}`;
+        return (
+          <details key={`${run.role}:${run.name}`} className={`run ${host ? "" : "agent-tint"}`} style={host ? undefined : agentTint(run.name)} open>
+            <summary>
+              <Face host={host} name={run.name} />
+              <span className="run-name">{label}</span>
+              <span className="muted small run-hint">{run.session ? shortId(run.session) : "no session"}</span>
+            </summary>
+            <dl>
+              <div>
+                <dt>Model</dt>
+                <dd>{run.model ?? "default"}</dd>
+              </div>
+              <div>
+                <dt>Session</dt>
+                <dd className="mono small" title={run.session ?? undefined}>{run.session ? shortId(run.session) : "no session yet"}</dd>
+              </div>
+              <div>
+                <dt>Context</dt>
+                <dd>{contextText(run)}</dd>
+              </div>
+              {run.turns != null && (
+                <div>
+                  <dt>Turns</dt>
+                  <dd>{run.turns}</dd>
+                </div>
+              )}
+            </dl>
+          </details>
+        );
+      })}
+    </section>
+  );
+}
+
 function ThreadContextPanel({
   state,
   guest,
@@ -980,16 +1048,6 @@ function ThreadContextPanel({
             </dd>
           </div>
         )}
-        <div>
-          <dt>Agent</dt>
-          <dd>{state?.agent ?? "default"}{state?.model ? ` · ${state.model}` : ""}</dd>
-        </div>
-        {state?.context && (
-          <div>
-            <dt>Session</dt>
-            <dd className="mono muted small">{state.context.replace(/^_|_$/g, "").replace(/^context \? · /, "no usage yet · ")}</dd>
-          </div>
-        )}
         {state?.repo && (
           <div>
             <dt>App</dt>
@@ -1006,6 +1064,7 @@ function ThreadContextPanel({
           </div>
         )}
       </dl>
+      {!!state?.runs?.length && <RunsSection runs={state.runs} />}
 
       {(wi || state?.worktree) && <h2>Work item</h2>}
       {!wi && !state?.worktree ? null : wi ? (

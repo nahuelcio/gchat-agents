@@ -513,6 +513,19 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .play-context dd { margin: 2px 0 0; min-width: 0; word-break: break-word; }
 .play-context .path { display: block; font-size: 11px; overflow-wrap: anywhere; }
 .play-context .pill { display: inline-flex; align-items: center; gap: 6px; }
+.run { border: 2px solid var(--line); border-radius: var(--radius-sm); padding: 6px 8px; background: var(--panel); }
+.run + .run { margin-top: 6px; }
+.run summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.run .avatar { width: 22px; height: 22px; font-size: 9px; }
+.run.agent-tint .run-name { color: var(--agent-fg); }
+.run.agent-tint .avatar { background: var(--agent-bg); color: var(--agent-fg); }
+.run summary::-webkit-details-marker { display: none; }
+.run summary::marker { content: none; }
+.run summary::before { content: "▸"; color: var(--muted); margin-right: 4px; }
+.run[open] summary::before { content: "▾"; }
+.run-name { font-weight: 650; }
+.run-hint { margin-left: auto; text-align: right; }
+.run dl { margin-top: 8px; }
 .play-wi { display: flex; flex-direction: column; gap: 6px; }
 .play-wi p { margin: 0; font-size: 0.95rem; }
 .play-wi a { color: var(--accent); }
@@ -528,6 +541,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .message { display: flex; gap: 12px; align-items: flex-start; }
 .avatar { flex: none; width: 34px; height: 34px; border-radius: var(--radius-sm); background: var(--soft); color: var(--fg-2); font-size: 11px; font-weight: 600; display: grid; place-items: center; border: 2px solid var(--primary); font-family: var(--font-mono); letter-spacing: 0; }
 .avatar.bot { background: var(--secondary); color: var(--panel); border-color: var(--primary); }
+.avatar.bot.mark { background: var(--panel); }
 .message-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .message-text { white-space: pre-wrap; word-break: break-word; }
 .message-diagram {
@@ -709,7 +723,8 @@ details.card:not([open]) > summary:is(.card-title, .card-head)::after { transfor
 /* One color per @agent: the hue comes from its name (agent-color.ts). */
 .agent-tint { --agent-fg: hsl(var(--agent-hue) 60% 38%); --agent-bg: hsl(var(--agent-hue) 70% 92%); }
 .agent-tint .author, .agent-tint.author { color: var(--agent-fg); }
-.message.agent-tint .avatar, .member.agent-tint .member-avatar { background: var(--agent-bg); color: var(--agent-fg); font-size: 11px; font-weight: 600; }
+.message.agent-tint .avatar, .member.agent-tint .avatar, .member.agent-tint .member-avatar { background: var(--agent-bg); color: var(--agent-fg); font-size: 11px; font-weight: 600; }
+.member .avatar { width: 24px; height: 24px; font-size: 10px; }
 .member.agent-tint .badge { color: var(--agent-fg); }
 
 .presence { display: block; font-size: 12px; color: var(--muted); }

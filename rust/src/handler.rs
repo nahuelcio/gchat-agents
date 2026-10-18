@@ -2273,6 +2273,37 @@ Beto: yo tambien");
     }
 
     #[tokio::test]
+    async fn an_agent_the_host_brought_in_does_not_answer_twice() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "default" => "Te dejo con el experto: @soporte, te está buscando".into(),
+            "soporte" => "Hola, acá soporte".into(),
+            _ => "PASS".into(),
+        }));
+        let d = room_deps(dir.path(), driver.clone(), vec![persona("soporte", None)], Some(vec!["soporte"])).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "que onda soporte".into(),
+                sender: Some("Nahuel".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: Some(captured.clone()),
+                request_id: None,
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let replies = captured.lock().await.clone();
+        let from_soporte = replies.iter().filter(|r| r.starts_with("*@soporte*")).count();
+        assert_eq!(from_soporte, 1, "{replies:?}");
+    }
+
+    #[tokio::test]
     async fn host_pass_is_not_posted() {
         let dir = tempdir().unwrap();
         let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {

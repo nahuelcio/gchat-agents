@@ -40,6 +40,7 @@ pub struct TeamThreadState {
     pub kicked: Vec<String>,
     pub answering: Vec<String>,
     pub presence: Vec<Presence>,
+    pub runs: Vec<AgentRun>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -49,6 +50,83 @@ pub struct Presence {
     pub name: String,
     pub status: &'static str,
     pub last_seen_n: Option<u64>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRun {
+    pub name: String,
+    pub role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated: Option<bool>,
+}
+
+fn driver_name(driver: crate::config::AgentDriverKind) -> &'static str {
+    match driver {
+        crate::config::AgentDriverKind::Opencode => "opencode",
+        crate::config::AgentDriverKind::Claude => "claude",
+        crate::config::AgentDriverKind::Pi => "pi",
+    }
+}
+
+fn model_for(explicit: Option<&str>, driver: crate::config::AgentDriverKind, models: &crate::settings::Models) -> Option<String> {
+    explicit.filter(|s| !s.is_empty()).map(str::to_string).or_else(|| match driver {
+        crate::config::AgentDriverKind::Opencode => models.opencode.clone(),
+        crate::config::AgentDriverKind::Claude => models.claude.clone(),
+        crate::config::AgentDriverKind::Pi => models.pi.clone(),
+    })
+}
+
+pub fn agent_runs(record: &crate::session::SessionRecord, options: &crate::handler::TurnOptions) -> Vec<AgentRun> {
+    let mut runs = Vec::new();
+    let host_driver = record.driver.unwrap_or(options.default_driver);
+    let host_active = record.session_ref.is_some() || record.turns.is_some() || record.driver.is_some() || record.context_tokens.is_some();
+    if host_active {
+        runs.push(AgentRun {
+            name: driver_name(host_driver).into(),
+            role: "host",
+            driver: Some(driver_name(host_driver).into()),
+            model: model_for(record.model.as_deref(), host_driver, &options.default_models),
+            session: record.session_ref.clone(),
+            context_tokens: record.context_tokens,
+            context_window: record.context_window,
+            turns: record.turns,
+            estimated: record.estimated,
+        });
+    }
+    let mut personas: Vec<_> = record.persona_sessions.as_ref().map(|m| m.iter().collect()).unwrap_or_default();
+    personas.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    for (name, session) in personas {
+        let persona = options.personas.iter().find(|p| p.name.eq_ignore_ascii_case(name));
+        let driver = persona.and_then(|p| p.driver).or(record.driver).unwrap_or(options.default_driver);
+        let explicit = persona.and_then(|p| p.model.as_deref()).or_else(|| {
+            if persona.and_then(|p| p.driver).is_none() { record.model.as_deref() } else { None }
+        });
+        runs.push(AgentRun {
+            name: name.clone(),
+            role: "agent",
+            driver: Some(driver_name(driver).into()),
+            model: model_for(explicit, driver, &options.default_models),
+            session: Some(session.clone()),
+            context_tokens: None,
+            context_window: None,
+            turns: None,
+            estimated: None,
+        });
+    }
+    runs
 }
 
 pub fn presence(members: &[RoomMember], speaking: &[String], waiting: bool, seen: Option<&std::collections::HashMap<String, u64>>) -> Vec<Presence> {
@@ -380,6 +458,7 @@ pub async fn team_thread(
             record.as_ref().and_then(|r| r.pending_questions.as_ref()).is_some_and(|q| !q.is_empty()),
             record.as_ref().and_then(|r| r.room_seen.as_ref()),
         ),
+        runs: record.as_ref().map(|r| agent_runs(r, &options)).unwrap_or_default(),
     })
 }
 
@@ -424,5 +503,53 @@ mod presence_tests {
         assert_eq!(by("@qa").last_seen_n, Some(7));
         assert_eq!(by("@dev").status, "idle");
         assert_eq!(by("Ana").status, "idle");
+    }
+
+    #[test]
+    fn runs_list_the_host_and_each_persona_session() {
+        use crate::config::AgentDriverKind;
+        use crate::session::SessionRecord;
+        use crate::settings::{Models, Persona};
+
+        let record = SessionRecord {
+            session_ref: Some("ses_eb824e33cffeFvucvJEhbMQBqd".into()),
+            driver: Some(AgentDriverKind::Pi),
+            context_tokens: Some(1301),
+            context_window: Some(128_000),
+            turns: Some(4),
+            persona_sessions: Some(std::collections::HashMap::from([("architect".into(), "ses_eb8240236ffe9MtMpfyzlBVgko".into())])),
+            ..Default::default()
+        };
+        let options = crate::handler::TurnOptions {
+            context_footer: crate::settings::ContextFooter::Never,
+            auto_compact_at: 0,
+            debounce_ms: 0,
+            default_model: Some("zai/glm-5.3-flash".into()),
+            default_driver: AgentDriverKind::Pi,
+            default_models: Models { pi: Some("zai/glm-5.3-flash".into()), ..Default::default() },
+            personas: vec![Persona {
+                name: "architect".into(),
+                prompt: "a".into(),
+                driver: Some(AgentDriverKind::Claude),
+                model: Some("opus".into()),
+                agent: None,
+                listen: None,
+                respond_to: None,
+                skills: vec![],
+                mcps: vec![],
+                delegates: vec![],
+            }],
+        };
+        let runs = agent_runs(&record, &options);
+        assert_eq!(runs[0].name, "pi");
+        assert_eq!(runs[0].role, "host");
+        assert_eq!(runs[0].model.as_deref(), Some("zai/glm-5.3-flash"));
+        assert_eq!(runs[0].context_tokens, Some(1301));
+        assert_eq!(runs[0].context_window, Some(128_000));
+        assert_eq!(runs[1].name, "architect");
+        assert_eq!(runs[1].driver.as_deref(), Some("claude"));
+        assert_eq!(runs[1].model.as_deref(), Some("opus"));
+        assert_eq!(runs[1].session.as_deref(), Some("ses_eb8240236ffe9MtMpfyzlBVgko"));
+        assert!(runs[1].context_tokens.is_none());
     }
 }

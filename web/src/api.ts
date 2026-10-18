@@ -298,6 +298,18 @@ export interface TeamThreadChanges {
   files: { path: string; status: string }[];
 }
 
+export interface AgentRun {
+  name: string;
+  role: "host" | "agent";
+  driver?: string | null;
+  model?: string | null;
+  session?: string | null;
+  contextTokens?: number | null;
+  contextWindow?: number | null;
+  turns?: number | null;
+  estimated?: boolean | null;
+}
+
 export interface TeamThreadState {
   messages: TeamMessage[];
   agent: "opencode" | "claude" | null;
@@ -316,6 +328,7 @@ export interface TeamThreadState {
   kicked?: string[];
   answering?: string[];
   presence?: Presence[];
+  runs?: AgentRun[];
 }
 
 export interface Presence {
