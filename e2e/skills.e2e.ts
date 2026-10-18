@@ -12,6 +12,7 @@ test("a Finance agent gets the finanzas skill and the Drive folder is saved", as
   await screen.getByRole("form", "Agent in chat").getByRole("button", "Save").tap();
   await expect(screen.getByText("@finanzas-e2e")).toBeVisible({ timeout: 10000 });
 
+  await screen.getByRole("tab", "Connections").tap();
   await screen.getByPlaceholder(/the part after \/folders\//).fill("FOLDER123");
   await screen.getByRole("group", "Google Drive").getByRole("button", "Save").tap();
 

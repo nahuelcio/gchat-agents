@@ -101,6 +101,102 @@ pub fn prefixed(server: &str, tool: &str) -> String {
     format!("{server}__{tool}")
 }
 
+#[derive(Debug)]
+pub struct McpImport {
+    pub servers: Vec<McpServer>,
+    pub skipped: Vec<String>,
+}
+
+/// Claude, Cursor and Claude Code all paste a different shape of the same idea.
+/// Stdio servers come back ready to save. Remote (`url`) servers are skipped:
+/// this bridge only spawns a local command.
+pub fn parse_mcp_config(raw: &str) -> Result<McpImport, String> {
+    let value: Value = serde_json::from_str(raw.trim()).map_err(|e| format!("that is not JSON ({e})"))?;
+    let mut servers = Vec::new();
+    let mut skipped = Vec::new();
+    if let Some(map) = value.get("mcpServers").and_then(|v| v.as_object()) {
+        read_server_map(map, &mut servers, &mut skipped)?;
+    } else if let Some(obj) = value.as_object() {
+        if obj.contains_key("command") || obj.contains_key("url") || obj.contains_key("args") {
+            let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("server");
+            push_server(name, &value, &mut servers, &mut skipped)?;
+        } else {
+            read_server_map(obj, &mut servers, &mut skipped)?;
+        }
+    } else {
+        return Err("expected an object of MCP servers".into());
+    }
+    if servers.is_empty() {
+        return Err(if skipped.is_empty() {
+            "no MCP servers in that JSON".into()
+        } else {
+            format!("only remote MCP servers ({}); this app runs stdio commands", skipped.join(", "))
+        });
+    }
+    Ok(McpImport { servers, skipped })
+}
+
+fn read_server_map(map: &serde_json::Map<String, Value>, servers: &mut Vec<McpServer>, skipped: &mut Vec<String>) -> Result<(), String> {
+    for (name, spec) in map {
+        if name == "mcpServers" || !spec.is_object() {
+            continue;
+        }
+        push_server(name, spec, servers, skipped)?;
+    }
+    Ok(())
+}
+
+fn push_server(name: &str, spec: &Value, servers: &mut Vec<McpServer>, skipped: &mut Vec<String>) -> Result<(), String> {
+    let command = spec.get("command").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if command.is_empty() {
+        if spec.get("url").is_some() {
+            skipped.push(slug_name(name));
+            return Ok(());
+        }
+        return Err(format!("MCP server \"{name}\" has no command"));
+    }
+    let name = slug_name(name);
+    if !valid_name(&name) {
+        return Err(format!("MCP server name \"{name}\" must be lowercase letters, digits or - and not a built-in name"));
+    }
+    if servers.iter().any(|s| s.name == name) {
+        return Err(format!("MCP server {name} is listed twice"));
+    }
+    let args = match spec.get("args") {
+        Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        Some(Value::String(s)) => s.split_whitespace().map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    let mut env = BTreeMap::new();
+    if let Some(obj) = spec.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            let value = match v {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => continue,
+            };
+            if !k.trim().is_empty() {
+                env.insert(k.clone(), value);
+            }
+        }
+    }
+    servers.push(McpServer { name, command, args, env });
+    Ok(())
+}
+
+fn slug_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if (c == '-' || c == '_' || c == ' ') && !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').chars().take(32).collect()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -115,6 +211,27 @@ rl.on('line', (l) => {
   if (m.method === 'tools/call') send({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: m.params.arguments.text.toUpperCase() }] } });
 });
 "#;
+
+    #[test]
+    fn claude_and_cursor_json_become_stdio_servers() {
+        let raw = r#"{
+          "mcpServers": {
+            "GitHub": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_x" } },
+            "docs": { "url": "https://example.com/mcp" }
+          }
+        }"#;
+        let got = parse_mcp_config(raw).unwrap();
+        assert_eq!(got.servers.len(), 1);
+        assert_eq!(got.servers[0].name, "github");
+        assert_eq!(got.servers[0].command, "npx");
+        assert_eq!(got.servers[0].args, vec!["-y", "@modelcontextprotocol/server-github"]);
+        assert_eq!(got.servers[0].env.get("GITHUB_PERSONAL_ACCESS_TOKEN").map(String::as_str), Some("ghp_x"));
+        assert_eq!(got.skipped, vec!["docs"]);
+        let bare = parse_mcp_config(r#"{ "memory": { "command": "npx", "args": "-y @modelcontextprotocol/server-memory" } }"#).unwrap();
+        assert_eq!(bare.servers[0].args, vec!["-y", "@modelcontextprotocol/server-memory"]);
+        assert!(parse_mcp_config(r#"{ "mcpServers": { "remote": { "url": "https://x" } } }"#).unwrap_err().contains("stdio"));
+        assert!(parse_mcp_config("not json").unwrap_err().contains("not JSON"));
+    }
 
     #[test]
     fn names_are_lowercase_and_not_builtin() {

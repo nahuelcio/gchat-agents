@@ -64,6 +64,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/work-item", axum::routing::put(put_work_item))
         .route("/api/drive/xlsx", post(post_drive_xlsx))
         .route("/api/skills", get(get_skills).put(put_skill).delete(delete_skill))
+        .route("/api/skills/install", post(post_install_skill))
+        .route("/api/mcp/import", post(post_mcp_import))
         .route("/api/mcp/servers", get(get_mcp_servers))
         .route("/api/agents/delegates", get(get_delegates))
         .route("/api/agents/ask", post(post_ask_agent))
@@ -902,9 +904,49 @@ async fn post_pi_key(State(state): State<Arc<AppState>>, Json(body): Json<PiKeyB
     }
 }
 
+fn skill_list() -> Vec<Value> {
+    crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps, "body": s.body })).collect()
+}
+
 async fn get_skills() -> Response {
-    let list: Vec<Value> = crate::skills::available().into_iter().map(|s| json!({ "name": s.name, "description": s.description, "mcps": s.mcps, "body": s.body })).collect();
-    Json(list).into_response()
+    Json(skill_list()).into_response()
+}
+
+#[derive(Deserialize)]
+struct SourceBody {
+    source: Option<String>,
+}
+
+async fn post_install_skill(Json(b): Json<SourceBody>) -> Response {
+    match crate::skill_install::install(&b.source.unwrap_or_default(), &crate::skills::writable_dir()).await {
+        Ok(installed) => Json(json!({ "installed": installed, "skills": skill_list() })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct McpImportBody {
+    json: Option<String>,
+}
+
+async fn post_mcp_import(State(state): State<Arc<AppState>>, Json(b): Json<McpImportBody>) -> Response {
+    let parsed = match crate::mcp_client::parse_mcp_config(&b.json.unwrap_or_default()) {
+        Ok(parsed) => parsed,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    };
+    let imported: Vec<String> = parsed.servers.iter().map(|s| s.name.clone()).collect();
+    let mut servers = state.settings.get().mcp_servers;
+    for server in parsed.servers {
+        if let Some(existing) = servers.iter_mut().find(|s| s.name == server.name) {
+            *existing = server;
+        } else {
+            servers.push(server);
+        }
+    }
+    match state.settings.update(SettingsPatch { mcp_servers: Some(servers), ..Default::default() }).await {
+        Ok(settings) => Json(json!({ "imported": imported, "skipped": parsed.skipped, "settings": settings })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

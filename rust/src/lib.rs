@@ -24,6 +24,7 @@ pub mod schedules;
 pub mod session;
 pub mod settings;
 pub mod share;
+pub mod skill_install;
 pub mod skills;
 pub mod state;
 pub mod static_files;

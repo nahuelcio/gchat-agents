@@ -5,7 +5,7 @@ import { call, ensureCatalog } from "./helpers";
 test("skills, MCP servers and delegation are set up from Settings", async ({ app, screen }) => {
   await ensureCatalog();
   const stamp = Date.now().toString(36);
-  await app.open("/#settings");
+  await app.open("/#settings/tools");
 
   const skills = screen.getByRole("group", "Skills");
   await skills.getByRole("button", "+ New skill").tap();
@@ -25,6 +25,7 @@ test("skills, MCP servers and delegation are set up from Settings", async ({ app
   await serverForm.getByRole("button", "Add server").tap();
   await expect(servers.getByText(`fake${stamp}`, { exact: true })).toBeVisible({ timeout: 10000 });
 
+  await screen.getByRole("tab", "Agents").tap();
   await screen.getByRole("button", "+ Add agent").tap();
   const agent = screen.getByRole("form", "Agent in chat");
   await agent.getByLabel("Name").fill(`soporte${stamp}`);

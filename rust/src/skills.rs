@@ -52,7 +52,7 @@ pub fn load(name: &str) -> Option<Skill> {
     dirs().iter().find_map(|d| load_from(d, name))
 }
 
-fn load_from(dir: &Path, name: &str) -> Option<Skill> {
+pub(crate) fn load_from(dir: &Path, name: &str) -> Option<Skill> {
     let raw = std::fs::read_to_string(dir.join(name).join("SKILL.md")).ok()?;
     let mut skill = parse(&raw);
     if skill.name.is_empty() {

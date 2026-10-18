@@ -130,11 +130,11 @@ function OwnerApp() {
           ))}
         </div>
         {settings && (
-          <div className="agent-card">
-            <small>Agent</small>
+          <a className="agent-card" href="#settings/agents" title="Change the default runtime">
+            <small>Default runtime</small>
             <span>{{ opencode: "OpenCode", claude: "Claude Code", pi: "Pi (durable)" }[settings.agentDriver]}</span>
             <code>{model ?? "default model"}</code>
-          </div>
+          </a>
         )}
       </nav>
       <main className={`content${view === "team" ? "" : " content-narrow"}`}>

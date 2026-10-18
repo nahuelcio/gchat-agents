@@ -10,12 +10,12 @@ test("navigates every control plane view", async ({ app, screen }) => {
 });
 
 test("tunnel provider persists", async ({ app, screen }) => {
-  await app.open("/#settings");
+  await app.open("/#settings/connections");
   await expect(screen.getByRole("heading", "Public tunnel")).toBeVisible();
   await screen.getByText("cloudflared").tap();
   await expect(screen.getByRole("radio", "cloudflared")).toBeChecked();
   await app.open("/#overview");
-  await app.open("/#settings");
+  await app.open("/#settings/connections");
   await expect(screen.getByRole("radio", "cloudflared")).toBeChecked();
   await screen.getByText("Auto").tap();
 });

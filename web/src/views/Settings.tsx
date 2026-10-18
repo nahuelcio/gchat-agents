@@ -25,7 +25,28 @@ const TUNNEL_OPTIONS: { value: TunnelMode; label: string; hint: string }[] = [
   { value: "off", label: "Off", hint: "No public URL: team chat works, Google Chat needs GOOGLE_TOKEN_AUDIENCE." },
 ];
 
+const TABS = [
+  { id: "agents", label: "Agents", hint: "Who answers: the default runtime and the agents in chat." },
+  { id: "tools", label: "Skills & tools", hint: "Know-how and tools you give to agents." },
+  { id: "chat", label: "Chat", hint: "Google Chat, spaces and how context shows up." },
+  { id: "connections", label: "Connections", hint: "Public tunnel, Google Drive and repos." },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
+
+const tabFromHash = (): TabId => {
+  const sub = location.hash.split("/")[1];
+  return (TABS.find((t) => t.id === sub)?.id ?? "agents") as TabId;
+};
+
 export function SettingsView(props: ViewProps) {
+  const [tab, setTab] = useState<TabId>(tabFromHash);
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash());
+    addEventListener("hashchange", onHash);
+    return () => removeEventListener("hashchange", onHash);
+  }, []);
+  const current = TABS.find((t) => t.id === tab)!;
   return (
     <>
       <header className="page-head">
@@ -34,18 +55,56 @@ export function SettingsView(props: ViewProps) {
           <p className="sub">Changes apply to the next turn. Only the public tunnel needs a restart.</p>
         </div>
       </header>
-      <GoogleChatCard {...props} />
-      <AgentCard {...props} />
-      <PersonasCard {...props} />
-      <SkillsCard {...props} />
-      <McpServersCard {...props} />
-      <ContextCard {...props} />
-      <TunnelCard {...props} />
-      <DriveCard {...props} />
-      <ReposCard {...props} />
-      <SpacesCard {...props} />
+      <nav className="settings-tabs" role="tablist" aria-label="Settings sections">
+        {TABS.map((t) => (
+          <a key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} href={`#settings/${t.id}`}>
+            {t.label}
+          </a>
+        ))}
+      </nav>
+      <p className="muted small settings-hint">{current.hint}</p>
+      {tab === "agents" && (
+        <>
+          <PersonasCard {...props} />
+          <AgentCard {...props} />
+        </>
+      )}
+      {tab === "tools" && (
+        <>
+          <SkillsCard {...props} />
+          <McpServersCard {...props} />
+        </>
+      )}
+      {tab === "chat" && (
+        <>
+          <GoogleChatCard {...props} />
+          <SpacesCard {...props} />
+          <ContextCard {...props} />
+        </>
+      )}
+      {tab === "connections" && (
+        <>
+          <TunnelCard {...props} />
+          <DriveCard {...props} />
+          <ReposCard {...props} />
+        </>
+      )}
     </>
   );
+}
+
+const RUNTIMES: Record<string, string> = { opencode: "OpenCode", claude: "Claude Code", pi: "Pi (durable)" };
+
+function personaChips(p: Persona): string[] {
+  return [
+    p.agent ? `OpenCode · ${p.agent}` : p.driver ? RUNTIMES[p.driver] : "Default runtime",
+    p.model ?? "",
+    p.skills?.length ? `skills: ${p.skills.join(", ")}` : "",
+    p.mcps?.length ? `tools: ${p.mcps.join(", ")}` : "all tools",
+    p.delegates?.length ? `asks ${p.delegates.map((d) => `@${d}`).join(", ")}` : "",
+    p.listen === "all" ? "listens to all" : "",
+    p.respondTo === "people" ? "people only" : "",
+  ].filter(Boolean);
 }
 
 function AgentCard({ settings, save, notify }: ViewProps) {
@@ -87,7 +146,7 @@ function AgentCard({ settings, save, notify }: ViewProps) {
   return (
     <details className="card" open>
       <summary className="card-title">
-        <h2>Agent</h2>
+        <h2>Default runtime</h2>
         <p className="muted small">
           Detected on this machine{others.length ? `. Also installed, no driver yet: ${others.map((a) => a.name).join(", ")}` : ""}.
         </p>
@@ -239,6 +298,8 @@ function OpenCodeAgentPicker({
           </button>
         ))}
       </div>
+      <details className="more">
+      <summary className="muted small">Not in the list? Set an agent id by hand</summary>
       <form
         className="row"
         onSubmit={(e) => {
@@ -247,7 +308,7 @@ function OpenCodeAgentPicker({
         }}
       >
         <label className="field grow">
-          <span>Or set by id</span>
+          <span className="sr-only">Agent id</span>
           <input
             className="mono"
             value={draft}
@@ -257,8 +318,9 @@ function OpenCodeAgentPicker({
             spellCheck={false}
           />
         </label>
-        <button className="btn primary">Save</button>
+        <button className="btn">Use this id</button>
       </form>
+      </details>
     </div>
   );
 }
@@ -432,8 +494,12 @@ function PersonasCard({ settings, save }: ViewProps) {
               </span>
               <span className="muted small">{p.prompt ? p.prompt.slice(0, 120) + (p.prompt.length > 120 ? "…" : "") : "No role yet"}</span>
             </div>
-            <span className="muted small">
-              {[p.agent ? `OpenCode · ${p.agent}` : (p.driver ?? "default agent"), p.model, p.listen === "all" && "listens to all", p.respondTo === "people" && "people only"].filter(Boolean).join(" · ")}
+            <span className="persona-chips">
+              {personaChips(p).map((c) => (
+                <span key={c} className="chip static">
+                  {c}
+                </span>
+              ))}
             </span>
             <button className="btn small" onClick={() => setEditing({ index: i, draft: { ...p } })}>
               Edit
@@ -646,6 +712,8 @@ function SkillsCard({ settings, notify }: ViewProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [draft, setDraft] = useState<SkillInfo | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [source, setSource] = useState("");
+  const [installing, setInstalling] = useState(false);
   useEffect(() => {
     api.skills().then(setSkills, () => setSkills([]));
   }, []);
@@ -663,8 +731,40 @@ function SkillsCard({ settings, notify }: ViewProps) {
     <details className="card" open aria-label="Skills">
       <summary className="card-title">
         <h2>Skills</h2>
-        <p className="muted small">Reusable know-how you give to agents: instructions plus the tools they need. Pick them per agent above.</p>
+        <p className="muted small">Reusable know-how you give to agents: instructions plus the tools they need. Pick them per agent in the Agents tab.</p>
       </summary>
+      <form
+        className="row"
+        aria-label="Install from skills.sh"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const spec = source.trim();
+          if (!spec || installing) return;
+          setInstalling(true);
+          api
+            .installSkill(spec)
+            .then(
+              ({ installed, skills: list }) => {
+                setSkills(list);
+                setSource("");
+                notify(installed.length ? `Installed ${installed.join(", ")}` : "Nothing new to install");
+              },
+              (err: Error) => notify(err.message, true),
+            )
+            .finally(() => setInstalling(false));
+        }}
+      >
+        <input
+          className="mono grow"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          placeholder="owner/repo@skill, or a skills.sh / GitHub link"
+          aria-label="Skill source"
+        />
+        <button className="btn" disabled={!source.trim() || installing}>
+          {installing ? "Installing…" : "Install"}
+        </button>
+      </form>
       {skills.map((sk) => (
         <div key={sk.name} className="persona-row">
           <div className="grow">
@@ -731,16 +831,58 @@ function SkillsCard({ settings, notify }: ViewProps) {
 
 const EMPTY_SERVER = { name: "", command: "", args: "", env: "" };
 
-function McpServersCard({ settings, save }: ViewProps) {
+function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
   const servers = settings.mcpServers ?? [];
   const [draft, setDraft] = useState<typeof EMPTY_SERVER | null>(null);
+  const [blob, setBlob] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const commit = (list: McpServer[], ok: string) => save({ mcpServers: list }, ok);
   return (
     <details className="card" open aria-label="MCP servers">
       <summary className="card-title">
         <h2>MCP servers</h2>
-        <p className="muted small">Bring any MCP server (stdio). Its tools show up as name__tool for the agents you allow, on every runtime.</p>
+        <p className="muted small">Bring any MCP server (stdio). Paste a Claude or Cursor mcp.json, or add one by hand. Its tools show up as name__tool for the agents you allow, on every runtime.</p>
       </summary>
+      {blob !== null ? (
+        <form
+          className="persona-form"
+          aria-label="Import MCP JSON"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (importing) return;
+            setImporting(true);
+            api
+              .importMcp(blob)
+              .then(
+                ({ imported, skipped, settings: next }) => {
+                  setSettings(next);
+                  setBlob(null);
+                  const skip = skipped.length ? ` Skipped ${skipped.join(", ")} (remote URL; this app runs a local command).` : "";
+                  notify(`Imported ${imported.join(", ") || "nothing"}.${skip}`);
+                },
+                (err: Error) => notify(err.message, true),
+              )
+              .finally(() => setImporting(false));
+          }}
+        >
+          <label className="field">
+            <span>mcp.json</span>
+            <textarea className="mono" rows={8} value={blob} onChange={(e) => setBlob(e.target.value)} placeholder={'{\n  "mcpServers": {\n    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }\n  }\n}'} aria-label="MCP JSON" required />
+          </label>
+          <div className="row">
+            <button className="btn primary" disabled={!blob.trim() || importing}>
+              {importing ? "Importing…" : "Import"}
+            </button>
+            <button type="button" className="btn" onClick={() => setBlob(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button className="btn" onClick={() => setBlob("")}>
+          Paste mcp.json
+        </button>
+      )}
       {servers.map((m) => (
         <div key={m.name} className="persona-row">
           <div className="grow">

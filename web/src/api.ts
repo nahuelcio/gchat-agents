@@ -189,6 +189,8 @@ export const api = {
   skills: () => call<SkillInfo[]>("/api/skills"),
   saveSkill: (skill: SkillInfo) => call<SkillInfo[]>("/api/skills", skill, "PUT"),
   deleteSkill: (name: string) => call<SkillInfo[]>(`/api/skills?name=${encodeURIComponent(name)}`, undefined, "DELETE"),
+  installSkill: (source: string) => call<{ installed: string[]; skills: SkillInfo[] }>("/api/skills/install", { source }),
+  importMcp: (json: string) => call<{ imported: string[]; skipped: string[]; settings: Settings }>("/api/mcp/import", { json }),
   piKeys: () => call<PiKey[]>("/api/pi/keys"),
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
