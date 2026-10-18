@@ -14,6 +14,7 @@ import {
   DEFAULT_PERSONA_MCPS,
 } from "../api";
 import { hashQuery, type ViewProps } from "../App";
+import { CodeEditor } from "../CodeEditor";
 
 type Kind = "agent" | "skill";
 
@@ -767,12 +768,13 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
               >
                 <label className="field">
                   <span>System prompt</span>
-                  <textarea
-                    rows={8}
+                  <CodeEditor
                     value={hostDraft.prompt}
-                    onChange={(e) => setHostDraft({ ...hostDraft, prompt: e.target.value })}
+                    onChange={(prompt) => setHostDraft({ ...hostDraft, prompt })}
+                    language="markdown"
                     placeholder={HOST_DEFAULT_PROMPT}
-                    autoFocus
+                    minHeight={200}
+                    ariaLabel="Host system prompt"
                   />
                 </label>
                 {skillOpts.length > 0 && (
@@ -855,12 +857,12 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                 </div>
                 <label className="field">
                   <span>Role</span>
-                  <textarea
-                    rows={4}
+                  <CodeEditor
                     value={agentDraft.prompt}
-                    onChange={(e) => setAgentDraft({ ...agentDraft, prompt: e.target.value })}
-                    required
-                    autoFocus={Boolean(editingAgent)}
+                    onChange={(prompt) => setAgentDraft({ ...agentDraft, prompt })}
+                    language="markdown"
+                    minHeight={140}
+                    ariaLabel="Agent role"
                   />
                 </label>
                 <AvatarPicker
@@ -961,7 +963,14 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                 </fieldset>
                 <label className="field">
                   <span>Instructions (SKILL.md body)</span>
-                  <textarea rows={8} value={skillDraft.body} onChange={(e) => setSkillDraft({ ...skillDraft, body: e.target.value })} required />
+                  <CodeEditor
+                    value={skillDraft.body}
+                    onChange={(body) => setSkillDraft({ ...skillDraft, body })}
+                    language="markdown"
+                    path="SKILL.md"
+                    minHeight={220}
+                    ariaLabel="Skill instructions"
+                  />
                   <span className="muted small">Tell the agent when to run your scripts (e.g. “format PDFs with scripts/format-pdf.js”).</span>
                 </label>
                 <fieldset className="field skill-bundles">
@@ -998,17 +1007,17 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                         >
                           Remove
                         </button>
-                        <textarea
-                          rows={6}
-                          className="mono"
+                        <CodeEditor
                           value={f.content}
-                          placeholder="// node script…"
-                          aria-label={`Script source ${f.path || ""}`}
-                          onChange={(e) => {
+                          onChange={(content) => {
                             const files = [...(skillDraft.files ?? [])];
-                            files[i] = { ...f, content: e.target.value };
+                            files[i] = { ...f, content };
                             setSkillDraft({ ...skillDraft, files });
                           }}
+                          path={f.path || "scripts/tool.js"}
+                          placeholder="// node script…"
+                          minHeight={160}
+                          ariaLabel={`Script source ${f.path || ""}`}
                         />
                       </div>
                     ))}
@@ -1066,16 +1075,17 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                         >
                           Remove
                         </button>
-                        <textarea
-                          rows={4}
+                        <CodeEditor
                           value={f.content}
-                          placeholder="File contents…"
-                          aria-label={`Content for ${f.path || "file"}`}
-                          onChange={(e) => {
+                          onChange={(content) => {
                             const files = [...(skillDraft.files ?? [])];
-                            files[i] = { ...f, content: e.target.value };
+                            files[i] = { ...f, content };
                             setSkillDraft({ ...skillDraft, files });
                           }}
+                          path={f.path || "references/notes.md"}
+                          placeholder="File contents…"
+                          minHeight={180}
+                          ariaLabel={`Content for ${f.path || "file"}`}
                         />
                       </div>
                     ))}

@@ -25,7 +25,7 @@ async fn probe_pi() -> DetectedAgent {
     let present = crate::pi_sidecar::script().is_some();
     DetectedAgent {
         id: "pi".into(),
-        name: "Pi (durable)".into(),
+        name: "Pi".into(),
         installed: present,
         version: Some("pi-durable 1.3.0".into()),
         supported: true,

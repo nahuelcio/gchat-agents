@@ -192,7 +192,7 @@ function OwnerApp() {
         {settings && (
           <a className="agent-card" href="#settings/runtime" title={model ? `Pi · ${model}` : "Change the Pi model"}>
             <small>Pi</small>
-            <span>Pi (durable)</span>
+            <span>Pi</span>
             <code>{model ?? "default model"}</code>
           </a>
         )}

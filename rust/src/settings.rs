@@ -180,7 +180,7 @@ impl SettingsStore {
                 .or(defaults.context_footer)
                 .unwrap_or(ContextFooter::Every5),
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
-            debounce_ms: saved.debounce_ms.unwrap_or(0),
+            debounce_ms: saved.debounce_ms.unwrap_or(3_000),
             personas,
             templates: saved.templates.unwrap_or_default(),
             host_prompt: saved

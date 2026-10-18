@@ -708,7 +708,7 @@ const BATCH_OPTIONS = [
 ];
 
 function BatchingCard({ settings, save }: ViewProps) {
-  const current = settings.debounceMs ?? 0;
+  const current = settings.debounceMs ?? 3000;
   const seconds = current / 1000;
   return (
     <details className="card" open aria-label="Message batching">
