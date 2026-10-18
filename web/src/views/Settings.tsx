@@ -547,7 +547,7 @@ function PersonasCard({ settings, save }: ViewProps) {
                   });
                 }}
               >
-                <option value="">Default agent</option>
+                <option value="">Default runtime</option>
                 <option value="claude">Claude Code</option>
                 <option value="pi">Pi (durable)</option>
                 <option value="opencode">OpenCode</option>

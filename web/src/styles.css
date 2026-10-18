@@ -747,3 +747,23 @@ a.agent-card:hover { border-color: var(--secondary); }
 .search input { width: 100%; box-sizing: border-box; }
 @media (min-width: 821px) { .sidebar { position: sticky; top: 0; align-self: flex-start; height: 100vh; overflow-y: auto; } }
 @media (max-width: 820px) { .sidebar { min-width: 0; max-width: 100%; box-sizing: border-box; } .nav { min-width: 0; } }
+details.card { display: block; }
+details.card > :not(summary) { margin-top: 12px; }
+details.card > .btn { display: inline-flex; margin-right: 8px; }
+.persona-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius-md); background: var(--side); border: 2px solid var(--line-2); }
+.persona-row + .persona-row, .repo + .repo { margin-top: 8px; }
+.persona-row .grow { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.persona-form { display: flex; flex-direction: column; gap: 16px; padding: 16px; border-radius: var(--radius-md); border: 2px dashed var(--line-2); background: var(--surface); }
+.persona-form fieldset.field { gap: 8px; }
+.persona-form .row { align-items: center; }
+.field-hint { margin-top: -2px; }
+.persona-form .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+.persona-form .row > .field { flex: none; }
+.field > .field-head > span { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--fg-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.field-head .btn.linkish { white-space: nowrap; }
+.persona-row .x, .member .x { width: 32px; height: 32px; flex: none; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.persona-row .x:hover, .member .x:hover { background: var(--soft); color: var(--bad); }
+.model-browser-meta { padding: 8px 12px 4px; }
+.persona-form .row:has(> .btn) { display: flex; flex-wrap: wrap; gap: 8px; }
+.inline.check { flex-wrap: nowrap; align-items: flex-start; }
+.inline.check > input { flex: none; margin-top: 2px; }
