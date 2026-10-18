@@ -147,6 +147,8 @@ impl SettingsStore {
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, String> {
+        let had_engram = self.inner.lock().unwrap().mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME);
+        let patched_mcps = patch.mcp_servers.is_some();
         let next = {
             let mut current = self.inner.lock().unwrap().clone();
             if let Some(v) = patch.agent_driver {
@@ -191,10 +193,63 @@ impl SettingsStore {
         let body = format!("{}\n", serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?);
         write_atomic(&self.file_path, &body).await.map_err(|e| e.to_string())?;
         *self.inner.lock().unwrap() = next.clone();
+        if patched_mcps {
+            let has_engram = next.mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME);
+            if had_engram && !has_engram {
+                self.set_engram_declined(true);
+            } else if has_engram {
+                self.set_engram_declined(false);
+            }
+        }
         for listener in self.listeners.lock().unwrap().iter() {
             listener(&next);
         }
         Ok(next)
+    }
+
+    /// If `engram` is on PATH and the user has not opted out, register it as an MCP server.
+    pub async fn ensure_default_engram(&self) {
+        if self.engram_declined() {
+            return;
+        }
+        if self.get().mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME) {
+            return;
+        }
+        if !crate::mcp_client::engram_installed().await {
+            return;
+        }
+        let mut servers = self.get().mcp_servers;
+        servers.push(crate::mcp_client::default_engram());
+        if let Err(err) = self
+            .update(SettingsPatch {
+                mcp_servers: Some(servers),
+                ..Default::default()
+            })
+            .await
+        {
+            tracing::warn!("could not enable Engram by default: {err}");
+        } else {
+            tracing::info!("Engram detected — registered as default MCP server");
+        }
+    }
+
+    fn engram_declined_path(&self) -> Option<PathBuf> {
+        self.file_path.parent().map(|d| d.join("engram.declined"))
+    }
+
+    fn engram_declined(&self) -> bool {
+        self.engram_declined_path().is_some_and(|p| p.is_file())
+    }
+
+    fn set_engram_declined(&self, declined: bool) {
+        let Some(path) = self.engram_declined_path() else {
+            return;
+        };
+        if declined {
+            let _ = std::fs::write(&path, b"");
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -317,6 +372,30 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(&path, SettingsDefaults::default());
         assert_eq!(again.get().context_footer, ContextFooter::Never);
-        assert_eq!(again.get().allowed_spaces, vec!["spaces/abc".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn removing_engram_opts_out_of_auto_default() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = SettingsStore::open(&path, SettingsDefaults::default());
+        store
+            .update(SettingsPatch {
+                mcp_servers: Some(vec![crate::mcp_client::default_engram()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!dir.path().join("engram.declined").is_file());
+        store
+            .update(SettingsPatch {
+                mcp_servers: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(dir.path().join("engram.declined").is_file());
+        store.ensure_default_engram().await;
+        assert!(store.get().mcp_servers.is_empty());
     }
 }

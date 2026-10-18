@@ -18,13 +18,25 @@ pub struct ConfiguredDriver {
 impl AgentDriver for ConfiguredDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
         let s = self.settings.get();
+        let engram = crate::mcp::engram_registered(&s);
         match input.driver.unwrap_or(s.agent_driver) {
             AgentDriverKind::Opencode => {
-                OpenCodeDriver { model: s.models.opencode, agent: s.agents.opencode, ..self.opencode.clone() }
-                    .run_turn(input)
-                    .await
+                OpenCodeDriver {
+                    model: s.models.opencode,
+                    agent: s.agents.opencode,
+                    engram,
+                    ..self.opencode.clone()
+                }
+                .run_turn(input)
+                .await
             }
-            AgentDriverKind::Claude => ClaudeDriver { model: s.models.claude, ..self.claude.clone() }.run_turn(input).await,
+            AgentDriverKind::Claude => ClaudeDriver {
+                model: s.models.claude,
+                engram,
+                ..self.claude.clone()
+            }
+            .run_turn(input)
+            .await,
             AgentDriverKind::Pi => PiDriver { model: s.models.pi, settings: Some(self.settings.clone()), ..self.pi.clone() }.run_turn(input).await,
         }
     }
@@ -58,6 +70,7 @@ mod tests {
                 agent: None,
                 timeout_ms: 10_000,
                 switchboard: None,
+                engram: false,
             },
             claude: ClaudeDriver {
                 bin: "missing-claude-binary".into(),
@@ -65,6 +78,7 @@ mod tests {
                 timeout_ms: 10_000,
                 switchboard: None,
                 read_dirs: vec![],
+                engram: false,
             },
             pi: PiDriver { base_url: "http://127.0.0.1:1".into(), model: None, settings: None, timeout_ms: 1_000, retry_ms: 0 },
             settings,

@@ -20,6 +20,28 @@ pub struct McpServer {
 
 pub const BUILTIN_GROUPS: &[&str] = &["coding", "switchboard", "google-drive", "agents"];
 
+pub const ENGRAM_NAME: &str = "engram";
+
+pub fn default_engram() -> McpServer {
+    McpServer {
+        name: ENGRAM_NAME.into(),
+        command: "engram".into(),
+        args: vec!["mcp".into(), "--tools=agent".into()],
+        env: BTreeMap::new(),
+    }
+}
+
+pub async fn engram_installed() -> bool {
+    Command::new(crate::driver::spawn::resolve_bin("engram"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 32 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && !BUILTIN_GROUPS.contains(&name)
 }
@@ -237,9 +259,18 @@ rl.on('line', (l) => {
     fn names_are_lowercase_and_not_builtin() {
         assert!(valid_name("github"));
         assert!(valid_name("my-tools2"));
+        assert!(valid_name("engram"));
         assert!(!valid_name("GitHub"));
         assert!(!valid_name("google-drive"));
         assert!(!valid_name(""));
+    }
+
+    #[test]
+    fn default_engram_uses_agent_tools() {
+        let s = default_engram();
+        assert_eq!(s.name, "engram");
+        assert_eq!(s.command, "engram");
+        assert_eq!(s.args, vec!["mcp", "--tools=agent"]);
     }
 
     #[tokio::test]

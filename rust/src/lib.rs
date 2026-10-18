@@ -119,6 +119,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                 agent: None,
                 timeout_ms: config.turn_timeout_ms,
                 switchboard: Some(switchboard.clone()),
+                engram: false,
             },
             claude: ClaudeDriver {
                 bin: config.claude_bin.clone(),
@@ -126,6 +127,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                 timeout_ms: config.turn_timeout_ms,
                 switchboard: Some(switchboard.clone()),
                 read_dirs: vec![config.data_dir.join("media").to_string_lossy().into_owned()],
+                engram: false,
             },
             pi: crate::driver::PiDriver {
                 base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
@@ -289,6 +291,7 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     }
     let runtime = build_runtime(config, echo)?;
     let state = runtime.state.clone();
+    state.settings.ensure_default_engram().await;
     if let Some(ledger) = state.handler.ledger.clone() {
         let cut = crate::turn_ledger::recover(state.handler.clone(), ledger, state.transcripts.clone()).await;
         if cut > 0 {

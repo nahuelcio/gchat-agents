@@ -23,7 +23,7 @@ pub fn pi_model(model: &str) -> String {
     }
 }
 
-const WITHOUT_PERSONA: &[&str] = &["coding", "switchboard"];
+const WITHOUT_PERSONA: &[&str] = &["coding", "switchboard", "engram"];
 
 impl PiDriver {
     fn persona(&self, thread_key: &str) -> Option<crate::settings::Persona> {
@@ -38,10 +38,35 @@ impl PiDriver {
         }
     }
 
+    fn wants_engram(&self, thread_key: &str) -> bool {
+        let registered = self
+            .settings
+            .as_ref()
+            .is_some_and(|s| crate::mcp::engram_registered(&s.get()));
+        if !registered {
+            return false;
+        }
+        match self.groups(thread_key) {
+            None => true,
+            Some(g) => g.iter().any(|m| m == crate::mcp_client::ENGRAM_NAME),
+        }
+    }
+
     fn instructions(&self, thread_key: &str) -> Option<String> {
-        let p = self.persona(thread_key)?;
-        let skills = crate::skills::instructions(&p);
-        Some([p.prompt.trim().to_string(), skills].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n")).filter(|s| !s.is_empty())
+        let mut parts = Vec::new();
+        if let Some(p) = self.persona(thread_key) {
+            if !p.prompt.trim().is_empty() {
+                parts.push(p.prompt.trim().to_string());
+            }
+            let skills = crate::skills::instructions(&p);
+            if !skills.is_empty() {
+                parts.push(skills);
+            }
+        }
+        if self.wants_engram(thread_key) {
+            parts.push(crate::mcp::ENGRAM_HINT.to_string());
+        }
+        Some(parts.join("\n\n")).filter(|s| !s.is_empty())
     }
 
     async fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
@@ -121,6 +146,46 @@ mod tests {
     #[test]
     fn a_thread_without_persona_gets_no_drive() {
         let driver = PiDriver { base_url: String::new(), model: None, settings: None, timeout_ms: 0, retry_ms: 0 };
-        assert_eq!(driver.groups("dm/1"), Some(vec!["coding".to_string(), "switchboard".to_string()]));
+        assert_eq!(
+            driver.groups("dm/1"),
+            Some(vec!["coding".to_string(), "switchboard".to_string(), "engram".to_string()])
+        );
+    }
+
+    #[test]
+    fn engram_protocol_is_injected_when_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = std::sync::Arc::new(crate::settings::SettingsStore::open(
+            dir.path().join("config.json"),
+            crate::settings::SettingsDefaults::default(),
+        ));
+        let without = PiDriver {
+            base_url: String::new(),
+            model: None,
+            settings: Some(settings.clone()),
+            timeout_ms: 0,
+            retry_ms: 0,
+        };
+        assert!(without.instructions("dm/1").is_none());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            settings
+                .update(crate::settings::SettingsPatch {
+                    mcp_servers: Some(vec![crate::mcp_client::default_engram()]),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        });
+        let with = PiDriver {
+            base_url: String::new(),
+            model: None,
+            settings: Some(settings),
+            timeout_ms: 0,
+            retry_ms: 0,
+        };
+        let hint = with.instructions("dm/1").unwrap();
+        assert!(hint.contains("engram__mem_save"), "{hint}");
+        assert!(hint.contains("proactively"), "{hint}");
     }
 }

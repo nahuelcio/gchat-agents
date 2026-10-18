@@ -26,14 +26,16 @@ export class ConfiguredDriver implements AgentDriver {
     const s = this.settings.get();
     const { opencodeBin, claudeBin, timeoutMs, switchboard, readDirs } = this.options;
     const kind = input.driver ?? s.agentDriver;
+    const engram = ((s as { mcpServers?: { name: string }[] }).mcpServers ?? []).some((m) => m.name === "engram");
     const driver =
       kind === "claude"
-        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs, readDirs, ...(switchboard && { switchboard }) })
+        ? new ClaudeDriver({ bin: claudeBin, model: s.models.claude, timeoutMs, readDirs, engram, ...(switchboard && { switchboard }) })
         : new OpenCodeDriver({
             bin: opencodeBin,
             model: s.models.opencode,
             agent: s.agents?.opencode,
             timeoutMs,
+            engram,
             ...(switchboard && { switchboard }),
           });
     return driver.runTurn(input);

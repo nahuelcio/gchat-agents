@@ -65,6 +65,42 @@ pub fn opencode_mcp_args(server_path: &str, admin_url: &str) -> Vec<String> {
 
 pub const SWITCHBOARD_HINT: &str = "You have Switchboard MCP tools for this chat thread. After creating or choosing an Azure work item, call link_work_item. To work in a configured git repo, call list_repos then attach_repo (detach_repo to leave). Use start_app / stop_app for the repo's configured up command. Use thread_status to inspect the panel state. For recurring work, create_schedule / list_schedules / update_schedule / delete_schedule.";
 
+/// Persistent-memory protocol for the Engram MCP (tools are named `engram__mem_*`).
+pub const ENGRAM_HINT: &str = "\
+You have Engram persistent memory (tools engram__mem_save, engram__mem_search, engram__mem_context, \
+engram__mem_session_summary, engram__mem_get_observation, engram__mem_update, engram__mem_suggest_topic_key). \
+It survives sessions and compaction — use it proactively; do not wait to be asked.\n\
+\n\
+SAVE immediately with engram__mem_save after: architecture/design decisions, conventions, bug fixes \
+(with root cause), non-obvious discoveries, tool/library choices, and user preferences or confirmations/rejections. \
+Self-check after every task: if any of those happened, save now.\n\
+Format: title = verb + what; type = bugfix|decision|architecture|discovery|pattern|config|preference; \
+scope = project (default)|personal; topic_key = stable key for evolving topics (reuse to upsert); \
+content = What / Why / Where / Learned.\n\
+\n\
+SEARCH when the user asks to recall past work, or proactively when starting something that may have been done before, \
+or on a first message that names a feature/problem: engram__mem_context first, then engram__mem_search, \
+then engram__mem_get_observation for full text.\n\
+\n\
+Before saying you are done, call engram__mem_session_summary (Goal, Instructions, Discoveries, Accomplished, \
+Next Steps, Relevant Files). After compaction/context reset, save the summary, then mem_context, then continue. \
+Memory calls are bookkeeping — finish them before the user-facing answer.";
+
+pub fn engram_registered(settings: &crate::settings::Settings) -> bool {
+    settings
+        .mcp_servers
+        .iter()
+        .any(|m| m.name == crate::mcp_client::ENGRAM_NAME)
+}
+
+pub fn claude_system_prompt(engram: bool) -> String {
+    if engram {
+        format!("{SWITCHBOARD_HINT}\n\n{ENGRAM_HINT}")
+    } else {
+        SWITCHBOARD_HINT.to_string()
+    }
+}
+
 fn tools() -> Value {
     json!([
         {"name":"invite_agent","description":"Add an agent to the current chat room.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
@@ -620,6 +656,13 @@ mod tests {
             v["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_THREAD_KEY"],
             "thread-1"
         );
+    }
+
+    #[test]
+    fn claude_system_prompt_adds_engram_protocol() {
+        assert!(!claude_system_prompt(false).contains("engram__mem_save"));
+        assert!(claude_system_prompt(true).contains("engram__mem_save"));
+        assert!(claude_system_prompt(true).contains(SWITCHBOARD_HINT));
     }
 
     #[tokio::test]

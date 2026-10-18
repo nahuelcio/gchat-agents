@@ -1,7 +1,7 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
 import { continuation, formatQuestions, normalizeQuestions } from "../questions.js";
-import { switchboardThreadNote, type SwitchboardMcp } from "../switchboard-mcp.js";
+import { ENGRAM_HINT, switchboardThreadNote, type SwitchboardMcp } from "../switchboard-mcp.js";
 
 /** Silence after a question event before we treat the CLI as blocked on the user. */
 const ASK_IDLE_MS = 200;
@@ -14,6 +14,8 @@ export interface OpenCodeDriverOptions {
   timeoutMs: number;
   /** Expose Switchboard MCP tools (link_work_item, …) for this turn. */
   switchboard?: SwitchboardMcp;
+  /** When true, append the Engram memory protocol to the turn prompt. */
+  engram?: boolean;
 }
 
 export interface ParsedRunOutput {
@@ -102,6 +104,7 @@ export class OpenCodeDriver implements AgentDriver {
   private agent?: string;
   private timeoutMs: number;
   private switchboard?: SwitchboardMcp;
+  private engram: boolean;
 
   constructor(options: OpenCodeDriverOptions) {
     this.bin = options.bin;
@@ -109,6 +112,7 @@ export class OpenCodeDriver implements AgentDriver {
     this.agent = options.agent;
     this.timeoutMs = options.timeoutMs;
     this.switchboard = options.switchboard;
+    this.engram = !!options.engram;
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -137,7 +141,8 @@ export class OpenCodeDriver implements AgentDriver {
     // "--" ends flag parsing: text starting with '-' would otherwise be eaten
     // as CLI flags (opencode v2.0.26 verified to honor the separator).
     const thread = this.switchboard ? `\n\n${switchboardThreadNote(input.threadKey)}` : "";
-    args.push("--", input.text + thread);
+    const engram = this.engram ? `\n\n${ENGRAM_HINT}` : "";
+    args.push("--", input.text + thread + engram);
     return spawnLive(this.bin, args, input.workdir, this.timeoutMs);
   }
 

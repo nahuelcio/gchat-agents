@@ -167,6 +167,23 @@ export const SWITCHBOARD_HINT = [
   "For recurring work, create_schedule / list_schedules / update_schedule / delete_schedule.",
 ].join(" ");
 
+/** Persistent-memory protocol for the Engram MCP (tools are named `engram__mem_*`). */
+export const ENGRAM_HINT = [
+  "You have Engram persistent memory (tools engram__mem_save, engram__mem_search, engram__mem_context, engram__mem_session_summary, engram__mem_get_observation, engram__mem_update, engram__mem_suggest_topic_key).",
+  "It survives sessions and compaction — use it proactively; do not wait to be asked.",
+  "SAVE immediately with engram__mem_save after: architecture/design decisions, conventions, bug fixes (with root cause), non-obvious discoveries, tool/library choices, and user preferences or confirmations/rejections.",
+  "Self-check after every task: if any of those happened, save now.",
+  "Format: title = verb + what; type = bugfix|decision|architecture|discovery|pattern|config|preference; scope = project (default)|personal; topic_key = stable key for evolving topics (reuse to upsert); content = What / Why / Where / Learned.",
+  "SEARCH when the user asks to recall past work, or proactively when starting something that may have been done before, or on a first message that names a feature/problem: engram__mem_context first, then engram__mem_search, then engram__mem_get_observation for full text.",
+  "Before saying you are done, call engram__mem_session_summary (Goal, Instructions, Discoveries, Accomplished, Next Steps, Relevant Files).",
+  "After compaction/context reset, save the summary, then mem_context, then continue.",
+  "Memory calls are bookkeeping — finish them before the user-facing answer.",
+].join(" ");
+
+export function claudeSystemPrompt(engram: boolean): string {
+  return engram ? `${SWITCHBOARD_HINT}\n\n${ENGRAM_HINT}` : SWITCHBOARD_HINT;
+}
+
 export interface AdminCall {
   method?: string;
   body?: Record<string, unknown>;

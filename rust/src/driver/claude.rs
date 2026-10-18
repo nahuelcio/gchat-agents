@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 
 use super::spawn::{spawn_live, LiveLine, LiveProcess};
 use super::types::{AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, ContextUsage, PendingAgent};
-use crate::mcp::{claude_mcp_config, SWITCHBOARD_HINT, SwitchboardMcp};
+use crate::mcp::{claude_mcp_config, claude_system_prompt, SwitchboardMcp};
 use crate::questions::{answers_map_from_text, format_questions, normalize_questions};
 
 #[derive(Clone)]
@@ -14,6 +14,8 @@ pub struct ClaudeDriver {
     pub timeout_ms: u64,
     pub switchboard: Option<SwitchboardMcp>,
     pub read_dirs: Vec<String>,
+    /// When true, append the Engram memory protocol to the system prompt.
+    pub engram: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -223,7 +225,7 @@ impl AgentDriver for ClaudeDriver {
                 &sb.admin_url,
             ));
             args.push("--append-system-prompt".into());
-            args.push(SWITCHBOARD_HINT.into());
+            args.push(claude_system_prompt(self.engram));
             args.push("--allowedTools".into());
             args.push("mcp__switchboard".into());
         }
@@ -242,6 +244,7 @@ impl ClaudeDriver {
             timeout_ms: self.timeout_ms,
             switchboard: self.switchboard.clone(),
             read_dirs: self.read_dirs.clone(),
+            engram: self.engram,
         }
     }
 
@@ -475,6 +478,7 @@ for await (const line of rl) {{
             timeout_ms: 10_000,
             switchboard: None,
             read_dirs: vec![],
+            engram: false,
         };
         let parked = driver
             .run_turn(AgentTurnInput {

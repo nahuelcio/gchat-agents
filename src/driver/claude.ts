@@ -1,7 +1,7 @@
 import type { AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, ContextUsage, PendingAgent } from "./types.js";
 import { spawnLive, type LiveProcess } from "./live.js";
 import { answersFromText, formatQuestions, normalizeQuestions } from "../questions.js";
-import { claudeMcpConfig, SWITCHBOARD_HINT, type SwitchboardMcp } from "../switchboard-mcp.js";
+import { claudeMcpConfig, claudeSystemPrompt, type SwitchboardMcp } from "../switchboard-mcp.js";
 
 export interface ClaudeDriverOptions {
   bin: string;
@@ -12,6 +12,8 @@ export interface ClaudeDriverOptions {
   switchboard?: SwitchboardMcp;
   /** Extra folders the agent may read outside its workdir (e.g. chat attachments). */
   readDirs?: string[];
+  /** When true, append the Engram memory protocol to the system prompt. */
+  engram?: boolean;
 }
 
 export interface ParsedClaudeOutput {
@@ -129,6 +131,7 @@ export class ClaudeDriver implements AgentDriver {
   private timeoutMs: number;
   private switchboard?: SwitchboardMcp;
   private readDirs: string[];
+  private engram: boolean;
 
   constructor(options: ClaudeDriverOptions) {
     this.bin = options.bin;
@@ -136,6 +139,7 @@ export class ClaudeDriver implements AgentDriver {
     this.timeoutMs = options.timeoutMs;
     this.switchboard = options.switchboard;
     this.readDirs = options.readDirs ?? [];
+    this.engram = !!options.engram;
   }
 
   async runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -150,7 +154,7 @@ export class ClaudeDriver implements AgentDriver {
         "--mcp-config",
         claudeMcpConfig(this.switchboard.serverPath, input.threadKey, this.switchboard.adminUrl),
         "--append-system-prompt",
-        SWITCHBOARD_HINT,
+        claudeSystemPrompt(this.engram),
         "--allowedTools",
         "mcp__switchboard",
       );

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::spawn::{spawn_live, LiveLine, LiveProcess};
 use super::types::{AgentDriver, AgentQuestion, AgentTurnInput, AgentTurnResult, PendingAgent};
-use crate::mcp::{switchboard_thread_note, SwitchboardMcp};
+use crate::mcp::{switchboard_thread_note, ENGRAM_HINT, SwitchboardMcp};
 use crate::questions::{continuation, format_questions, normalize_questions};
 
 const ASK_IDLE_MS: u64 = 200;
@@ -16,6 +16,8 @@ pub struct OpenCodeDriver {
     pub agent: Option<String>,
     pub timeout_ms: u64,
     pub switchboard: Option<SwitchboardMcp>,
+    /// When true, append the Engram memory protocol to the turn prompt.
+    pub engram: bool,
 }
 
 #[derive(Debug, Default)]
@@ -143,10 +145,14 @@ impl OpenCodeDriver {
     }
 
     fn prompt(&self, input: &AgentTurnInput) -> String {
-        match self.switchboard {
+        let mut text = match self.switchboard {
             Some(_) => format!("{}\n\n{}", input.text, switchboard_thread_note(&input.thread_key)),
             None => input.text.clone(),
+        };
+        if self.engram {
+            text = format!("{text}\n\n{ENGRAM_HINT}");
         }
+        text
     }
 
     async fn pump(
@@ -187,6 +193,7 @@ impl OpenCodeDriver {
                         agent: self.agent.clone(),
                         timeout_ms: self.timeout_ms,
                         switchboard: self.switchboard.clone(),
+                        engram: self.engram,
                     };
                     let base = input.clone();
                     let qs = questions.clone();
@@ -200,6 +207,7 @@ impl OpenCodeDriver {
                                 agent: driver.agent.clone(),
                                 timeout_ms: driver.timeout_ms,
                                 switchboard: driver.switchboard.clone(),
+                                engram: driver.engram,
                             };
                             let base = base.clone();
                             let qs = qs.clone();
@@ -255,6 +263,7 @@ impl OpenCodeDriver {
                             agent: self.agent.clone(),
                             timeout_ms: self.timeout_ms,
                             switchboard: self.switchboard.clone(),
+                            engram: self.engram,
                         };
                         let base = input.clone();
                         let qs = questions.clone();
@@ -268,6 +277,7 @@ impl OpenCodeDriver {
                                     agent: driver.agent.clone(),
                                     timeout_ms: driver.timeout_ms,
                                     switchboard: driver.switchboard.clone(),
+                                    engram: driver.engram,
                                 };
                                 let base = base.clone();
                                 let qs = qs.clone();
@@ -412,6 +422,7 @@ if (joined.includes('Which library?')) {{
             agent: None,
             timeout_ms: 10_000,
             switchboard: None,
+            engram: false,
         };
         let parked = driver
             .run_turn(AgentTurnInput {

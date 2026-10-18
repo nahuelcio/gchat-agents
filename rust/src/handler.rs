@@ -442,11 +442,16 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
                 &(deps.options)().personas,
                 deps.store.get(&req.thread_key).as_ref().and_then(|r| r.members.as_deref()),
             );
-            let spoken: std::collections::HashSet<String> = addressed_personas(&req.text, &room_now)
+            let mut spoken: std::collections::HashSet<String> = addressed_personas(&req.text, &room_now)
                 .into_iter()
                 .chain(consult_topics(&req.text, &room_now))
                 .map(|p| p.name.to_lowercase())
                 .collect();
+            if let Some(since) = req.room_n {
+                if let Some(room) = deps.store.get(&req.thread_key).and_then(|r| r.room) {
+                    spoken.extend(room.into_iter().filter(|e| e.n > since).filter_map(|e| e.author.strip_prefix('@').map(|n| n.to_lowercase())));
+                }
+            }
             let members_present = deps
                 .store
                 .get(&req.thread_key)
@@ -1963,6 +1968,39 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(qa_call.text.contains("[Room message"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_the_host_already_called_does_not_answer_again() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, n| match agent {
+            "default" => "Te dejo con @soporte, ¿lo ves?".into(),
+            "soporte" => format!("hola {n}"),
+            _ => "x".into(),
+        }));
+        let d = room_deps(dir.path(), driver.clone(), vec![persona("soporte", None)], Some(vec!["soporte"])).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "que onda soporte".into(),
+                sender: Some("nahuel".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: Some(captured.clone()),
+                request_id: Some("m1".into()),
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let replies = captured.lock().await.clone();
+        let soporte = replies.iter().filter(|r| r.contains("*@soporte*")).count();
+        assert_eq!(soporte, 1, "{replies:?}");
+        let calls = driver.calls.lock().unwrap().iter().filter(|c| c.thread_key.ends_with("#soporte")).count();
+        assert_eq!(calls, 1);
     }
 
     #[tokio::test]
