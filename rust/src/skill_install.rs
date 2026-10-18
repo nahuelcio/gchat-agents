@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use serde::Serialize;
+use serde_json::Value;
+
 use crate::skills;
 
 pub struct Endpoints {
@@ -25,6 +28,88 @@ struct Query {
 
 pub async fn install(source: &str, dir: &Path) -> Result<Vec<String>, String> {
     install_at(source, dir, &Endpoints::github()).await
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub name: String,
+    pub skill_id: String,
+    pub source: String,
+    pub installs: u64,
+}
+
+/// Proxy search against skills.sh (no CORS from the browser).
+/// `q` matches name/topic; optional `owner` scopes to a GitHub org/user.
+/// skills.sh requires `q` ≥ 2 chars — if only owner is set we reuse the owner as q.
+pub async fn search(q: &str, owner: Option<&str>, limit: u32) -> Result<Vec<SearchHit>, String> {
+    let q = q.trim();
+    let owner = owner.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let query = if q.chars().count() >= 2 {
+        q.to_string()
+    } else if let Some(ref o) = owner {
+        if o.chars().count() >= 2 {
+            o.clone()
+        } else {
+            return Ok(vec![]);
+        }
+    } else {
+        return Ok(vec![]);
+    };
+    let limit = limit.clamp(1, 20);
+    let limit_s = limit.to_string();
+    let mut pairs: Vec<(&str, &str)> = vec![("q", query.as_str()), ("limit", limit_s.as_str())];
+    if let Some(ref o) = owner {
+        pairs.push(("owner", o.as_str()));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get("https://skills.sh/api/search")
+        .query(&pairs)
+        .header("user-agent", "switchboard")
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("could not reach skills.sh: {e}"))?;
+    let status = res.status();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("skills.sh returned {status}"));
+    }
+    let data: Value = serde_json::from_str(&body).map_err(|e| format!("bad skills.sh response: {e}"))?;
+    let skills = data.get("skills").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    Ok(skills
+        .into_iter()
+        .filter_map(|s| {
+            let source = s.get("source")?.as_str()?.trim().to_string();
+            let skill_id = s
+                .get("skillId")
+                .or_else(|| s.get("skill_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let name = s
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&skill_id)
+                .trim()
+                .to_string();
+            if source.is_empty() || skill_id.is_empty() || source.contains("..") {
+                return None;
+            }
+            let installs = s.get("installs").and_then(|v| v.as_u64()).unwrap_or(0);
+            Some(SearchHit {
+                name: if name.is_empty() { skill_id.clone() } else { name },
+                skill_id,
+                source,
+                installs,
+            })
+        })
+        .collect())
 }
 
 pub async fn install_at(source: &str, dir: &Path, ends: &Endpoints) -> Result<Vec<String>, String> {

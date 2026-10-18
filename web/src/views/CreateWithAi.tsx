@@ -9,6 +9,7 @@ import {
   type PersonaTemplate,
   type SkillFile,
   type SkillInfo,
+  type SkillSearchHit,
   BUILTIN_MCPS,
   DEFAULT_HOST_SKILLS,
   DEFAULT_PERSONA_MCPS,
@@ -20,6 +21,16 @@ type Kind = "agent" | "skill";
 
 const EMPTY_PERSONA: Persona = { name: "", prompt: "", mcps: [...DEFAULT_PERSONA_MCPS] };
 const EMPTY_SKILL: SkillInfo = { name: "", description: "", mcps: [], body: "", files: [] };
+
+function formatInstalls(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(n);
+}
+
+function skillInstallSpec(hit: SkillSearchHit): string {
+  return `${hit.source}@${hit.skillId}`;
+}
 
 const STARTERS: {
   id: string;
@@ -174,6 +185,11 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   const [aiOpen, setAiOpen] = useState(false);
   const [skillSource, setSkillSource] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [installingSpec, setInstallingSpec] = useState<string | null>(null);
+  const [skillSearch, setSkillSearch] = useState("");
+  const [skillOwner, setSkillOwner] = useState("");
+  const [skillHits, setSkillHits] = useState<SkillSearchHit[]>([]);
+  const [skillSearching, setSkillSearching] = useState(false);
   const [starterBusy, setStarterBusy] = useState<string | null>(null);
   const starterHandled = useRef<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -185,6 +201,52 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, busy]);
+
+  useEffect(() => {
+    const q = skillSearch.trim();
+    const owner = skillOwner.trim();
+    if (q.length < 2 && owner.length < 2) {
+      setSkillHits([]);
+      setSkillSearching(false);
+      return;
+    }
+    setSkillSearching(true);
+    const t = window.setTimeout(() => {
+      api
+        .searchSkills(q, { owner: owner || undefined })
+        .then(
+          ({ skills: hits }) => setSkillHits(hits),
+          () => setSkillHits([]),
+        )
+        .finally(() => setSkillSearching(false));
+    }, 280);
+    return () => window.clearTimeout(t);
+  }, [skillSearch, skillOwner]);
+
+  const installFromSpec = (spec: string, clearSearch = false) => {
+    if (!spec || installing) return;
+    setInstalling(true);
+    setInstallingSpec(spec);
+    api
+      .installSkill(spec)
+      .then(
+        ({ installed, skills: list }) => {
+          setSkills(list);
+          setSkillSource("");
+          if (clearSearch) {
+            setSkillSearch("");
+            setSkillOwner("");
+            setSkillHits([]);
+          }
+          notify(installed.length ? `Installed ${installed.join(", ")}` : "Nothing new to install");
+        },
+        (err: Error) => notify(err.message, true),
+      )
+      .finally(() => {
+        setInstalling(false);
+        setInstallingSpec(null);
+      });
+  };
 
   const reset = (next: Kind = kind) => {
     setKind(next);
@@ -199,6 +261,9 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     setEditingSkill(null);
     setReady(false);
     setAiOpen(false);
+    setSkillSearch("");
+    setSkillOwner("");
+    setSkillHits([]);
   };
 
   const startEditHost = (withAi = false) => {
@@ -554,38 +619,87 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
       <div className="create-ai-workspace">
       <section className="create-ai-catalog" aria-label={kind === "agent" ? "Agents" : "Skills"}>
         {kind === "skill" && (
-          <form
-            className="row create-ai-install"
-            aria-label="Install skill"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const spec = skillSource.trim();
-              if (!spec || installing) return;
-              setInstalling(true);
-              api
-                .installSkill(spec)
-                .then(
-                  ({ installed, skills: list }) => {
-                    setSkills(list);
-                    setSkillSource("");
-                    notify(installed.length ? `Installed ${installed.join(", ")}` : "Nothing new to install");
-                  },
-                  (err: Error) => notify(err.message, true),
-                )
-                .finally(() => setInstalling(false));
-            }}
-          >
-            <input
-              className="mono grow"
-              value={skillSource}
-              onChange={(e) => setSkillSource(e.target.value)}
-              placeholder="owner/repo@skill, or a skills.sh / GitHub link"
-              aria-label="Skill source"
-            />
-            <button className="btn" disabled={!skillSource.trim() || installing}>
-              {installing ? "Installing…" : "Install"}
-            </button>
-          </form>
+          <div className="create-ai-skill-browse">
+            <div className="create-ai-skill-search-row">
+              <label className="create-ai-skill-search">
+                <span className="muted small">Name / topic</span>
+                <input
+                  className="grow"
+                  value={skillSearch}
+                  onChange={(e) => setSkillSearch(e.target.value)}
+                  placeholder="react, tdd, design…"
+                  aria-label="Search skills by name or topic"
+                  autoComplete="off"
+                />
+              </label>
+              <label className="create-ai-skill-search">
+                <span className="muted small">Owner</span>
+                <input
+                  className="mono grow"
+                  value={skillOwner}
+                  onChange={(e) => setSkillOwner(e.target.value)}
+                  placeholder="vercel-labs, mattpocock…"
+                  aria-label="Filter skills by GitHub owner"
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            {skillSearching && <p className="muted small create-ai-search-status">Searching…</p>}
+            {!skillSearching &&
+              (skillSearch.trim().length >= 2 || skillOwner.trim().length >= 2) &&
+              skillHits.length === 0 && (
+              <p className="muted small create-ai-search-status">No matches on skills.sh</p>
+            )}
+            {skillHits.length > 0 && (
+              <ul className="create-ai-search-hits" aria-label="skills.sh results">
+                {skillHits.map((hit) => {
+                  const spec = skillInstallSpec(hit);
+                  const busy = installingSpec === spec;
+                  const have = skills.some(
+                    (s) => s.name === hit.skillId || s.name === hit.name || s.name.toLowerCase() === hit.skillId.toLowerCase(),
+                  );
+                  return (
+                    <li key={spec} className="create-ai-search-hit">
+                      <div className="create-ai-search-hit-text">
+                        <span className="strong">{hit.name}</span>
+                        <span className="muted small mono">
+                          {hit.source}
+                          {hit.installs > 0 ? ` · ${formatInstalls(hit.installs)} installs` : ""}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn small primary"
+                        disabled={installing || have}
+                        onClick={() => installFromSpec(spec, true)}
+                      >
+                        {busy ? "…" : have ? "Installed" : "Install"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <form
+              className="row create-ai-install"
+              aria-label="Install skill by link"
+              onSubmit={(e) => {
+                e.preventDefault();
+                installFromSpec(skillSource.trim());
+              }}
+            >
+              <input
+                className="mono grow"
+                value={skillSource}
+                onChange={(e) => setSkillSource(e.target.value)}
+                placeholder="or paste owner/repo@skill / skills.sh / GitHub link"
+                aria-label="Skill source"
+              />
+              <button className="btn" disabled={!skillSource.trim() || installing}>
+                {installing && installingSpec === skillSource.trim() ? "Installing…" : "Install"}
+              </button>
+            </form>
+          </div>
         )}
         {kind === "agent" ? (
           <>

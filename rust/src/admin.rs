@@ -87,6 +87,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/gmail/mcp/call", post(post_gmail_mcp_call))
         .route("/api/skills", get(get_skills).put(put_skill).delete(delete_skill))
         .route("/api/skills/install", post(post_install_skill))
+        .route("/api/skills/search", get(get_skills_search))
         .route("/api/mcp/import", post(post_mcp_import))
         .route("/api/mcp/servers", get(get_mcp_servers))
         .route("/api/agents/delegates", get(get_delegates))
@@ -1092,6 +1093,26 @@ async fn post_install_skill(Json(b): Json<SourceBody>) -> Response {
     match crate::skill_install::install(&b.source.unwrap_or_default(), &crate::skills::writable_dir()).await {
         Ok(installed) => Json(json!({ "installed": installed, "skills": skill_list() })).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SkillsSearchQuery {
+    q: Option<String>,
+    owner: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn get_skills_search(Query(q): Query<SkillsSearchQuery>) -> Response {
+    match crate::skill_install::search(
+        q.q.as_deref().unwrap_or(""),
+        q.owner.as_deref(),
+        q.limit.unwrap_or(12),
+    )
+    .await
+    {
+        Ok(skills) => Json(json!({ "skills": skills })).into_response(),
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
     }
 }
 

@@ -14,9 +14,12 @@ import {
   type TeamThreadSummary,
   type TeamTransport,
 } from "../api";
+import { ArtifactPane, ArtifactPreviewProvider, useArtifactPreview } from "../ArtifactPreview";
 import { Icon } from "../App";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
+
+const ARTIFACT_MARK = /\[\[artifact:([a-f0-9]{24})\|([^\]]+)\]\]/g;
 
 /** @handle being typed at the caret, if any. */
 function activeMention(text: string, caret: number): { start: number; query: string } | null {
@@ -512,7 +515,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   return (
+    <ArtifactPreviewProvider>
     <div className={`playground ${transport.guest ? "standalone" : ""}`}>
+      <ArtifactAutoOpen messages={state?.messages} mediaUrl={transport.mediaUrl} threadId={activeId} />
       <aside className={`play-threads${threadsOpen ? "" : " collapsed"}`} aria-label="Threads">
         {!threadsOpen ? (
           <button type="button" className="play-rail-toggle" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
@@ -908,37 +913,114 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         )}
         </div>
 
-        {activeId && contextOpen && (
-          <ThreadContextPanel
-            state={state}
-            guest={transport.guest}
-            catalog={catalog}
-            onHide={() => toggleContext(false)}
-            onCommand={(text) => void send(text)}
-            onMember={
-              transport.members
-                ? (op, member) =>
-                    transport.members!(activeId, op, member).then(
-                      async () => setState(await transport.thread(activeId)),
-                      (err: unknown) => notify(err instanceof Error ? err.message : String(err), true),
-                    )
-                : undefined
-            }
-          />
-        )}
-        {activeId && !contextOpen && (
-          <aside className="play-context collapsed" aria-label="Thread context">
-            <button type="button" className="play-rail-toggle" aria-label="Show context" title="Show context" onClick={() => toggleContext(true)}>
-              <Icon size={16}>
-                <path d="M4 6h16M4 12h16M4 18h10" />
-              </Icon>
-            </button>
-          </aside>
-        )}
+        <TeamChatSide
+          activeId={activeId}
+          contextOpen={contextOpen}
+          state={state}
+          guest={transport.guest}
+          catalog={catalog}
+          onHideContext={() => toggleContext(false)}
+          onShowContext={() => toggleContext(true)}
+          onCommand={(text) => void send(text)}
+          onMember={
+            transport.members && activeId
+              ? (op, member) =>
+                  transport.members!(activeId, op, member).then(
+                    async () => setState(await transport.thread(activeId)),
+                    (err: unknown) => notify(err instanceof Error ? err.message : String(err), true),
+                  )
+              : undefined
+          }
+        />
         </div>
       </section>
     </div>
+    </ArtifactPreviewProvider>
   );
+}
+
+function TeamChatSide({
+  activeId,
+  contextOpen,
+  state,
+  guest,
+  catalog,
+  onHideContext,
+  onShowContext,
+  onCommand,
+  onMember,
+}: {
+  activeId?: string;
+  contextOpen: boolean;
+  state?: TeamThreadState;
+  guest: boolean;
+  catalog: PersonaRef[];
+  onHideContext: () => void;
+  onShowContext: () => void;
+  onCommand: (text: string) => void;
+  onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
+}) {
+  const { active } = useArtifactPreview();
+  return (
+    <>
+      <ArtifactPane />
+      {!active && activeId && contextOpen && (
+        <ThreadContextPanel
+          state={state}
+          guest={guest}
+          catalog={catalog}
+          onHide={onHideContext}
+          onCommand={onCommand}
+          onMember={onMember}
+        />
+      )}
+      {!active && activeId && !contextOpen && (
+        <aside className="play-context collapsed" aria-label="Thread context">
+          <button type="button" className="play-rail-toggle" aria-label="Show context" title="Show context" onClick={onShowContext}>
+            <Icon size={16}>
+              <path d="M4 6h16M4 12h16M4 18h10" />
+            </Icon>
+          </button>
+        </aside>
+      )}
+    </>
+  );
+}
+
+function ArtifactAutoOpen({
+  messages,
+  mediaUrl,
+  threadId,
+}: {
+  messages?: { text: string; bot?: boolean }[];
+  mediaUrl: (id: string) => string;
+  threadId?: string;
+}) {
+  const { open, active, close } = useArtifactPreview();
+  const seen = useRef<string>("");
+  useEffect(() => {
+    close();
+    seen.current = "";
+  }, [threadId, close]);
+  useEffect(() => {
+    if (!messages?.length) return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (!m.bot) continue;
+      const re = new RegExp(ARTIFACT_MARK.source, "g");
+      let last: RegExpExecArray | null = null;
+      let hit: RegExpExecArray | null;
+      while ((hit = re.exec(m.text))) last = hit;
+      if (!last) continue;
+      const key = `${threadId}:${last[1]}`;
+      if (seen.current === key) return;
+      seen.current = key;
+      if (active?.id === last[1]) return;
+      open({ id: last[1]!, title: last[2]!.trim() || "Artifact", src: mediaUrl(last[1]!) });
+      return;
+    }
+  }, [messages, mediaUrl, threadId, open, active?.id]);
+  return null;
 }
 
 function changeSummary(changes: NonNullable<TeamThreadState["changes"]>): string {

@@ -51,7 +51,14 @@ function GuestApp() {
     setTimeout(() => setToast((t) => (t?.text === text ? undefined : t)), error ? 6000 : 2500);
   }, []);
   const [transport] = useState(() => guestTransport(token));
-  if (!token) return <p className="empty">This link is incomplete. Ask for a new team chat link.</p>;
+  if (!token) {
+    return (
+      <div className="guest-empty">
+        <img src="/brand/switchboard-icon.svg" width={48} height={48} alt="Switchboard" />
+        <p className="empty">This link is incomplete. Ask for a new team chat link.</p>
+      </div>
+    );
+  }
   const base = `${location.origin}/play#${token}`;
   return (
     <>
@@ -151,13 +158,7 @@ function OwnerApp() {
               else location.hash = "#overview";
             }}
           >
-            <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true">
-              <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" fill="none" />
-              <circle cx="9" cy="9" r="3.2" fill="#00f0ff" />
-              <circle cx="23" cy="9" r="3.2" fill="#7107e7" />
-              <circle cx="16" cy="24" r="3.2" fill="#f59e0b" />
-              <circle cx="16" cy="16" r="3.6" fill="#16a34a" />
-            </svg>
+            <img src="/brand/switchboard-icon.svg" width={36} height={36} alt="" />
           </button>
           <span className="brand-text">
             <strong>Switchboard</strong>

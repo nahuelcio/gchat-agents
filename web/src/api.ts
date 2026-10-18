@@ -112,6 +112,14 @@ export interface SkillInfo {
   files?: SkillFile[];
 }
 
+/** Hit from skills.sh catalog search (proxied via /api/skills/search). */
+export interface SkillSearchHit {
+  name: string;
+  skillId: string;
+  source: string;
+  installs: number;
+}
+
 export interface DraftChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -288,6 +296,12 @@ export const api = {
   saveSkill: (skill: SkillInfo) => call<SkillInfo[]>("/api/skills", skill, "PUT"),
   deleteSkill: (name: string) => call<SkillInfo[]>(`/api/skills?name=${encodeURIComponent(name)}`, undefined, "DELETE"),
   installSkill: (source: string) => call<{ installed: string[]; skills: SkillInfo[] }>("/api/skills/install", { source }),
+  searchSkills: (q: string, opts?: { owner?: string; limit?: number }) => {
+    const params = new URLSearchParams({ q, limit: String(opts?.limit ?? 12) });
+    const owner = opts?.owner?.trim();
+    if (owner) params.set("owner", owner);
+    return call<{ skills: SkillSearchHit[] }>(`/api/skills/search?${params}`);
+  },
   draftAgent: (brief: string, current?: Persona) => call<Persona>("/api/ai/draft-agent", { brief, current }),
   draftSkill: (brief: string, current?: SkillInfo) => call<SkillInfo>("/api/ai/draft-skill", { brief, current }),
   draftAgentChat: (messages: DraftChatMessage[], current?: Persona) =>

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArtifactCard } from "./ArtifactCard";
+import { ArtifactCard } from "./ArtifactPreview";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 const BARE_IMAGE =
@@ -85,7 +85,7 @@ export function MessageMarkdown({ text, mediaUrl }: { text: string; mediaUrl: (i
   const segments = splitArtifacts(text);
   const nodes: ReactNode[] = segments.map((seg, i) => {
     if (seg.kind === "artifact") {
-      return <ArtifactCard key={`a-${seg.id}-${i}`} title={seg.title} src={mediaUrl(seg.id)} />;
+      return <ArtifactCard key={`a-${seg.id}-${i}`} id={seg.id} title={seg.title} src={mediaUrl(seg.id)} />;
     }
     return <MarkdownChunk key={`t-${i}`} text={seg.text} />;
   });
