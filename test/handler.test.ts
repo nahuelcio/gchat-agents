@@ -297,7 +297,7 @@ describe("handleEvent", () => {
     expect(result.status).toBe(200);
     await result.done;
     expect(chat.posts).toHaveLength(1);
-    expect(chat.posts[0]?.body.text).toContain("OpenCode");
+    expect(chat.posts[0]?.body.text).toContain("Pi");
     expect(chat.posts[0]?.body.thread).toBeUndefined();
     expect(driver.calls).toHaveLength(0);
   });
@@ -508,14 +508,14 @@ describe("handleEvent", () => {
       const driver = new FakeDriver();
       driver.sessionRef = "ses_1";
       const { deps, chat } = makeDeps({ driver });
-      deps.options = () => ({ contextFooter: "every", autoCompactAt: 0, defaultDriver: "opencode", defaultModels: { opencode: "glm", claude: "opus" } });
+      deps.options = () => ({ contextFooter: "every", autoCompactAt: 0, defaultDriver: "pi", defaultModels: { pi: "anthropic/claude-sonnet-5-5" } });
       await (await handleEvent("Bearer t", say("hi"), deps)).done;
-      expect(chat.posts.at(-1)?.body.text).toContain("— opencode · glm");
-      await (await handleEvent("Bearer t", say("/agent claude"), deps)).done;
+      expect(chat.posts.at(-1)?.body.text).toContain("— pi · anthropic/claude-sonnet-5-5");
+      await (await handleEvent("Bearer t", say("/agent pi"), deps)).done;
       driver.sessionRef = undefined;
       await (await handleEvent("Bearer t", say("hi"), deps)).done;
-      expect(driver.calls.at(-1)).toMatchObject({ driver: "claude", sessionRef: undefined });
-      expect(chat.posts.at(-1)?.body.text).toContain("— claude · opus");
+      expect(driver.calls.at(-1)).toMatchObject({ driver: "pi", sessionRef: undefined });
+      expect(chat.posts.at(-1)?.body.text).toContain("— pi · anthropic/claude-sonnet-5-5");
     });
 
     it("posts a question card and sends the tapped option back to the agent", async () => {

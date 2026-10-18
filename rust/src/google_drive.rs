@@ -21,6 +21,8 @@ pub struct DriveFile {
     pub name: String,
     #[serde(default)]
     pub web_view_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,7 +98,7 @@ impl Drive {
             .bearer_auth(token)
             .query(&[
                 ("q", q),
-                ("fields", "files(id,name,webViewLink)"),
+                ("fields", "files(id,name,mimeType,webViewLink)"),
                 ("supportsAllDrives", "true"),
                 ("includeItemsFromAllDrives", "true"),
             ])
@@ -132,27 +134,31 @@ impl Drive {
 
     pub async fn create_xlsx(&self, folder: &str, task_id: &str, title: &str, sheets: &[Sheet]) -> Result<Created, String> {
         let rows = sheets.iter().map(|s| s.rows.len()).sum();
-        if let Some(file) = self.find_task(folder, task_id).await? {
-            return Ok(Created { file, created: false, rows });
-        }
         let bytes = build_xlsx(sheets)?;
         let name = if title.to_lowercase().ends_with(".xlsx") { title.to_string() } else { format!("{title}.xlsx") };
+        self.upload_new(folder, task_id, &name, XLSX, &bytes, rows).await
+    }
+
+    async fn upload_new(&self, folder: &str, task_id: &str, name: &str, mime: &str, bytes: &[u8], count: usize) -> Result<Created, String> {
+        if let Some(file) = self.find_task(folder, task_id).await? {
+            return Ok(Created { file, created: false, rows: count });
+        }
         let meta = serde_json::json!({
             "name": name,
             "parents": [folder],
-            "mimeType": XLSX,
+            "mimeType": mime,
             "appProperties": { "switchboardTaskId": task_id },
         });
         let boundary = format!("switchboard{}", uuid::Uuid::new_v4().simple());
-        let mut body = format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: {XLSX}\r\n\r\n").into_bytes();
-        body.extend_from_slice(&bytes);
+        let mut body = format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").into_bytes();
+        body.extend_from_slice(bytes);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         let token = self.token().await?;
         let res = self
             .http
             .post(format!("{}/files", self.upload))
             .bearer_auth(token)
-            .query(&[("uploadType", "multipart"), ("fields", "id,name,webViewLink"), ("supportsAllDrives", "true")])
+            .query(&[("uploadType", "multipart"), ("fields", "id,name,mimeType,webViewLink"), ("supportsAllDrives", "true")])
             .header("content-type", format!("multipart/related; boundary={boundary}"))
             .body(body)
             .timeout(Duration::from_secs(60))
@@ -165,7 +171,7 @@ impl Drive {
             return Err(self.explain(status, &text, folder));
         }
         let file: DriveFile = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        Ok(Created { file, created: true, rows })
+        Ok(Created { file, created: true, rows: count })
     }
 }
 
@@ -186,6 +192,17 @@ pub fn task_id(thread_key: &str, ledger: Option<&crate::turn_ledger::TurnLedger>
     let base = thread_key.split('#').next().unwrap_or(thread_key);
     let turn = ledger.and_then(|l| l.running_for(base)).unwrap_or_else(|| base.to_string());
     format!("{turn}|{thread_key}|{}", title.trim().to_lowercase())
+}
+
+pub fn drive_task(explicit: Option<&str>, kind: &str, title: &str, thread_key: &str, ledger: Option<&crate::turn_ledger::TurnLedger>) -> String {
+    let title = title.trim().to_lowercase();
+    if let Some(id) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return format!("{id}|{kind}|{title}");
+    }
+    if kind == "xlsx" {
+        return task_id(thread_key, ledger, &title);
+    }
+    format!("{}|{kind}", task_id(thread_key, ledger, &title))
 }
 
 #[cfg(test)]
@@ -213,12 +230,18 @@ pub(crate) mod tests {
         if query.contains("'missing'") {
             return (axum::http::StatusCode::NOT_FOUND, "File not found").into_response();
         }
+        let only_xlsx = query.contains("spreadsheetml.sheet");
         let files: Vec<DriveFile> = fake
             .files
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, folder, task)| query.contains(&format!("'{folder}' in parents")) && (!query.contains("switchboardTaskId") || query.contains(&format!("value='{task}'"))))
+            .filter(|(file, folder, task)| {
+                let in_folder = query.contains(&format!("'{folder}' in parents"));
+                let task_ok = !query.contains("switchboardTaskId") || query.contains(&format!("value='{task}'"));
+                let mime_ok = !only_xlsx || file.mime_type.as_deref() == Some(super::XLSX);
+                in_folder && task_ok && mime_ok
+            })
             .map(|(f, _, _)| f.clone())
             .collect();
         Json(serde_json::json!({ "files": files })).into_response()
@@ -229,10 +252,14 @@ pub(crate) mod tests {
         let start = text.find('{').unwrap();
         let end = text[start..].find("\r\n--").unwrap() + start;
         let meta: Value = serde_json::from_str(&text[start..end]).unwrap();
-        assert!(text.contains("PK"), "xlsx payload missing");
         *fake.uploads.lock().unwrap() += 1;
         let id = format!("file{}", *fake.uploads.lock().unwrap());
-        let file = DriveFile { id: id.clone(), name: meta["name"].as_str().unwrap().into(), web_view_link: Some(format!("https://drive.example/{id}")) };
+        let file = DriveFile {
+            id: id.clone(),
+            name: meta["name"].as_str().unwrap().into(),
+            web_view_link: Some(format!("https://drive.example/{id}")),
+            mime_type: meta["mimeType"].as_str().map(str::to_string),
+        };
         fake.files.lock().unwrap().push((
             file.clone(),
             meta["parents"][0].as_str().unwrap().into(),
@@ -271,6 +298,9 @@ pub(crate) mod tests {
         assert!(allowed("share/x#dev", &settings).unwrap_err().contains("does not have"));
         assert!(allowed("share/x", &settings).is_err());
         assert_eq!(task_id("share/x#finanzas", None, " Cierre "), "share/x|share/x#finanzas|cierre");
+        assert_eq!(drive_task(None, "xlsx", " Cierre ", "share/x#finanzas", None), "share/x|share/x#finanzas|cierre");
+        assert_eq!(drive_task(Some("pi:9"), "docx", "Informe", "share/x#finanzas", None), "pi:9|docx|informe");
+        assert_ne!(drive_task(Some("pi:9"), "xlsx", "Informe", "share/x#finanzas", None), drive_task(Some("pi:9"), "pptx", "Informe", "share/x#finanzas", None));
     }
 
     #[test]

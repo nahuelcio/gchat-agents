@@ -1,7 +1,6 @@
 import type { PostMessageBody } from "./chat-client.js";
 import type { AgentQuestion } from "./driver/types.js";
 
-/** Claude uses `multiSelect`; OpenCode uses `multiple`. Drops anything that is not a real choice. */
 export function normalizeQuestions(raw: unknown): AgentQuestion[] {
   if (!Array.isArray(raw)) return [];
   const out: AgentQuestion[] = [];
@@ -27,7 +26,6 @@ export function normalizeQuestions(raw: unknown): AgentQuestion[] {
   return out;
 }
 
-/** Plain text for clients that cannot render a card (and the card's fallback). */
 export function formatQuestions(questions: AgentQuestion[]): string {
   const body = questions
     .map((q) => {
@@ -43,7 +41,6 @@ export function formatQuestions(questions: AgentQuestion[]): string {
   return `${body}\n\nReply with the number, the option, or your own answer.`;
 }
 
-/** Map a chat reply onto Claude's `answers` record (question text -> label or free text). */
 export function answersFromText(questions: AgentQuestion[], text: string): Record<string, string> {
   const lines = questions.length === 1 ? [text.trim()] : text.split(/\n/).map((s) => s.trim()).filter(Boolean);
   const answers: Record<string, string> = {};

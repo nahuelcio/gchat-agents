@@ -22,11 +22,11 @@ pub enum ContextFooter {
 pub struct Persona {
     pub name: String,
     pub prompt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub driver: Option<AgentDriverKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
@@ -41,11 +41,60 @@ pub struct Persona {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersonaTemplate {
+    pub id: String,
+    pub name: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    #[serde(rename = "respondTo", skip_serializing_if = "Option::is_none")]
+    pub respond_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegates: Vec<String>,
+}
+
+impl PersonaTemplate {
+    pub fn from_persona(id: String, p: &Persona) -> Self {
+        Self {
+            id,
+            name: p.name.clone(),
+            prompt: p.prompt.clone(),
+            model: p.model.clone(),
+            listen: p.listen.clone(),
+            respond_to: p.respond_to.clone(),
+            skills: p.skills.clone(),
+            mcps: p.mcps.clone(),
+            delegates: p.delegates.clone(),
+        }
+    }
+
+    pub fn to_persona(&self) -> Persona {
+        Persona {
+            name: self.name.clone(),
+            prompt: self.prompt.clone(),
+            driver: None,
+            model: self.model.clone(),
+            agent: None,
+            listen: self.listen.clone(),
+            respond_to: self.respond_to.clone(),
+            skills: self.skills.clone(),
+            mcps: self.mcps.clone(),
+            delegates: self.delegates.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub agent_driver: AgentDriverKind,
     pub models: Models,
-    pub agents: Agents,
     pub repos: HashMap<String, RepoConfig>,
     pub allowed_spaces: Vec<String>,
     pub context_footer: ContextFooter,
@@ -53,6 +102,8 @@ pub struct Settings {
     #[serde(default)]
     pub debounce_ms: u32,
     pub personas: Vec<Persona>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<PersonaTemplate>,
     #[serde(default)]
     pub tunnel: TunnelMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,25 +114,14 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Models {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub opencode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct Agents {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub opencode: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SettingsDefaults {
     pub agent_driver: AgentDriverKind,
     pub models: Models,
-    pub agents: Agents,
     pub repos: HashMap<String, RepoConfig>,
     pub allowed_spaces: Vec<String>,
     pub context_footer: Option<ContextFooter>,
@@ -104,19 +144,15 @@ impl SettingsStore {
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
+        let mut personas = saved.personas.or(defaults.personas).unwrap_or_default();
+        for p in &mut personas {
+            p.driver = None;
+            p.agent = None;
+        }
         let current = Settings {
-            agent_driver: saved.agent_driver.unwrap_or(defaults.agent_driver),
+            agent_driver: AgentDriverKind::Pi,
             models: Models {
-                opencode: saved.models.as_ref().and_then(|m| m.opencode.clone()).or(defaults.models.opencode),
-                claude: saved.models.as_ref().and_then(|m| m.claude.clone()).or(defaults.models.claude),
                 pi: saved.models.as_ref().and_then(|m| m.pi.clone()).or(defaults.models.pi),
-            },
-            agents: Agents {
-                opencode: saved
-                    .agents
-                    .as_ref()
-                    .and_then(|a| a.opencode.clone())
-                    .or(defaults.agents.opencode),
             },
             repos: saved.repos.unwrap_or(defaults.repos),
             allowed_spaces: saved.allowed_spaces.unwrap_or(defaults.allowed_spaces),
@@ -126,11 +162,13 @@ impl SettingsStore {
                 .unwrap_or(ContextFooter::Every5),
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
             debounce_ms: saved.debounce_ms.unwrap_or(0),
-            personas: saved.personas.or(defaults.personas).unwrap_or_default(),
+            personas,
+            templates: saved.templates.unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
             mcp_servers: saved.mcp_servers.unwrap_or_default(),
         };
+        let _ = defaults.agent_driver;
         Self {
             file_path,
             inner: Mutex::new(current),
@@ -151,14 +189,9 @@ impl SettingsStore {
         let patched_mcps = patch.mcp_servers.is_some();
         let next = {
             let mut current = self.inner.lock().unwrap().clone();
-            if let Some(v) = patch.agent_driver {
-                current.agent_driver = v;
-            }
+            current.agent_driver = AgentDriverKind::Pi;
             if let Some(v) = patch.models {
-                current.models = v;
-            }
-            if let Some(v) = patch.agents {
-                current.agents = v;
+                current.models = Models { pi: v.pi };
             }
             if let Some(v) = patch.repos {
                 current.repos = v;
@@ -175,8 +208,15 @@ impl SettingsStore {
             if let Some(v) = patch.debounce_ms {
                 current.debounce_ms = v.min(30_000);
             }
-            if let Some(v) = patch.personas {
+            if let Some(mut v) = patch.personas {
+                for p in &mut v {
+                    p.driver = None;
+                    p.agent = None;
+                }
                 current.personas = v;
+            }
+            if let Some(v) = patch.templates {
+                current.templates = v;
             }
             if let Some(v) = patch.tunnel {
                 current.tunnel = v;
@@ -207,7 +247,6 @@ impl SettingsStore {
         Ok(next)
     }
 
-    /// If `engram` is on PATH and the user has not opted out, register it as an MCP server.
     pub async fn ensure_default_engram(&self) {
         if self.engram_declined() {
             return;
@@ -256,15 +295,16 @@ impl SettingsStore {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialSettings {
+    #[allow(dead_code)]
     agent_driver: Option<AgentDriverKind>,
     models: Option<Models>,
-    agents: Option<Agents>,
     repos: Option<HashMap<String, RepoConfig>>,
     allowed_spaces: Option<Vec<String>>,
     context_footer: Option<ContextFooter>,
     auto_compact_at: Option<u32>,
     debounce_ms: Option<u32>,
     personas: Option<Vec<Persona>>,
+    templates: Option<Vec<PersonaTemplate>>,
     tunnel: Option<TunnelMode>,
     google_drive_folder_id: Option<String>,
     mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
@@ -275,13 +315,13 @@ struct PartialSettings {
 pub struct SettingsPatch {
     pub agent_driver: Option<AgentDriverKind>,
     pub models: Option<Models>,
-    pub agents: Option<Agents>,
     pub repos: Option<HashMap<String, RepoConfig>>,
     pub allowed_spaces: Option<Vec<String>>,
     pub context_footer: Option<ContextFooter>,
     pub auto_compact_at: Option<u32>,
     pub debounce_ms: Option<u32>,
     pub personas: Option<Vec<Persona>>,
+    pub templates: Option<Vec<PersonaTemplate>>,
     pub tunnel: Option<TunnelMode>,
     pub google_drive_folder_id: Option<String>,
     pub mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
@@ -303,12 +343,6 @@ fn validate(s: &Settings) -> Result<(), String> {
     let repo_name = Regex::new(r"^[a-zA-Z0-9._-]+$").unwrap();
     let persona_name = Regex::new(r"(?i)^[a-z0-9][a-z0-9_-]{0,31}$").unwrap();
     let space_re = Regex::new(r"^spaces/[^/\s]+$").unwrap();
-    let agent_id = Regex::new(r"^[\w.-]+$").unwrap();
-    if let Some(id) = &s.agents.opencode {
-        if !agent_id.is_match(id) {
-            return Err("agents.opencode must be a simple agent id (letters, digits, . _ -)".into());
-        }
-    }
     for (name, repo) in &s.repos {
         if !repo_name.is_match(name) {
             return Err(format!(r#""{name}" is not a valid repo name (letters, digits, . _ -)"#));
@@ -337,6 +371,25 @@ fn validate(s: &Settings) -> Result<(), String> {
             return Err(format!("agent @{} is defined twice", p.name));
         }
     }
+    let template_id = Regex::new(r"^[a-z0-9][a-z0-9_-]{0,47}$").unwrap();
+    let mut template_ids = std::collections::HashSet::new();
+    for t in &s.templates {
+        if !template_id.is_match(&t.id) {
+            return Err(format!(
+                r#"template "{}": id must be lowercase letters, digits, - or _ (max 48)"#,
+                t.id
+            ));
+        }
+        if !template_ids.insert(t.id.clone()) {
+            return Err(format!("template id \"{}\" is listed twice", t.id));
+        }
+        if !persona_name.is_match(&t.name) {
+            return Err(format!(
+                r#"template "{}": suggested name must use letters, digits, - or _ (no spaces, max 32)"#,
+                t.id
+            ));
+        }
+    }
     for space in &s.allowed_spaces {
         if !space_re.is_match(space) {
             return Err(format!(r#""{space}" is not a space name (spaces/XXXX)"#));
@@ -357,12 +410,13 @@ mod tests {
         let store = SettingsStore::open(
             &path,
             SettingsDefaults {
-                agent_driver: AgentDriverKind::Opencode,
+                agent_driver: AgentDriverKind::Pi,
                 allowed_spaces: vec!["spaces/abc".into()],
                 ..Default::default()
             },
         );
         assert_eq!(store.get().allowed_spaces, vec!["spaces/abc".to_string()]);
+        assert_eq!(store.get().agent_driver, AgentDriverKind::Pi);
         store
             .update(SettingsPatch {
                 context_footer: Some(ContextFooter::Never),
@@ -372,6 +426,7 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(&path, SettingsDefaults::default());
         assert_eq!(again.get().context_footer, ContextFooter::Never);
+        assert_eq!(again.get().agent_driver, AgentDriverKind::Pi);
     }
 
     #[tokio::test]
@@ -397,5 +452,98 @@ mod tests {
         assert!(dir.path().join("engram.declined").is_file());
         store.ensure_default_engram().await;
         assert!(store.get().mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn open_coerces_legacy_driver_and_strips_persona_runtime() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "agentDriver": "opencode",
+              "models": { "opencode": "x", "pi": "zai/glm" },
+              "agents": { "opencode": "build" },
+              "personas": [{ "name": "qa", "prompt": "p", "driver": "claude", "agent": "build" }]
+            }"#,
+        )
+        .unwrap();
+        let store = SettingsStore::open(&path, SettingsDefaults::default());
+        let s = store.get();
+        assert_eq!(s.agent_driver, AgentDriverKind::Pi);
+        assert_eq!(s.models.pi.as_deref(), Some("zai/glm"));
+        assert!(s.personas[0].driver.is_none());
+        assert!(s.personas[0].agent.is_none());
+    }
+
+    fn sample_persona(name: &str) -> Persona {
+        Persona {
+            name: name.into(),
+            prompt: "role".into(),
+            driver: None,
+            model: Some("haiku".into()),
+            agent: None,
+            listen: Some("all".into()),
+            respond_to: Some("people".into()),
+            skills: vec!["finanzas".into()],
+            mcps: vec!["google-drive".into()],
+            delegates: vec!["qa".into()],
+        }
+    }
+
+    #[test]
+    fn templates_serialize_roundtrip() {
+        let t = PersonaTemplate::from_persona("tpl-ventas".into(), &sample_persona("ventas"));
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["id"], "tpl-ventas");
+        assert_eq!(json["name"], "ventas");
+        assert_eq!(json["respondTo"], "people");
+        assert_eq!(json["skills"], serde_json::json!(["finanzas"]));
+        let back: PersonaTemplate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, t);
+        assert_eq!(back.to_persona().name, "ventas");
+        assert_eq!(back.to_persona().skills, vec!["finanzas"]);
+    }
+
+    #[tokio::test]
+    async fn templates_persist_and_name_may_match_persona() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = SettingsStore::open(&path, SettingsDefaults::default());
+        let persona = sample_persona("ventas");
+        let template = PersonaTemplate::from_persona("ventas-pack".into(), &persona);
+        store
+            .update(SettingsPatch {
+                personas: Some(vec![persona.clone()]),
+                templates: Some(vec![template.clone()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let again = SettingsStore::open(&path, SettingsDefaults::default());
+        assert_eq!(again.get().templates, vec![template]);
+        assert_eq!(again.get().personas[0].name, "ventas");
+    }
+
+    #[tokio::test]
+    async fn templates_reject_duplicate_or_bad_ids() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = SettingsStore::open(&path, SettingsDefaults::default());
+        let base = PersonaTemplate::from_persona("ok".into(), &sample_persona("qa"));
+        let dup = store
+            .update(SettingsPatch {
+                templates: Some(vec![base.clone(), PersonaTemplate { id: "ok".into(), ..base.clone() }]),
+                ..Default::default()
+            })
+            .await;
+        assert!(dup.unwrap_err().contains("listed twice"));
+        let bad = store
+            .update(SettingsPatch {
+                templates: Some(vec![PersonaTemplate { id: "Bad Id".into(), ..base }]),
+                ..Default::default()
+            })
+            .await;
+        assert!(bad.unwrap_err().contains("id must be"));
     }
 }

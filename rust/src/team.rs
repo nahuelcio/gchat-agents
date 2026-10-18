@@ -73,20 +73,12 @@ pub struct AgentRun {
     pub estimated: Option<bool>,
 }
 
-fn driver_name(driver: crate::config::AgentDriverKind) -> &'static str {
-    match driver {
-        crate::config::AgentDriverKind::Opencode => "opencode",
-        crate::config::AgentDriverKind::Claude => "claude",
-        crate::config::AgentDriverKind::Pi => "pi",
-    }
+fn driver_name(_driver: crate::config::AgentDriverKind) -> &'static str {
+    "pi"
 }
 
-fn model_for(explicit: Option<&str>, driver: crate::config::AgentDriverKind, models: &crate::settings::Models) -> Option<String> {
-    explicit.filter(|s| !s.is_empty()).map(str::to_string).or_else(|| match driver {
-        crate::config::AgentDriverKind::Opencode => models.opencode.clone(),
-        crate::config::AgentDriverKind::Claude => models.claude.clone(),
-        crate::config::AgentDriverKind::Pi => models.pi.clone(),
-    })
+fn model_for(explicit: Option<&str>, _driver: crate::config::AgentDriverKind, models: &crate::settings::Models) -> Option<String> {
+    explicit.filter(|s| !s.is_empty()).map(str::to_string).or_else(|| models.pi.clone())
 }
 
 pub fn agent_runs(record: &crate::session::SessionRecord, options: &crate::handler::TurnOptions) -> Vec<AgentRun> {
@@ -157,7 +149,7 @@ pub struct AppState {
     pub port: Option<u16>,
 }
 
-pub const GUEST_COMMANDS: &[&str] = &["help", "context", "compact", "clear", "model", "agent"];
+pub const GUEST_COMMANDS: &[&str] = &["help", "context", "compact", "clear", "model"];
 pub const UPLOAD_LIMIT: usize = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 5;
 const MAX_ATTACHMENT_BYTES: usize = 3_500_000;
@@ -422,13 +414,7 @@ pub async fn team_thread(
     } else {
         None
     };
-    let agent = record.as_ref().and_then(|r| {
-        r.driver.map(|d| match d {
-            crate::config::AgentDriverKind::Opencode => "opencode".into(),
-            crate::config::AgentDriverKind::Claude => "claude".into(),
-            crate::config::AgentDriverKind::Pi => "pi".into(),
-        })
-    });
+    let agent = record.as_ref().and_then(|r| r.driver.map(|_| "pi".into()));
     Ok(TeamThreadState {
         messages: transcripts.get(&thread_key),
         agent,
@@ -530,7 +516,7 @@ mod presence_tests {
             personas: vec![Persona {
                 name: "architect".into(),
                 prompt: "a".into(),
-                driver: Some(AgentDriverKind::Claude),
+                driver: None,
                 model: Some("opus".into()),
                 agent: None,
                 listen: None,
@@ -547,7 +533,7 @@ mod presence_tests {
         assert_eq!(runs[0].context_tokens, Some(1301));
         assert_eq!(runs[0].context_window, Some(128_000));
         assert_eq!(runs[1].name, "architect");
-        assert_eq!(runs[1].driver.as_deref(), Some("claude"));
+        assert_eq!(runs[1].driver.as_deref(), Some("pi"));
         assert_eq!(runs[1].model.as_deref(), Some("opus"));
         assert_eq!(runs[1].session.as_deref(), Some("ses_eb8240236ffe9MtMpfyzlBVgko"));
         assert!(runs[1].context_tokens.is_none());

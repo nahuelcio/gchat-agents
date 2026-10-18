@@ -30,7 +30,6 @@ function exeFromCmd(cmdPath: string): string | undefined {
     return undefined;
   }
   const dir = dirname(cmdPath);
-  // "%dp0%\node_modules\...\bin\claude.exe" or "%~dp0\foo.exe"
   for (const re of [/"%dp0%\\([^"]+\.exe)"/i, /"%~dp0\\([^"]+\.exe)"/i]) {
     const rel = text.match(re)?.[1];
     if (!rel) continue;

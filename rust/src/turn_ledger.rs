@@ -131,21 +131,13 @@ async fn notify(deps: &HandlerDeps, transcripts: &TranscriptStore, thread_key: &
     }
 }
 
-fn runs_on_pi(deps: &HandlerDeps, e: &TurnEntry) -> bool {
-    let options = (deps.options)();
-    let record = deps.store.get(&e.thread_key);
-    let persona_driver = e.persona.as_ref().and_then(|name| options.personas.iter().find(|p| p.name.eq_ignore_ascii_case(name))).and_then(|p| p.driver);
-    let driver = persona_driver.or(record.and_then(|r| r.driver)).unwrap_or(options.default_driver);
-    driver == crate::config::AgentDriverKind::Pi
-}
-
 async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>, e: TurnEntry) {
     let pi = crate::driver::PiDriver {
         base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
         model: None,
         settings: None,
         timeout_ms: 0,
-        retry_ms: 60_000,
+        retry_ms: 0,
     };
     let record = deps.store.get(&e.thread_key);
     let key = match &e.persona {
@@ -170,6 +162,8 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
                 driver: Some(crate::config::AgentDriverKind::Pi),
                 answer_questions: false,
                 request_id: Some(e.request_id.clone()),
+                mcps_override: None,
+                instructions_override: None,
             })
             .await
             .map(Some),
@@ -208,14 +202,8 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
 pub async fn recover(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcripts: Arc<TranscriptStore>) -> usize {
     let cut = ledger.unfinished();
     for e in &cut {
-        if runs_on_pi(&deps, e) {
-            ledger.set(&e.request_id, TurnState::Running).await;
-            tokio::spawn(resume_on_pi(deps.clone(), ledger.clone(), transcripts.clone(), e.clone()));
-            continue;
-        }
-        ledger.set(&e.request_id, TurnState::Failed).await;
-        notify(&deps, &transcripts, &e.thread_key, &e.space, e.thread.clone(), CUT_NOTICE).await;
-        crate::handler::note(&deps, "turn_fail", &e.thread_key, "Turn cut by a restart", e.request_id.clone()).await;
+        ledger.set(&e.request_id, TurnState::Running).await;
+        tokio::spawn(resume_on_pi(deps.clone(), ledger.clone(), transcripts.clone(), e.clone()));
     }
     let deps = &*deps;
     let transcripts = &*transcripts;

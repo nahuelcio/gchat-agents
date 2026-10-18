@@ -124,8 +124,8 @@ impl AgentDriver for PiDriver {
                 "text": input.text,
                 "cwd": input.workdir,
                 "model": input.model.clone().or_else(|| self.model.clone()).map(|m| pi_model(&m)),
-                "mcps": self.groups(&input.thread_key),
-                "instructions": self.instructions(&input.thread_key),
+                "mcps": input.mcps_override.clone().or_else(|| self.groups(&input.thread_key)),
+                "instructions": input.instructions_override.clone().or_else(|| self.instructions(&input.thread_key)),
             }),
         )
         .await?;
@@ -138,7 +138,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opencode_zai_names_map_to_pi() {
+    fn zai_provider_names_map_to_pi() {
         assert_eq!(pi_model("zai-coding-plan/glm-5.3-flash"), "zai/glm-5.3-flash");
         assert_eq!(pi_model("anthropic/claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5");
     }

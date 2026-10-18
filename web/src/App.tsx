@@ -98,7 +98,7 @@ function OwnerApp() {
     [notify],
   );
 
-  const model = settings?.models[settings.agentDriver];
+  const model = settings?.models.pi;
   const props = settings && { settings, save, setSettings, notify };
 
   return (
@@ -130,9 +130,9 @@ function OwnerApp() {
           ))}
         </div>
         {settings && (
-          <a className="agent-card" href="#settings/agents" title="Change the default runtime">
-            <small>Default runtime</small>
-            <span>{{ opencode: "OpenCode", claude: "Claude Code", pi: "Pi (durable)" }[settings.agentDriver]}</span>
+          <a className="agent-card" href="#settings/agents" title="Change the Pi model">
+            <small>Pi</small>
+            <span>Pi (durable)</span>
             <code>{model ?? "default model"}</code>
           </a>
         )}

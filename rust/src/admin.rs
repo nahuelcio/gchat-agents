@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -8,7 +9,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::agents::{claude_models, detect_agents, opencode_agents, opencode_models};
+use crate::agents::{detect_agents, pi_models};
 use crate::handler::TEAM_PREFIX;
 use crate::schedules::{describe_cron, job_name, JobPatch, NewJob};
 use crate::settings::SettingsPatch;
@@ -24,9 +25,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/activity", get(get_activity))
         .route("/api/search", get(get_search))
         .route("/api/agents", get(get_agents))
-        .route("/api/agents/opencode/models", get(get_opencode_models))
-        .route("/api/agents/opencode/agents", get(get_opencode_agents))
-        .route("/api/agents/claude/models", get(get_claude_models))
+        .route("/api/agents/pi/models", get(get_pi_models))
         .route("/api/threads", get(get_threads))
         .route("/api/threads/logs", get(get_thread_logs))
         .route("/api/threads/down", post(post_thread_down))
@@ -63,12 +62,20 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/thread/app", post(post_thread_app).put(post_thread_app))
         .route("/api/work-item", axum::routing::put(put_work_item))
         .route("/api/drive/xlsx", post(post_drive_xlsx))
+        .route("/api/google/drive-mcp", get(get_drive_mcp).post(post_drive_mcp))
+        .route("/api/google/drive-mcp/start", post(post_drive_mcp_start))
+        .route("/api/google/drive-mcp/callback", get(get_drive_mcp_callback))
+        .route("/api/google/drive-mcp/delete", post(post_drive_mcp_clear))
+        .route("/api/drive/mcp/tools", get(get_drive_mcp_tools))
+        .route("/api/drive/mcp/call", post(post_drive_mcp_call))
         .route("/api/skills", get(get_skills).put(put_skill).delete(delete_skill))
         .route("/api/skills/install", post(post_install_skill))
         .route("/api/mcp/import", post(post_mcp_import))
         .route("/api/mcp/servers", get(get_mcp_servers))
         .route("/api/agents/delegates", get(get_delegates))
         .route("/api/agents/ask", post(post_ask_agent))
+        .route("/api/ai/draft-agent", post(post_draft_agent))
+        .route("/api/ai/draft-skill", post(post_draft_skill))
         .route("/api/pi/keys", get(get_pi_keys).post(post_pi_key))
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
@@ -122,20 +129,12 @@ async fn get_health(State(state): State<Arc<AppState>>) -> Response {
     Json(snap).into_response()
 }
 
-async fn get_agents(State(state): State<Arc<AppState>>) -> Response {
-    Json(detect_agents(&state.opencode_bin, &state.claude_bin).await).into_response()
+async fn get_agents(State(_state): State<Arc<AppState>>) -> Response {
+    Json(detect_agents().await).into_response()
 }
 
-async fn get_opencode_models(State(state): State<Arc<AppState>>) -> Response {
-    Json(opencode_models(&state.opencode_bin).await).into_response()
-}
-
-async fn get_opencode_agents(State(state): State<Arc<AppState>>) -> Response {
-    Json(opencode_agents(&state.opencode_bin).await).into_response()
-}
-
-async fn get_claude_models(State(state): State<Arc<AppState>>) -> Response {
-    Json(claude_models(&state.claude_bin).await).into_response()
+async fn get_pi_models(State(_state): State<Arc<AppState>>) -> Response {
+    Json(pi_models().await).into_response()
 }
 
 async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
@@ -1023,29 +1022,163 @@ async fn post_ask_agent(State(state): State<Arc<AppState>>, Json(b): Json<AskBod
     }
 }
 
-async fn post_drive_xlsx(State(state): State<Arc<AppState>>, Json(body): Json<XlsxBody>) -> Response {
-    let Some(key) = thread_key_of(body.thread_key) else {
-        return missing_thread_key();
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftAgentBody {
+    brief: Option<String>,
+    current: Option<crate::ai_draft::AgentDraft>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftSkillBody {
+    brief: Option<String>,
+    current: Option<crate::ai_draft::SkillDraft>,
+}
+
+fn draft_ctx(state: &AppState) -> crate::ai_draft::DraftContext {
+    let settings = state.settings.get();
+    crate::ai_draft::DraftContext {
+        available_mcps: crate::ai_draft::available_mcps(&settings),
+        available_skills: crate::ai_draft::available_skill_names(),
+        workdir: state.handler.config.lock().unwrap().workdir.clone(),
+        model: settings.models.pi.clone(),
+    }
+}
+
+async fn post_draft_agent(State(state): State<Arc<AppState>>, Json(b): Json<DraftAgentBody>) -> Response {
+    let brief = b.brief.unwrap_or_default();
+    match crate::ai_draft::draft_agent(&state.handler.driver, &brief, b.current.as_ref(), &draft_ctx(&state)).await {
+        Ok(draft) => Json(draft).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_draft_skill(State(state): State<Arc<AppState>>, Json(b): Json<DraftSkillBody>) -> Response {
+    let brief = b.brief.unwrap_or_default();
+    match crate::ai_draft::draft_skill(&state.handler.driver, &brief, b.current.as_ref(), &draft_ctx(&state)).await {
+        Ok(draft) => Json(draft).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+struct DriveTarget {
+    key: String,
+    folder: String,
+    task: String,
+}
+
+fn drive_target(state: &AppState, thread_key: Option<String>, explicit: Option<String>, kind: &str, title: &str) -> Result<DriveTarget, Response> {
+    let Some(key) = thread_key_of(thread_key) else {
+        return Err(missing_thread_key());
     };
     let folder = match crate::google_drive::allowed(&key, &state.settings.get()) {
         Ok(f) => f,
-        Err(err) => return (StatusCode::FORBIDDEN, Json(json!({ "error": err }))).into_response(),
+        Err(err) => return Err((StatusCode::FORBIDDEN, Json(json!({ "error": err }))).into_response()),
     };
+    let task = crate::google_drive::drive_task(explicit.as_deref(), kind, title, &key, state.handler.ledger.as_deref());
+    Ok(DriveTarget { key, folder, task })
+}
+
+fn drive_bad(err: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response()
+}
+
+async fn drive_saved(state: &AppState, key: &str, kind: &str, created: crate::google_drive::Created) -> Response {
+    let link = created.file.web_view_link.clone().unwrap_or_default();
+    crate::handler::note(&state.handler, kind, key, created.file.name.clone(), link).await;
+    Json(created).into_response()
+}
+
+fn drive_failed(err: String) -> Response {
+    (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response()
+}
+
+async fn post_drive_xlsx(State(state): State<Arc<AppState>>, Json(body): Json<XlsxBody>) -> Response {
     let title = body.title.unwrap_or_default();
     let sheets = body.sheets.unwrap_or_default();
     if title.trim().is_empty() || sheets.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "title and at least one sheet are required" }))).into_response();
+        return drive_bad("title and at least one sheet are required".into());
     }
-    let task = body
-        .task_id
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| crate::google_drive::task_id(&key, state.handler.ledger.as_deref(), &title));
-    match state.drive.create_xlsx(&folder, &task, title.trim(), &sheets).await {
-        Ok(created) => {
-            let link = created.file.web_view_link.clone().unwrap_or_default();
-            crate::handler::note(&state.handler, "drive_xlsx", &key, created.file.name.clone(), link).await;
-            Json(created).into_response()
+    let target = match drive_target(&state, body.thread_key, body.task_id, "xlsx", title.trim()) {
+        Ok(t) => t,
+        Err(res) => return res,
+    };
+    match state.drive.create_xlsx(&target.folder, &target.task, title.trim(), &sheets).await {
+        Ok(created) => drive_saved(&state, &target.key, "drive_xlsx", created).await,
+        Err(err) => drive_failed(err),
+    }
+}
+
+fn request_host(headers: &HeaderMap) -> String {
+    headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("127.0.0.1:8081").to_string()
+}
+
+async fn get_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    Json(state.drive_mcp.status(&crate::drive_mcp::redirect_uri(&request_host(&headers))).await).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveMcpClient {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+async fn post_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DriveMcpClient>) -> Response {
+    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
+    match state.drive_mcp.set_client(body.client_id.as_deref().unwrap_or(""), body.client_secret.as_deref().unwrap_or("")).await {
+        Ok(_) => Json(state.drive_mcp.status(&redirect).await).into_response(),
+        Err(err) => drive_bad(err),
+    }
+}
+
+async fn post_drive_mcp_start(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
+    match state.drive_mcp.start_url(&redirect).await {
+        Ok(url) => Json(json!({ "url": url })).into_response(),
+        Err(err) => drive_bad(err),
+    }
+}
+
+async fn get_drive_mcp_callback(State(state): State<Arc<AppState>>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let code = q.get("code").cloned().unwrap_or_default();
+    let oauth_state = q.get("state").cloned().unwrap_or_default();
+    let page = match state.drive_mcp.exchange(&code, &oauth_state).await {
+        Ok(()) => "Google Drive is connected. You can close this tab and return to Settings.".into(),
+        Err(err) => err.replace('<', ""),
+    };
+    axum::response::Html(format!("<!doctype html><title>Google Drive</title><p>{page}</p>")).into_response()
+}
+
+async fn post_drive_mcp_clear(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
+    if let Err(err) = state.drive_mcp.clear().await {
+        return drive_failed(err);
+    }
+    Json(state.drive_mcp.status(&redirect).await).into_response()
+}
+
+async fn get_drive_mcp_tools(State(state): State<Arc<AppState>>) -> Response {
+    match state.drive_mcp.tools().await {
+        Ok(tools) => Json(json!({ "tools": tools })).into_response(),
+        Err(err) => {
+            eprintln!("drive mcp: {err}");
+            Json(json!({ "tools": [] })).into_response()
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct DriveMcpCall {
+    name: Option<String>,
+    arguments: Option<Value>,
+}
+
+async fn post_drive_mcp_call(State(state): State<Arc<AppState>>, Json(body): Json<DriveMcpCall>) -> Response {
+    let name = body.name.unwrap_or_default();
+    match state.drive_mcp.call(&name, body.arguments.unwrap_or(json!({}))).await {
+        Ok(result) => Json(result).into_response(),
         Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
     }
 }

@@ -59,7 +59,7 @@ describe("shared playground on the public port", () => {
     const server = createHttpServer(deps, {
       token,
       webDir: join(dir, "web"),
-      agents: async () => [{ id: "opencode", name: "OpenCode", installed: true, supported: true, ready: true }],
+      agents: async () => [{ id: "pi", name: "Pi (durable)", installed: true, supported: true, ready: true }],
       personas: () => [{ name: "designer" }, { name: "code" }],
       transcripts: new TranscriptStore(join(dir, "transcripts")),
     });
@@ -112,15 +112,15 @@ describe("shared playground on the public port", () => {
       (t) => !t.busy && t.messages.some((m) => m.bot && m.text.includes("not available")),
     );
     expect(afterRepo.messages.find((m) => m.bot)?.text).toContain("not available");
-    expect((await (await send({ thread: "guest-a1b2", text: "/agent claude", name: "Ana" })).json())).toMatchObject({ ok: true });
+    expect((await (await send({ thread: "guest-a1b2", text: "/agent pi", name: "Ana" })).json())).toMatchObject({ ok: true });
     const afterAgent = await waitFor(
       () =>
         fetch(`${base}/play/api/thread?thread=guest-a1b2`, { headers: { authorization: `Bearer ${token.value()}` } }).then(
           (r) => r.json() as Promise<{ messages: { text: string; bot: boolean }[]; busy: boolean }>,
         ),
-      (t) => !t.busy && t.messages.some((m) => m.bot && m.text.includes("Claude Code")),
+      (t) => !t.busy && t.messages.some((m) => m.bot && m.text.includes("Pi")),
     );
-    expect(afterAgent.messages.some((m) => m.bot && m.text.includes("Claude Code"))).toBe(true);
+    expect(afterAgent.messages.some((m) => m.bot && m.text.includes("Pi"))).toBe(true);
   });
 
   it("does not expose the control plane API on the public port", async () => {

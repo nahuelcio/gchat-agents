@@ -15,6 +15,7 @@ use crate::workspace::Workspaces;
 
 pub struct AppState {
     pub drive: Arc<crate::google_drive::Drive>,
+    pub drive_mcp: Arc<crate::drive_mcp::DriveMcp>,
     pub activity: Arc<crate::activity::ActivityLog>,
     pub settings: Arc<SettingsStore>,
     pub health: Arc<Mutex<Health>>,
@@ -29,6 +30,4 @@ pub struct AppState {
     pub web_dir: Option<PathBuf>,
     pub public_url: std::sync::Mutex<Option<String>>,
     pub data_dir: PathBuf,
-    pub opencode_bin: String,
-    pub claude_bin: String,
 }

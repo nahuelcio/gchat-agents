@@ -3,24 +3,27 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentDriverKind {
     #[default]
-    Opencode,
-    Claude,
     Pi,
+}
+
+impl<'de> Deserialize<'de> for AgentDriverKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::parse(&raw).unwrap_or(Self::Pi))
+    }
 }
 
 impl AgentDriverKind {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "opencode" => Ok(Self::Opencode),
-            "claude" => Ok(Self::Claude),
-            "pi" => Ok(Self::Pi),
-            other => Err(format!(r#"AGENT_DRIVER must be "opencode", "claude" or "pi" (got "{other}")"#)),
+            "pi" | "opencode" | "claude" => Ok(Self::Pi),
+            other => Err(format!(r#"AGENT_DRIVER must be "pi" (got "{other}")"#)),
         }
     }
 }
@@ -43,10 +46,6 @@ pub struct Config {
     pub allowed_spaces: Vec<String>,
     pub agent_driver: AgentDriverKind,
     pub workdir: PathBuf,
-    pub opencode_bin: String,
-    pub opencode_model: Option<String>,
-    pub claude_bin: String,
-    pub claude_model: Option<String>,
     pub turn_timeout_ms: u64,
     pub data_dir: PathBuf,
     pub repos: HashMap<String, RepoConfig>,
@@ -95,12 +94,8 @@ pub fn load_config() -> Result<Config, String> {
         tunnel: env_str("TUNNEL").and_then(|v| crate::tunnel::TunnelMode::parse(&v)),
         service_account_json: env_str("GOOGLE_SERVICE_ACCOUNT_JSON"),
         allowed_spaces,
-        agent_driver: AgentDriverKind::parse(env_str("AGENT_DRIVER").as_deref().unwrap_or("opencode"))?,
+        agent_driver: AgentDriverKind::parse(env_str("AGENT_DRIVER").as_deref().unwrap_or("pi"))?,
         workdir: env_str("AGENT_WORKDIR").map(PathBuf::from).unwrap_or(default_workdir),
-        opencode_bin: env_str("OPENCODE_BIN").unwrap_or_else(|| "opencode".into()),
-        opencode_model: env_str("OPENCODE_MODEL"),
-        claude_bin: env_str("CLAUDE_BIN").unwrap_or_else(|| "claude".into()),
-        claude_model: env_str("CLAUDE_MODEL"),
         turn_timeout_ms,
         data_dir: env_str("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("./data")),
         admin_port: env_str("ADMIN_PORT").and_then(|s| s.parse().ok()).unwrap_or(8081),
@@ -122,7 +117,17 @@ mod tests {
 
     #[test]
     fn parses_driver() {
-        assert_eq!(AgentDriverKind::parse("opencode").unwrap(), AgentDriverKind::Opencode);
+        assert_eq!(AgentDriverKind::parse("pi").unwrap(), AgentDriverKind::Pi);
+        assert_eq!(AgentDriverKind::parse("opencode").unwrap(), AgentDriverKind::Pi);
+        assert_eq!(AgentDriverKind::parse("claude").unwrap(), AgentDriverKind::Pi);
         assert!(AgentDriverKind::parse("nope").is_err());
+    }
+
+    #[test]
+    fn deserializes_legacy_to_pi() {
+        assert_eq!(serde_json::from_str::<AgentDriverKind>(r#""opencode""#).unwrap(), AgentDriverKind::Pi);
+        assert_eq!(serde_json::from_str::<AgentDriverKind>(r#""claude""#).unwrap(), AgentDriverKind::Pi);
+        assert_eq!(serde_json::from_str::<AgentDriverKind>(r#""pi""#).unwrap(), AgentDriverKind::Pi);
+        assert_eq!(serde_json::from_str::<AgentDriverKind>(r#""whatever""#).unwrap(), AgentDriverKind::Pi);
     }
 }

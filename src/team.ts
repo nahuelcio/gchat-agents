@@ -116,7 +116,7 @@ export interface TeamThreadWorkItem {
 
 export interface TeamThreadContext {
   messages: ReturnType<TranscriptStore["get"]>;
-  agent: "opencode" | "claude" | null;
+  agent: "pi" | null;
   model?: string | null;
   repo?: string | null;
   branch?: string | null;

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FocusEvent } from "react";
+import { useEffect, useState, type FocusEvent } from "react";
 import { agentTint } from "../agent-color";
-import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type Persona, type RepoConfig, type Settings, type McpServer, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS } from "../api";
+import { api, type AdoRepo, type AdoStatus, type Agent, type ContextFooter, type DriveMcpStatus, type Persona, type PersonaTemplate, type RepoConfig, type Settings, type McpServer, type PiKey, type SkillInfo, type TunnelMode, BUILTIN_MCPS, DEFAULT_PERSONA_MCPS } from "../api";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -26,8 +26,8 @@ const TUNNEL_OPTIONS: { value: TunnelMode; label: string; hint: string }[] = [
 ];
 
 const TABS = [
-  { id: "agents", label: "Agents", hint: "Who answers: the default runtime and the agents in chat." },
-  { id: "tools", label: "Skills & tools", hint: "Know-how and tools you give to agents." },
+  { id: "agents", label: "Agents", hint: "Who answers: Pi model and the agents in chat." },
+  { id: "tools", label: "Skills & tools", hint: "Skill packs (prompt + tools) and MCP servers for agents." },
   { id: "chat", label: "Chat", hint: "Google Chat, spaces and how context shows up." },
   { id: "connections", label: "Connections", hint: "Public tunnel, Google Drive and repos." },
 ] as const;
@@ -94,12 +94,9 @@ export function SettingsView(props: ViewProps) {
   );
 }
 
-const RUNTIMES: Record<string, string> = { opencode: "OpenCode", claude: "Claude Code", pi: "Pi (durable)" };
-
 function personaChips(p: Persona): string[] {
   return [
-    p.agent ? `OpenCode · ${p.agent}` : p.driver ? RUNTIMES[p.driver] : "Default runtime",
-    p.model ?? "",
+    p.model ? `Pi · ${p.model}` : "Pi",
     p.skills?.length ? `skills: ${p.skills.join(", ")}` : "",
     p.mcps?.length ? `tools: ${p.mcps.join(", ")}` : "all tools",
     p.delegates?.length ? `asks ${p.delegates.map((d) => `@${d}`).join(", ")}` : "",
@@ -109,383 +106,231 @@ function personaChips(p: Persona): string[] {
 }
 
 function AgentCard({ settings, save, notify }: ViewProps) {
-  const [agents, setAgents] = useState<Agent[]>();
+  const [pi, setPi] = useState<Agent>();
   const [models, setModels] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
-  const [ocAgents, setOcAgents] = useState<string[]>([]);
-  const [ocAgentsBusy, setOcAgentsBusy] = useState(false);
-  const driver = settings.agentDriver;
-  const [model, setModel] = useState(settings.models[driver] ?? "");
-  const [ocAgent, setOcAgent] = useState(settings.agents?.opencode ?? "");
+  const [model, setModel] = useState(settings.models.pi ?? "");
 
   const loadModels = (refresh = false) => {
     setModelsBusy(true);
-    return api.models(driver, refresh).then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
-  };
-
-  const loadOcAgents = (refresh = false) => {
-    setOcAgentsBusy(true);
-    return api.opencodeAgents(refresh).then(setOcAgents, () => setOcAgents([])).finally(() => setOcAgentsBusy(false));
+    return api.models(refresh).then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
   };
 
   useEffect(() => {
-    api.agents().then(setAgents, () => setAgents([]));
+    api.agents().then(
+      (list) => setPi(list.find((a) => a.id === "pi")),
+      () => setPi(undefined),
+    );
+    void loadModels();
   }, []);
   useEffect(() => {
-    void loadModels();
-    if (driver === "opencode") void loadOcAgents();
-  }, [driver]);
-  useEffect(() => {
-    setModel(settings.models[driver] ?? "");
-  }, [settings.models, driver]);
-  useEffect(() => {
-    setOcAgent(settings.agents?.opencode ?? "");
-  }, [settings.agents]);
-
-  const others = agents?.filter((a) => a.installed && !a.supported) ?? [];
+    setModel(settings.models.pi ?? "");
+  }, [settings.models.pi]);
 
   return (
     <details className="card" open>
       <summary className="card-title">
-        <h2>Default runtime</h2>
-        <p className="muted small">
-          Detected on this machine{others.length ? `. Also installed, no driver yet: ${others.map((a) => a.name).join(", ")}` : ""}.
-        </p>
+        <h2>Pi</h2>
+        <p className="muted small">Durable harness for every chat turn.</p>
       </summary>
-      {!agents && <p className="muted">Detecting…</p>}
-      <div className="grid-2">
-        {agents
-          ?.filter((a) => a.supported)
-          .map((a) => (
-            <label key={a.id} className={`option ${driver === a.id ? "on" : ""} ${a.installed ? "" : "disabled"}`}>
-              <input
-                type="radio"
-                name="driver"
-                checked={driver === a.id}
-                disabled={!a.installed}
-                onChange={() => void save({ agentDriver: a.id as Settings["agentDriver"] }, `Using ${a.name}`)}
-              />
-              <span>
-                <span className="strong">{a.name}</span> {a.installed && <code className="muted">{a.version}</code>}
-                <span className={`small block ${a.ready ? "ok-text" : "warn-text"}`}>
-                  {!a.installed ? "Not installed" : `${a.ready ? "Ready" : "Needs setup"} · ${a.detail ?? ""}`}
-                </span>
-              </span>
-            </label>
-          ))}
-      </div>
-      {driver === "opencode" ? (
-        <>
-          <OpenCodeAgentPicker
-            agents={ocAgents}
-            selected={ocAgent}
-            busy={ocAgentsBusy}
-            onRefresh={() => void loadOcAgents(true)}
-            onSelect={(id) => {
-              setOcAgent(id);
-              void save(
-                { agents: { ...settings.agents, opencode: id || undefined } },
-                id ? `Default OpenCode agent: ${id}` : "Using OpenCode's default agent",
-              );
-            }}
-          />
-          <ModelBrowser
-            models={models}
-            selected={model}
-            busy={modelsBusy}
-            onRefresh={() => void loadModels(true)}
-            onSelect={(m) => {
-              setModel(m);
-              void save(
-                { models: { ...settings.models, opencode: m || undefined } },
-                m ? `Default model: ${m}` : "Using the agent's default model",
-              );
-            }}
-          />
-        </>
-      ) : (
-        <form
-          className="row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const value = model.trim();
-            void save({ models: { ...settings.models, [driver]: value || undefined } }, value ? `Default model: ${value}` : "Using the agent's default model");
-          }}
-        >
-          <div className="field grow">
-            <div className="field-head">
-              <span>Default model</span>
-              <button type="button" className="btn linkish" disabled={modelsBusy} onClick={() => void loadModels(true)}>
-                {modelsBusy ? "Loading…" : "Refresh list"}
-              </button>
-            </div>
-            <input
-              className="mono"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={driver === "pi" ? "provider/model, e.g. anthropic/claude-sonnet-5-5 — needs that provider's API key" : "e.g. opus — empty = default"}
-            />
-            <div className="model-chips">
-              {modelsBusy && models.length === 0 && <span className="muted small">Loading models…</span>}
-              {models.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  className={`chip ${model === m ? "on" : ""}`}
-                  onClick={() => {
-                    setModel(m);
-                    void save({ models: { ...settings.models, claude: m } }, `Default model: ${m}`);
-                  }}
-                >
-                  {m.replace(/^claude-/, "")}
-                </button>
-              ))}
-            </div>
-            <span className="muted small">{driver === "pi" ? "Threads can override it with /model." : "Threads can override it with /model. Aliases always track the latest model."}</span>
-          </div>
-          <button className="btn primary">Save</button>
-        </form>
+      {!pi && <p className="muted">Detecting…</p>}
+      {pi && (
+        <p className="small">
+          <span className="strong">{pi.name}</span> {pi.installed && <code className="muted">{pi.version}</code>}
+          <span className={`block ${pi.ready ? "ok-text" : "warn-text"}`}>
+            {!pi.installed ? "Not installed" : `${pi.ready ? "Ready" : "Needs setup"} · ${pi.detail ?? ""}`}
+          </span>
+        </p>
       )}
-      {driver === "pi" && <PiKeys notify={notify} />}
-    </details>
-  );
-}
-
-function OpenCodeAgentPicker({
-  agents,
-  selected,
-  busy,
-  onRefresh,
-  onSelect,
-}: {
-  agents: string[];
-  selected: string;
-  busy: boolean;
-  onRefresh: () => void;
-  onSelect: (id: string) => void;
-}) {
-  const [draft, setDraft] = useState(selected);
-  useEffect(() => {
-    setDraft(selected);
-  }, [selected]);
-
-  return (
-    <div className="oc-agent-picker">
-      <div className="field-head">
-        <span>Default OpenCode agent</span>
-        <button type="button" className="btn linkish" disabled={busy} onClick={onRefresh}>
-          {busy ? "Loading…" : "Refresh list"}
-        </button>
-      </div>
-      <div className="model-current">
-        <span className="model-current-label">Selected</span>
-        {selected ? (
-          <>
-            <code className="grow">{selected}</code>
-            <button type="button" className="btn small" onClick={() => onSelect("")}>
-              Clear
-            </button>
-          </>
-        ) : (
-          <span className="muted grow">OpenCode default (usually build)</span>
-        )}
-      </div>
-      <div className="model-chips" role="listbox" aria-label="OpenCode agents">
-        {busy && agents.length === 0 && <span className="muted small">Loading agents…</span>}
-        {!busy && agents.length === 0 && <span className="muted small">No agents listed — try Refresh, or type an id below.</span>}
-        {agents.map((id) => (
-          <button key={id} type="button" className={`chip ${selected === id ? "on" : ""}`} onClick={() => onSelect(id)}>
-            {id}
-          </button>
-        ))}
-      </div>
-      <details className="more">
-      <summary className="muted small">Not in the list? Set an agent id by hand</summary>
       <form
         className="row"
         onSubmit={(e) => {
           e.preventDefault();
-          onSelect(draft.trim());
+          const value = model.trim();
+          void save({ models: { pi: value || undefined } }, value ? `Default model: ${value}` : "Using the agent's default model");
         }}
       >
-        <label className="field grow">
-          <span className="sr-only">Agent id</span>
+        <div className="field grow">
+          <div className="field-head">
+            <span>Default model</span>
+            <button type="button" className="btn linkish" disabled={modelsBusy} onClick={() => void loadModels(true)}>
+              {modelsBusy ? "Loading…" : "Refresh list"}
+            </button>
+          </div>
           <input
             className="mono"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="e.g. build, plan, ask — empty = default"
-            autoComplete="off"
-            spellCheck={false}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="provider/model, e.g. anthropic/claude-sonnet-5-5 — needs that provider's API key"
           />
-        </label>
-        <button className="btn">Use this id</button>
-      </form>
-      </details>
-    </div>
-  );
-}
-
-function ModelBrowser({
-  models,
-  selected,
-  busy,
-  onRefresh,
-  onSelect,
-}: {
-  models: string[];
-  selected: string;
-  busy: boolean;
-  onRefresh: () => void;
-  onSelect: (id: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const q = query.trim().toLowerCase();
-
-  // One search box: every whitespace-separated word must match, so "tb sonnet" or "anthropic opus" both work.
-  const matches = useMemo(() => {
-    const words = q.split(/\s+/).filter(Boolean);
-    const list = words.length
-      ? models.filter((m) => words.every((w) => m.toLowerCase().includes(w)))
-      : [...models.filter((m) => m.startsWith("opencode-admin/")), ...models.filter((m) => !m.startsWith("opencode-admin/"))];
-    return list.slice(0, 40);
-  }, [models, q]);
-  const [showAll, setShowAll] = useState(false);
-  const shown = q || showAll ? matches : matches.slice(0, 6);
-
-  const pick = (id: string) => {
-    onSelect(id);
-    setQuery("");
-  };
-
-  return (
-    <div className="model-browser">
-      <div className="field-head">
-        <span>Default model</span>
-        <button type="button" className="btn linkish" disabled={busy} onClick={onRefresh}>
-          {busy ? "Loading…" : "Refresh list"}
-        </button>
-      </div>
-      <div className="model-current">
-        <span className="model-current-label">Selected</span>
-        {selected ? (
-          <>
-            <code className="grow">{selected}</code>
-            <button type="button" className="btn small" onClick={() => onSelect("")}>
-              Clear
-            </button>
-          </>
-        ) : (
-          <span className="muted grow">OpenCode default (no override)</span>
-        )}
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          // Enter takes the first match, or the typed text as a raw ID (provider/model#variant).
-          const first = q ? matches[0] : undefined;
-          const value = first ?? query.trim();
-          if (value) pick(value);
-        }}
-      >
-        <input
-          className="model-filter mono"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={models.length ? `Search ${models.length} models (e.g. "sonnet", "tb opus") or paste an ID — Enter to set` : "Paste a model ID: provider/model"}
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </form>
-      {busy && models.length === 0 && <p className="muted small">Loading models…</p>}
-      {!busy && models.length === 0 && (
-        <p className="muted small">No models yet. Run <code>opencode auth login</code>, then Refresh list.</p>
-      )}
-      {models.length > 0 && (
-        <div className="model-browser-scroll" role="listbox" aria-label="OpenCode models">
-          {!q && <p className="muted small model-browser-meta">Suggestions — type to search all {models.length}</p>}
-          {shown.map((id) => {
-            const slash = id.indexOf("/");
-            const on = id === selected;
-            return (
-              <button type="button" key={id} role="option" aria-selected={on} className={`model-row ${on ? "on" : ""}`} onClick={() => pick(id)}>
-                <span className="model-row-check" aria-hidden="true">✓</span>
-                <span className="model-name">{slash >= 0 ? id.slice(slash + 1) : id}</span>
-                {slash >= 0 && <span className="model-group-count">{id.slice(0, slash) === "opencode-admin" ? "TokenBank" : id.slice(0, slash)}</span>}
+          <div className="model-chips">
+            {modelsBusy && models.length === 0 && <span className="muted small">Loading models…</span>}
+            {models.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`chip ${model === m ? "on" : ""}`}
+                onClick={() => {
+                  setModel(m);
+                  void save({ models: { pi: m } }, `Default model: ${m}`);
+                }}
+              >
+                {m}
               </button>
-            );
-          })}
-          {!q && !showAll && matches.length > shown.length && (
-            <button type="button" className="btn linkish model-show-all" onClick={() => setShowAll(true)}>
-              Show more ({matches.length - shown.length})
-            </button>
-          )}
-          {q && matches.length === 0 && <p className="muted small model-picker-empty">No match — press Enter to use “{query.trim()}” as-is.</p>}
+            ))}
+          </div>
+          <span className="muted small">Threads can override it with /model.</span>
         </div>
-      )}
-      <span className="muted small">Threads can override it with /model.</span>
-    </div>
+        <button className="btn primary">Save</button>
+      </form>
+      <PiKeys notify={notify} />
+    </details>
   );
 }
 
-const EMPTY_PERSONA: Persona = { name: "", prompt: "" };
+const EMPTY_PERSONA: Persona = { name: "", prompt: "", mcps: [...DEFAULT_PERSONA_MCPS] };
 
-function PersonasCard({ settings, save }: ViewProps) {
+function cleanPersona(raw: Persona): Persona {
+  const draft: Persona = { ...raw, name: raw.name.trim().replace(/^@/, ""), prompt: raw.prompt.trim() };
+  if (!draft.skills?.length) delete draft.skills;
+  if (!draft.mcps?.length) delete draft.mcps;
+  if (!draft.delegates?.length || !draft.mcps?.includes("agents")) delete draft.delegates;
+  if (!draft.model?.trim()) delete draft.model;
+  if (draft.listen !== "all") delete draft.listen;
+  if (draft.respondTo !== "people") delete draft.respondTo;
+  return draft;
+}
+
+function withDefaultMcps(current: string[] | undefined, value: string): string[] {
+  const list = current ?? [];
+  if (list.includes(value)) return list.filter((x) => x !== value);
+  if (list.length === 0) {
+    return DEFAULT_PERSONA_MCPS.includes(value) ? [...DEFAULT_PERSONA_MCPS] : [...DEFAULT_PERSONA_MCPS, value];
+  }
+  return [...list, value];
+}
+
+function uniqueAgentName(base: string, taken: Set<string>): string {
+  const root = (base || "agent").replace(/^@/, "").slice(0, 28) || "agent";
+  if (!taken.has(root.toLowerCase())) return root;
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${root}${n}`.slice(0, 32);
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${root}${Date.now().toString(36)}`.slice(0, 32);
+}
+
+function templateIdFrom(name: string, existing: PersonaTemplate[]): string {
+  const root = (name || "template")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "template";
+  const ids = new Set(existing.map((t) => t.id));
+  if (!ids.has(root)) return root;
+  for (let n = 2; n < 100; n++) {
+    const id = `${root}-${n}`.slice(0, 48);
+    if (!ids.has(id)) return id;
+  }
+  return `${root}-${Date.now().toString(36)}`.slice(0, 48);
+}
+
+function personaFromTemplate(t: PersonaTemplate): Persona {
+  const { id: _id, ...fields } = t;
+  return cleanPersona({ ...fields });
+}
+
+function PersonasCard({ settings, save, notify }: ViewProps) {
   const personas = settings.personas ?? [];
+  const templates = settings.templates ?? [];
   const [editing, setEditing] = useState<{ index: number; draft: Persona } | null>(null);
-  const [ocAgents, setOcAgents] = useState<string[]>([]);
-  const [ocAgentsBusy, setOcAgentsBusy] = useState(false);
-  const loadOcAgents = (refresh = false) => {
-    setOcAgentsBusy(true);
-    return api.opencodeAgents(refresh).then(setOcAgents, () => setOcAgents([])).finally(() => setOcAgentsBusy(false));
-  };
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [aiBrief, setAiBrief] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   useEffect(() => {
-    void loadOcAgents();
     api.skills().then(setSkills, () => setSkills([]));
   }, []);
   const toggle = (key: "skills" | "mcps" | "delegates", value: string) =>
     editing &&
     setEditing({
       ...editing,
-      draft: { ...editing.draft, [key]: (editing.draft[key] ?? []).includes(value) ? (editing.draft[key] ?? []).filter((x) => x !== value) : [...(editing.draft[key] ?? []), value] },
+      draft: {
+        ...editing.draft,
+        [key]: key === "mcps" ? withDefaultMcps(editing.draft.mcps, value) : (editing.draft[key] ?? []).includes(value) ? (editing.draft[key] ?? []).filter((x) => x !== value) : [...(editing.draft[key] ?? []), value],
+      },
     });
-  const taken = new Set(personas.map((p) => p.name.toLowerCase()));
-  const importable = ocAgents.filter((id) => !taken.has(id.toLowerCase()) && /^[A-Za-z0-9][\w-]{0,31}$/.test(id));
-  const setAgent = (id: string) => {
-    if (!editing) return;
-    const agent = id.trim() || undefined;
-    setEditing({
-      ...editing,
-      draft: { ...editing.draft, agent, driver: agent ? "opencode" : editing.draft.driver },
-    });
-  };
 
   const commit = (list: Persona[], msg: string) => save({ personas: list }, msg).then(() => setEditing(null));
+  const commitTemplates = (list: PersonaTemplate[], msg: string) => save({ templates: list }, msg);
   const submit = () => {
     if (!editing) return;
-    const draft = { ...editing.draft, name: editing.draft.name.trim().replace(/^@/, ""), prompt: editing.draft.prompt.trim() };
-    if (!draft.skills?.length) delete draft.skills;
-    if (!draft.mcps?.length) delete draft.mcps;
-    if (!draft.delegates?.length || !draft.mcps?.includes("agents")) delete draft.delegates;
-    if (!draft.model?.trim()) delete draft.model;
-    if (!draft.driver) delete draft.driver;
-    if (!draft.agent || draft.driver === "claude" || draft.driver === "pi") delete draft.agent;
+    const draft = cleanPersona(editing.draft);
     const list = [...personas];
     if (editing.index < 0) list.push(draft);
     else list[editing.index] = draft;
     void commit(list, `@${draft.name} saved`);
   };
 
+  const runAiDraft = (improve: boolean) => {
+    const brief = (improve ? aiBrief || editing?.draft.prompt || editing?.draft.name || "" : aiBrief || "").trim();
+    if (!brief || aiBusy) return;
+    setAiBusy(true);
+    api
+      .draftAgent(brief, improve && editing ? editing.draft : undefined)
+      .then(
+        (draft) => {
+          setEditing({ index: improve && editing ? editing.index : -1, draft: { ...EMPTY_PERSONA, ...draft } });
+          setAiOpen(false);
+          setAiBrief("");
+          notify(improve ? "Borrador mejorado — revisá y Guardá" : "Borrador listo — revisá y Guardá");
+        },
+        (e: Error) => notify(e.message, true),
+      )
+      .finally(() => setAiBusy(false));
+  };
+
+  const duplicate = (p: Persona) => {
+    const taken = new Set(personas.map((x) => x.name.toLowerCase()));
+    const copy = cleanPersona({ ...p, name: uniqueAgentName(p.name, taken) });
+    void commit([...personas, copy], `@${copy.name} duplicated from @${p.name}`);
+  };
+
+  const saveAsTemplate = (p: Persona) => {
+    const cleaned = cleanPersona(p);
+    const id = templateIdFrom(cleaned.name, templates);
+    const tpl: PersonaTemplate = { id, ...cleaned };
+    void commitTemplates([...templates, tpl], `Template ${id} saved`);
+  };
+
+  const applyTemplate = (t: PersonaTemplate) => {
+    const next = personaFromTemplate(t);
+    const idx = personas.findIndex((p) => p.name.toLowerCase() === next.name.toLowerCase());
+    const list = [...personas];
+    if (idx >= 0) {
+      list[idx] = next;
+      void commit(list, `@${next.name} updated from template`);
+    } else {
+      list.push(next);
+      void commit(list, `@${next.name} created from template`);
+    }
+  };
+
+  const removeTemplate = (id: string) => void commitTemplates(
+    templates.filter((t) => t.id !== id),
+    `Template ${id} removed`,
+  );
+
   return (
     <details className="card" open>
       <summary className="card-title">
         <h2>Agents in chat</h2>
         <p className="muted small">
-          Give agents a name and a role. Write <code>@name</code> in a room to talk to them. Mention two or more (<code>@a @b discutan…</code>) and they dialogue, passing the floor until they agree or you hit Stop.
+          Assemble agents as a name, listen mode, and skill packs. Write <code>@name</code> in a room to talk to them. Mention two or more (<code>@a @b discutan…</code>) and they dialogue.
+          Save a working agent as a template to reuse elsewhere.
         </p>
       </summary>
-      {personas.length === 0 && !editing && <p className="empty">No agents yet. Add one like <code>@ventas</code> or <code>@soporte</code>.</p>}
+      {personas.length === 0 && !editing && <p className="empty">No agents yet. Add one like <code>@ventas</code>, or apply a template below.</p>}
       {personas.map((p, i) =>
         editing?.index === i ? null : (
           <div key={p.name} className="repo">
@@ -504,6 +349,12 @@ function PersonasCard({ settings, save }: ViewProps) {
             </span>
             <button className="btn small" onClick={() => setEditing({ index: i, draft: { ...p } })}>
               Edit
+            </button>
+            <button className="btn small" onClick={() => duplicate(p)}>
+              Duplicate
+            </button>
+            <button className="btn small" onClick={() => saveAsTemplate(p)}>
+              Save as template
             </button>
             <button className="btn icon ghost" aria-label={`Remove @${p.name}`} onClick={() => void commit(personas.filter((_, j) => j !== i), `@${p.name} removed`)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -536,63 +387,13 @@ function PersonasCard({ settings, save }: ViewProps) {
                 autoFocus
               />
             </label>
-            <label className="field narrow">
-              <span>Runs on</span>
-              <select
-                value={editing.draft.driver ?? ""}
-                onChange={(e) => {
-                  const driver = (e.target.value || undefined) as Persona["driver"];
-                  setEditing({
-                    ...editing,
-                    draft: { ...editing.draft, driver, ...(driver === "claude" ? { agent: undefined } : {}) },
-                  });
-                }}
-              >
-                <option value="">Default runtime</option>
-                <option value="claude">Claude Code</option>
-                <option value="pi">Pi (durable)</option>
-                <option value="opencode">OpenCode</option>
-              </select>
-            </label>
-            {editing.draft.driver !== "claude" && editing.draft.driver !== "pi" && (
-              <label className="field narrow">
-                <div className="field-head">
-                  <span>OpenCode agent</span>
-                  <button type="button" className="btn linkish" disabled={ocAgentsBusy} onClick={() => void loadOcAgents(true)}>
-                    {ocAgentsBusy ? "Loading…" : "Refresh list"}
-                  </button>
-                </div>
-                {ocAgents.length > 0 ? (
-                  <select value={editing.draft.agent ?? ""} onChange={(e) => setAgent(e.target.value)}>
-                    <option value="">None (plain)</option>
-                    {editing.draft.agent && !ocAgents.includes(editing.draft.agent) && (
-                      <option value={editing.draft.agent}>{editing.draft.agent}</option>
-                    )}
-                    {ocAgents.map((id) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="mono"
-                    value={editing.draft.agent ?? ""}
-                    onChange={(e) => setAgent(e.target.value)}
-                    placeholder={ocAgentsBusy ? "Loading…" : "e.g. build, plan — or Refresh"}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                )}
-              </label>
-            )}
             <label className="field grow">
               <span>Model (optional)</span>
               <input
                 className="mono"
                 value={editing.draft.model ?? ""}
                 onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, model: e.target.value } })}
-                placeholder="empty = default"
+                placeholder="Pi model, e.g. anthropic/claude-sonnet-5-5 — empty = default"
               />
             </label>
           </div>
@@ -624,30 +425,30 @@ function PersonasCard({ settings, save }: ViewProps) {
               rows={4}
               value={editing.draft.prompt}
               onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, prompt: e.target.value } })}
-              placeholder="You are the sales agent. You know our plans and prices, answer briefly and in Spanish…"
+              placeholder="Short role text — put reusable know-how in skill packs below."
             />
           </label>
           <fieldset className="field">
-            <legend>Skills</legend>
-            {skills.length === 0 && <span className="muted small">No skills yet. Add one as data/skills/&lt;name&gt;/SKILL.md.</span>}
+            <legend>Skill packs</legend>
+            {skills.length === 0 && <span className="muted small">No skill packs yet. Create one under Skills &amp; tools, or add <code>skills/&lt;name&gt;/SKILL.md</code>.</span>}
             {skills.map((sk) => (
               <label key={sk.name} className="inline check">
                 <input type="checkbox" checked={(editing.draft.skills ?? []).includes(sk.name)} onChange={() => toggle("skills", sk.name)} />
                 <span>
-                  <span className="strong">{sk.name}</span> <span className="muted small">{sk.description}{sk.mcps.length ? ` · uses ${sk.mcps.join(", ")}` : ""}</span>
+                  <span className="strong">{sk.name}</span> <span className="muted small">{sk.description}{sk.mcps.length ? ` · pack tools: ${sk.mcps.join(", ")}` : ""}</span>
                 </span>
               </label>
             ))}
           </fieldset>
           <fieldset className="field">
-            <legend>Tools</legend>
+            <legend>Extra tools</legend>
             {[...BUILTIN_MCPS, ...(settings.mcpServers ?? []).map((m) => ({ name: m.name, label: `${m.name} — your MCP server (${m.command})` }))].map((m) => (
               <label key={m.name} className="inline check">
                 <input type="checkbox" checked={(editing.draft.mcps ?? []).includes(m.name)} onChange={() => toggle("mcps", m.name)} />
                 <span>{m.label}</span>
               </label>
             ))}
-            <span className="muted small">None checked = every tool. Skills turn on the tools they need by themselves.</span>
+            <span className="muted small">None checked = every tool. Skill packs already turn on the tools they list.</span>
           </fieldset>
           {(editing.draft.mcps ?? []).includes("agents") && (
             <fieldset className="field">
@@ -663,46 +464,124 @@ function PersonasCard({ settings, save }: ViewProps) {
               <span className="muted small">None checked = any other agent.</span>
             </fieldset>
           )}
+          <label className="field">
+            <span>Mejorar con IA</span>
+            <div className="row">
+              <input
+                className="grow"
+                value={aiBrief}
+                onChange={(e) => setAiBrief(e.target.value)}
+                placeholder="Qué cambiar o reforzar (opcional si el rol ya está)"
+                disabled={aiBusy}
+              />
+              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft(true)}>
+                {aiBusy ? "Generando…" : "Mejorar con IA"}
+              </button>
+            </div>
+          </label>
           <div className="row">
             <button className="btn primary">Save</button>
             <button type="button" className="btn" onClick={() => setEditing(null)}>
               Cancel
             </button>
+            {editing.index >= 0 && (
+              <button type="button" className="btn" onClick={() => saveAsTemplate(editing.draft)}>
+                Save as template
+              </button>
+            )}
           </div>
         </form>
       ) : (
-        <>
+        <div className="row" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
           <button className="btn" onClick={() => setEditing({ index: -1, draft: { ...EMPTY_PERSONA } })}>
             + Add agent
           </button>
-          <div className="field">
-            <div className="field-head">
-              <span className="muted small">Or bring an OpenCode agent you already have — it keeps its own instructions and tools:</span>
-              <button type="button" className="btn linkish" disabled={ocAgentsBusy} onClick={() => void loadOcAgents(true)}>
-                {ocAgentsBusy ? "Loading…" : "Refresh list"}
-              </button>
-            </div>
-            {importable.length > 0 ? (
-              <div className="model-chips">
-                {importable.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="chip"
-                    onClick={() => void commit([...personas, { name: id, prompt: "", driver: "opencode", agent: id }], `@${id} added`)}
-                  >
-                    + @{id}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <span className="muted small">
-                {ocAgentsBusy ? "Loading OpenCode agents…" : "No OpenCode agents listed — try Refresh, or add one above and pick the agent id."}
-              </span>
-            )}
-          </div>
-        </>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setAiOpen((o) => !o);
+              setAiBrief("");
+            }}
+          >
+            Generar con IA
+          </button>
+        </div>
       )}
+      {aiOpen && !editing && (
+        <form
+          className="persona-form"
+          aria-label="Generar agente con IA"
+          onSubmit={(e) => {
+            e.preventDefault();
+            runAiDraft(false);
+          }}
+        >
+          <label className="field">
+            <span>Brief (rol / dominio)</span>
+            <textarea
+              rows={3}
+              value={aiBrief}
+              onChange={(e) => setAiBrief(e.target.value)}
+              placeholder="Ej: agente de ventas B2B que cotiza planes y usa Drive"
+              required
+              autoFocus
+              disabled={aiBusy}
+            />
+          </label>
+          <div className="row">
+            <button className="btn primary" disabled={!aiBrief.trim() || aiBusy}>
+              {aiBusy ? "Generando…" : "Generar borrador"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={aiBusy}
+              onClick={() => {
+                setAiOpen(false);
+                setAiBrief("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="card-title" style={{ marginTop: "1.25rem" }}>
+        <h3>Templates</h3>
+        <p className="muted small">Blueprints with the same fields as an agent. Apply creates <code>@name</code> or updates it if it already exists.</p>
+      </div>
+      {templates.length === 0 && <p className="empty">No templates yet. Use Save as template on an agent.</p>}
+      {templates.map((t) => (
+        <div key={t.id} className="repo">
+          <div className="repo-name grow">
+            <span className="strong">{t.id}</span>
+            <span className="muted small">
+              → @{t.name}
+              {t.prompt ? ` · ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? "…" : ""}` : ""}
+            </span>
+          </div>
+          <span className="persona-chips">
+            {personaChips(t).map((c) => (
+              <span key={c} className="chip static">
+                {c}
+              </span>
+            ))}
+          </span>
+          <button className="btn small primary" onClick={() => applyTemplate(t)}>
+            Apply template
+          </button>
+          <button className="btn small" onClick={() => setEditing({ index: -1, draft: personaFromTemplate(t) })}>
+            Edit as new
+          </button>
+          <button className="btn icon ghost" aria-label={`Remove template ${t.id}`} onClick={() => removeTemplate(t.id)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+      ))}
     </details>
   );
 }
@@ -715,6 +594,9 @@ function SkillsCard({ settings, notify }: ViewProps) {
   const [isNew, setIsNew] = useState(false);
   const [source, setSource] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [aiBrief, setAiBrief] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   useEffect(() => {
     api.skills().then(setSkills, () => setSkills([]));
   }, []);
@@ -728,11 +610,31 @@ function SkillsCard({ settings, notify }: ViewProps) {
       },
       (e: Error) => notify(e.message, true),
     );
+  const runAiDraft = (improve: boolean) => {
+    const brief = (improve ? aiBrief || draft?.description || draft?.name || "" : aiBrief || "").trim();
+    if (!brief || aiBusy) return;
+    setAiBusy(true);
+    api
+      .draftSkill(brief, improve && draft ? draft : undefined)
+      .then(
+        (next) => {
+          setIsNew(improve ? isNew : true);
+          setDraft({ ...EMPTY_SKILL, ...next });
+          setAiOpen(false);
+          setAiBrief("");
+          notify(improve ? "Borrador mejorado — revisá y Guardá" : "Borrador listo — revisá y Guardá");
+        },
+        (e: Error) => notify(e.message, true),
+      )
+      .finally(() => setAiBusy(false));
+  };
   return (
-    <details className="card" open aria-label="Skills">
+    <details className="card" open aria-label="Skill packs">
       <summary className="card-title">
-        <h2>Skills</h2>
-        <p className="muted small">Reusable know-how you give to agents: instructions plus the tools they need. Pick them per agent in the Agents tab.</p>
+        <h2>Skill packs</h2>
+        <p className="muted small">
+          Reusable packs: prompt text + tools (frontmatter <code>mcps</code> in <code>SKILL.md</code>). Attach packs to agents in Agents — a persona is often just a name, listen mode, and skill packs.
+        </p>
       </summary>
       <form
         className="row"
@@ -814,6 +716,21 @@ function SkillsCard({ settings, notify }: ViewProps) {
             <span>Instructions</span>
             <textarea rows={8} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} placeholder="What the agent must do, never do, and how to answer." />
           </label>
+          <label className="field">
+            <span>Mejorar con IA</span>
+            <div className="row">
+              <input
+                className="grow"
+                value={aiBrief}
+                onChange={(e) => setAiBrief(e.target.value)}
+                placeholder="Qué cambiar o reforzar (opcional)"
+                disabled={aiBusy}
+              />
+              <button type="button" className="btn" disabled={aiBusy} onClick={() => runAiDraft(true)}>
+                {aiBusy ? "Generando…" : "Mejorar con IA"}
+              </button>
+            </div>
+          </label>
           <div className="row">
             <button className="btn primary">Save skill</button>
             <button type="button" className="btn" onClick={() => setDraft(null)}>
@@ -822,9 +739,60 @@ function SkillsCard({ settings, notify }: ViewProps) {
           </div>
         </form>
       ) : (
-        <button className="btn" onClick={() => { setIsNew(true); setDraft({ ...EMPTY_SKILL }); }}>
-          + New skill
-        </button>
+        <div className="row" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+          <button className="btn" onClick={() => { setIsNew(true); setDraft({ ...EMPTY_SKILL }); }}>
+            + New skill pack
+          </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setAiOpen((o) => !o);
+              setAiBrief("");
+            }}
+          >
+            Generar con IA
+          </button>
+        </div>
+      )}
+      {aiOpen && !draft && (
+        <form
+          className="persona-form"
+          aria-label="Generar skill con IA"
+          onSubmit={(e) => {
+            e.preventDefault();
+            runAiDraft(false);
+          }}
+        >
+          <label className="field">
+            <span>Brief (dominio / procedimiento)</span>
+            <textarea
+              rows={3}
+              value={aiBrief}
+              onChange={(e) => setAiBrief(e.target.value)}
+              placeholder="Ej: skill de cotizaciones con precios y reglas de descuento"
+              required
+              autoFocus
+              disabled={aiBusy}
+            />
+          </label>
+          <div className="row">
+            <button className="btn primary" disabled={!aiBrief.trim() || aiBusy}>
+              {aiBusy ? "Generando…" : "Generar borrador"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={aiBusy}
+              onClick={() => {
+                setAiOpen(false);
+                setAiBrief("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       )}
     </details>
   );
@@ -1000,13 +968,52 @@ function PiKeys({ notify }: { notify: ViewProps["notify"] }) {
   );
 }
 
-function DriveCard({ settings, save }: ViewProps) {
+function DriveCard({ settings, save, notify }: ViewProps) {
   const [folder, setFolder] = useState(settings.googleDriveFolderId ?? "");
+  const [mcp, setMcp] = useState<DriveMcpStatus>();
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.driveMcp().then((status) => {
+      setMcp(status);
+      setClientId(status.clientId ?? "");
+    }, () => {});
+  }, []);
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const { url } = await api.driveMcpStart();
+      window.open(url, "_blank", "noopener");
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const next = await api.driveMcp();
+        setMcp(next);
+        if (next.connected) {
+          notify("Google Drive connected");
+          return;
+        }
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <details className="card" open aria-label="Google Drive">
       <summary className="card-title">
         <h2>Google Drive</h2>
-        <p className="muted small">Where agents with the Google Drive tool save files. Share the folder with the service account email as Editor.</p>
+        <p className="muted small">
+          Spreadsheets use the folder below. Docs, slides, search and reading files use{" "}
+          <a href="https://developers.google.com/workspace/drive/api/guides/configure-mcp-server?hl=es-419" target="_blank" rel="noreferrer">
+            Google's Drive MCP
+          </a>
+          . It is a Workspace developer preview and signs in as a person, not the service account.
+        </p>
       </summary>
       <form
         className="field"
@@ -1019,6 +1026,47 @@ function DriveCard({ settings, save }: ViewProps) {
         <div className="row">
           <input className="mono grow" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="1AbC… (the part after /folders/ in the folder URL)" />
           <button className="btn">Save</button>
+        </div>
+      </form>
+      <form
+        className="field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBusy(true);
+          api
+            .driveMcpSave(clientId.trim(), clientSecret)
+            .then((status) => {
+              setMcp(status);
+              setClientSecret("");
+              notify("OAuth client saved");
+            }, (err: Error) => notify(err.message, true))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <span>OAuth client</span>
+        <input className="mono" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client id" autoComplete="off" />
+        <input className="mono" type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder={mcp?.configured ? "Client secret saved — paste a new one to replace it" : "Client secret"} autoComplete="off" />
+        {mcp?.redirectUri && <code className="muted small">{mcp.redirectUri}</code>}
+        <div className="row">
+          <button className="btn" disabled={busy || !clientId.trim()}>
+            Save client
+          </button>
+          <button type="button" className="btn primary" disabled={busy || !mcp?.configured} onClick={() => void connect()}>
+            {mcp?.connected ? "Reconnect" : "Connect"}
+          </button>
+          {mcp?.connected && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                api.driveMcpClear().then(setMcp, (err: Error) => notify(err.message, true)).finally(() => setBusy(false));
+              }}
+            >
+              Disconnect
+            </button>
+          )}
         </div>
       </form>
     </details>
@@ -1114,7 +1162,7 @@ function ContextCard({ settings, save }: ViewProps) {
         <div className="field">
           <span className="muted small">Preview</span>
           <p className="sample mono">— glm-5.3-flash · yFlow@chat/flow-export · context 62% (79k/128k)</p>
-          <span className="muted small">Model · repo@branch · memory used. Claude reports exact numbers; OpenCode is an estimate (~).</span>
+          <span className="muted small">Model · repo@branch · memory used.</span>
         </div>
       )}
 
@@ -1144,7 +1192,6 @@ function shortPath(path: string): string {
 }
 
 function RepoRow({ name, repo, onChange, onRemove }: { name: string; repo: RepoConfig; onChange: (r: RepoConfig) => void; onRemove: () => void }) {
-  // Saves one field on blur, dropping it when emptied.
   const field = (key: "base" | "up") => ({
     defaultValue: repo[key] ?? "",
     onBlur: (e: FocusEvent<HTMLInputElement>) => {
@@ -1194,7 +1241,6 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
         if (!s.connected) return;
         api.adoProjects().then((list) => {
           setProjects(list.map((p) => p.name));
-          // ado CLI profiles are case-insensitive ("ysocial" vs "ySocial").
           const match = list.find((p) => p.name.toLowerCase() === s.defaultProject?.toLowerCase());
           if (match) setProject(match.name);
         }, () => {});

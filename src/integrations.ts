@@ -110,10 +110,6 @@ interface AdoCliConfig {
   profiles?: Record<string, { org?: string; project?: string; pat?: string; patEnvVar?: string; default?: boolean }>;
 }
 
-/**
- * Reuses the machine's `ado` CLI setup (~/.config/opencode/ado.json) so nobody pastes a PAT twice.
- * PAT order mirrors the CLI: profile pat -> profile patEnvVar -> AZURE_DEVOPS_PAT -> ~/.azure-devops-cli/pat.
- */
 export function detectAdo(home: string, env: NodeJS.ProcessEnv): DetectedAdo | undefined {
   let config: AdoCliConfig;
   try {

@@ -5,9 +5,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SettingsStore, type Settings } from "../src/settings.js";
 
 const defaults: Settings = {
-  agentDriver: "opencode",
+  agentDriver: "pi",
   models: {},
-  agents: {},
   repos: {},
   allowedSpaces: ["spaces/ENV"],
   contextFooter: "every5",
@@ -28,8 +27,7 @@ describe("SettingsStore", () => {
   it("persists updates and reloads them, file values winning over env defaults", async () => {
     const file = join(dir, "config.json");
     await new SettingsStore(file, defaults).update({
-      agentDriver: "claude",
-      models: { claude: "claude-opus-5-5" },
+      models: { pi: "anthropic/claude-sonnet-5-5" },
       repos: { web: { path: dir, up: "npm start" } },
       allowedSpaces: ["spaces/AAA"],
       contextFooter: "every",
@@ -38,24 +36,21 @@ describe("SettingsStore", () => {
       contextFooter: "every",
       autoCompactAt: 85,
       personas: [],
-      agentDriver: "claude",
-      models: { claude: "claude-opus-5-5" },
-      agents: {},
+      agentDriver: "pi",
+      models: { pi: "anthropic/claude-sonnet-5-5" },
       repos: { web: { path: dir, up: "npm start" } },
       allowedSpaces: ["spaces/AAA"],
     });
   });
 
-  it("persists the default OpenCode agent", async () => {
+  it("always keeps agentDriver as pi even when a legacy value is patched", async () => {
     const file = join(dir, "config.json");
-    await new SettingsStore(file, defaults).update({ agents: { opencode: "plan" } });
-    expect(new SettingsStore(file, defaults).get().agents).toEqual({ opencode: "plan" });
+    await new SettingsStore(file, defaults).update({ agentDriver: "claude" as never });
+    expect(new SettingsStore(file, defaults).get().agentDriver).toBe("pi");
   });
 
   it("rejects invalid input without changing anything", async () => {
     const store = new SettingsStore(join(dir, "config.json"), defaults);
-    await expect(store.update({ agentDriver: "gemini" as never })).rejects.toThrow(/agentDriver/);
-    await expect(store.update({ agents: { opencode: "bad agent" } })).rejects.toThrow(/agents\.opencode/);
     await expect(store.update({ repos: { web: { path: "relative/dir" } } })).rejects.toThrow(/absolute/);
     await expect(store.update({ repos: { web: { path: join(dir, "missing") } } })).rejects.toThrow(/does not exist/);
     await expect(store.update({ repos: { "a b": { path: dir } } })).rejects.toThrow(/repo name/);

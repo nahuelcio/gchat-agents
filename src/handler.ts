@@ -77,11 +77,9 @@ export interface TurnOptions {
   contextFooter: ContextFooter;
   /** Compact automatically when context use reaches this percent; 0 = never. */
   autoCompactAt: number;
-  /** Default model label for the footer when the thread has no override. */
   defaultModel?: string;
-  /** Configured agent and per-agent default models, to label threads that switched with /agent. */
-  defaultDriver?: "opencode" | "claude";
-  defaultModels?: { opencode?: string; claude?: string };
+  defaultDriver?: "pi";
+  defaultModels?: { pi?: string };
   personas?: Persona[];
 }
 
@@ -125,7 +123,7 @@ export interface TurnRequest {
 
 const REPLY_LIMIT = 3800;
 const GREETING =
-  "Hi! I bridge this space to a local OpenCode agent. " +
+  "Hi! I bridge this space to a local Pi agent. " +
   "Send me a message (mention me in spaces) and I will reply in this thread. " +
   "Turns run one at a time per thread and can take a while.";
 
@@ -144,7 +142,7 @@ const HELP = [
   "/compact — summarize the session and continue in a fresh one",
   "/clear — start a fresh session (worktree untouched)",
   "/model <id>|default — model for this thread only",
-  "/agent opencode|claude|default — agent for this thread only",
+  "/agent pi|default — agent for this thread only",
   "",
   "Schedules:",
   "/schedule <m h dom mon dow> <prompt> — run a prompt on a cron, results in this thread's space or the Schedules log",
@@ -396,7 +394,6 @@ async function agentTurn(req: TurnRequest, deps: HandlerDeps): Promise<{ ok: boo
     return { ok: true };
   }
 
-  // claude reports real usage; otherwise estimate from text that went through (~4 chars/token).
   const usage = result.usage
     ? { contextTokens: result.usage.contextTokens, contextWindow: result.usage.contextWindow, estimated: false }
     : {
@@ -667,7 +664,7 @@ export function contextLine(r: SessionRecord, options: TurnOptions): string {
     pct !== undefined
       ? `context ${pct}% (${formatTokens(tokens)}/${formatTokens(r.contextWindow!)})`
       : r.estimated
-        ? `~${formatTokens(tokens)} tokens exchanged` // opencode: chat text only, not its system prompt
+        ? `~${formatTokens(tokens)} tokens exchanged`
         : `context ${formatTokens(tokens)} tokens`;
   return `— ${[model, where, wi, ctx].filter(Boolean).join(" · ")}`;
 }
@@ -725,12 +722,11 @@ async function runCommand(req: TurnRequest, deps: HandlerDeps): Promise<string> 
       return model ? `This thread now uses ${model}. Other threads keep the default.` : "This thread is back on the default model.";
     }
     case "agent": {
-      if (arg !== "opencode" && arg !== "claude" && arg !== "default") return "Usage: /agent opencode|claude|default";
+      if (arg !== "pi" && arg !== "default") return "Usage: /agent pi|default";
       const driver = arg === "default" ? undefined : arg;
-      // Sessions belong to one agent: switching starts fresh (and drops a model meant for the other agent).
       cancelQuestion(threadKey);
       await deps.store.update(threadKey, spaceName, { driver, model: undefined, sessionRef: undefined, contextTokens: 0, turns: 0, pendingQuestions: undefined });
-      return driver ? `This thread now talks to ${driver === "claude" ? "Claude Code" : "OpenCode"} (fresh session).` : "This thread is back on the configured agent (fresh session).";
+      return driver ? "This thread now talks to Pi (fresh session)." : "This thread is back on the configured agent (fresh session).";
     }
     case "wi":
     case "workitem": {

@@ -104,8 +104,8 @@ async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend
     }
 }
 
-async fn play_agents(State(state): State<Arc<AppState>>) -> Response {
-    let agents: Vec<_> = crate::agents::detect_agents(&state.opencode_bin, &state.claude_bin)
+async fn play_agents(State(_state): State<Arc<AppState>>) -> Response {
+    let agents: Vec<_> = crate::agents::detect_agents()
         .await
         .into_iter()
         .filter(|a| a.supported && a.installed)

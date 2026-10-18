@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod admin;
 pub mod agents;
+pub mod ai_draft;
 pub mod atomic;
 pub mod cli;
 pub mod bridge;
@@ -12,6 +13,7 @@ pub mod handler;
 pub mod health;
 pub mod integrations;
 pub mod mcp;
+pub mod drive_mcp;
 pub mod mcp_client;
 pub mod media;
 pub mod personas;
@@ -44,11 +46,10 @@ use futures::FutureExt;
 use tokio::sync::Mutex;
 
 use crate::config::{load_config, Config};
-use crate::driver::{ClaudeDriver, EchoDriver, OpenCodeDriver};
+use crate::driver::EchoDriver;
 use crate::google::GoogleConnection;
 use crate::handler::{settings_to_options, HandlerConfig, HandlerDeps};
 use crate::health::Health;
-use crate::mcp::SwitchboardMcp;
 use crate::queue::TurnQueue;
 use crate::schedules::{ScheduleStore, Scheduler};
 use crate::session::SessionStore;
@@ -72,13 +73,10 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let settings = Arc::new(SettingsStore::open(
         config.data_dir.join("config.json"),
         SettingsDefaults {
-            agent_driver: config.agent_driver,
+            agent_driver: crate::config::AgentDriverKind::Pi,
             models: crate::settings::Models {
-                opencode: config.opencode_model.clone(),
-                claude: config.claude_model.clone(),
                 pi: std::env::var("PI_MODEL").ok().filter(|m| !m.trim().is_empty()),
             },
-            agents: Default::default(),
             repos: config.repos.clone(),
             allowed_spaces: config.allowed_spaces.clone(),
             ..Default::default()
@@ -102,41 +100,15 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let media = Arc::new(crate::media::MediaStore::open(config.data_dir.join("media")));
     let activity = Arc::new(crate::activity::ActivityLog::open(config.data_dir.join("activity.json")));
 
-    let switchboard = SwitchboardMcp {
-        server_path: std::env::current_exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "switchboard".into()),
-        admin_url: format!("http://127.0.0.1:{}", config.admin_port),
-    };
-
     let driver: Arc<dyn crate::driver::AgentDriver> = if echo {
         Arc::new(EchoDriver)
     } else {
-        Arc::new(crate::driver::ConfiguredDriver {
-            opencode: OpenCodeDriver {
-                bin: config.opencode_bin.clone(),
-                model: None,
-                agent: None,
-                timeout_ms: config.turn_timeout_ms,
-                switchboard: Some(switchboard.clone()),
-                engram: false,
-            },
-            claude: ClaudeDriver {
-                bin: config.claude_bin.clone(),
-                model: None,
-                timeout_ms: config.turn_timeout_ms,
-                switchboard: Some(switchboard.clone()),
-                read_dirs: vec![config.data_dir.join("media").to_string_lossy().into_owned()],
-                engram: false,
-            },
-            pi: crate::driver::PiDriver {
-                base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
-                model: None,
-                settings: None,
-                timeout_ms: config.turn_timeout_ms,
-                retry_ms: 60_000,
-            },
-            settings: settings.clone(),
+        Arc::new(crate::driver::PiDriver {
+            base_url: format!("http://127.0.0.1:{}", crate::pi_sidecar::port()),
+            model: settings.get().models.pi.clone(),
+            settings: Some(settings.clone()),
+            timeout_ms: config.turn_timeout_ms,
+            retry_ms: 60_000,
         })
     };
 
@@ -215,6 +187,8 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     driver: None,
                     answer_questions: false,
                     request_id: None,
+                    mcps_override: None,
+                    instructions_override: None,
                 })
                 .await;
             let reply = match &result {
@@ -242,6 +216,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let web_dir = find_web_dir();
     let state = Arc::new(AppState {
         drive: Arc::new(crate::google_drive::Drive::new(google.clone())),
+        drive_mcp: Arc::new(crate::drive_mcp::DriveMcp::open(&config.data_dir)),
         activity,
         settings,
         health,
@@ -256,8 +231,6 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         web_dir,
         public_url: std::sync::Mutex::new(None),
         data_dir: config.data_dir.clone(),
-        opencode_bin: config.opencode_bin.clone(),
-        claude_bin: config.claude_bin.clone(),
     });
 
     Ok(Runtime { state, config })

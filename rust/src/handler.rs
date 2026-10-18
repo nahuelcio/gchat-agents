@@ -652,6 +652,8 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 driver: Some(driver_kind),
                 answer_questions: true,
                 request_id: req.request_id.clone(),
+                mcps_override: None,
+                instructions_override: None,
             })
             .await
     };
@@ -896,8 +898,7 @@ async fn persona_round(
             .and_then(|r| r.worktree.clone())
             .unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone());
         let persona_request = req.request_id.as_ref().map(|r| format!("{r}#{}#{}", item.persona.name, item.hop));
-        let on_pi = item.persona.driver.or(record.as_ref().and_then(|r| r.driver)).unwrap_or((deps.options)().default_driver) == crate::config::AgentDriverKind::Pi;
-        if let (Some(ledger), Some(id), true) = (&deps.ledger, &persona_request, on_pi) {
+        if let (Some(ledger), Some(id)) = (&deps.ledger, &persona_request) {
             ledger.begin_persona(id, &req.thread_key, &item.persona.name, &req.space_name, req.thread.clone(), &item.text).await;
         }
         let talking = Speaking::start(&req.thread_key, &format!("@{}", item.persona.name));
@@ -919,13 +920,13 @@ async fn persona_round(
                 driver: item.persona.driver.or(record.as_ref().and_then(|r| r.driver)),
                 answer_questions: false,
                 request_id: persona_request.clone(),
+                mcps_override: None,
+                instructions_override: None,
             })
             .await;
         drop(talking);
-        if on_pi {
-            let state = if result.is_ok() { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
-            mark(deps, persona_request.as_deref(), state).await;
-        }
+        let state = if result.is_ok() { crate::turn_ledger::TurnState::Posted } else { crate::turn_ledger::TurnState::Failed };
+        mark(deps, persona_request.as_deref(), state).await;
         let reply = match result {
             Ok(out) => {
                 let reply = strip_self_prefix(&out.reply, &item.persona);
@@ -1097,6 +1098,8 @@ async fn host_continue(req: &TurnRequest, deps: &HandlerDeps, text: &str) -> Opt
             driver: record.as_ref().and_then(|r| r.driver).or(Some(options.default_driver)),
             answer_questions: false,
             request_id: None,
+            mcps_override: None,
+            instructions_override: None,
         })
         .await
     {
@@ -1162,7 +1165,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear /compact /context /model /agent /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
             Ok("Stopping after the current agent finishes.".into())
@@ -1196,27 +1199,7 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
                 None => "Model cleared.".into(),
             })
         }
-        "agent" => {
-            let driver = match args.first().copied() {
-                Some("opencode") => Some(crate::config::AgentDriverKind::Opencode),
-                Some("claude") => Some(crate::config::AgentDriverKind::Claude),
-                Some("pi") => Some(crate::config::AgentDriverKind::Pi),
-                Some(other) => return Err(format!("unknown agent {other}")),
-                None => None,
-            };
-            deps.store
-                .update(
-                    &req.thread_key,
-                    &req.space_name,
-                    SessionPatch {
-                        driver: Some(driver),
-                        session_ref: Some(None),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            Ok("Agent updated.".into())
-        }
+        "agent" => Err("Only Pi is available — use /model to set the model.".into()),
         "repo" | "status" | "up" | "down" | "logs" | "close" => repo_command(cmd, &args, req, deps).await,
         "topic" => {
             let title = args.join(" ");
@@ -1297,6 +1280,8 @@ pub async fn ask_persona(deps: &HandlerDeps, thread_key: &str, agent: &str, ques
             driver: target.driver,
             answer_questions: false,
             request_id: None,
+            mcps_override: None,
+            instructions_override: None,
         })
         .await?;
     if let Some(s) = out.session_ref {
@@ -1372,6 +1357,8 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
             driver: record.as_ref().and_then(|r| r.driver),
             answer_questions: false,
             request_id: None,
+            mcps_override: None,
+            instructions_override: None,
         })
         .await?;
     let after = out.reply.len().div_ceil(4) as u64;
@@ -1558,11 +1545,8 @@ pub fn context_line(r: &crate::session::SessionRecord, options: &TurnOptions) ->
     let model = r
         .model
         .clone()
-        .or_else(|| match r.driver.unwrap_or(options.default_driver) {
-            crate::config::AgentDriverKind::Opencode => options.default_models.opencode.clone(),
-            crate::config::AgentDriverKind::Claude => options.default_models.claude.clone(),
-            crate::config::AgentDriverKind::Pi => options.default_models.pi.clone(),
-        })
+        .or_else(|| options.default_models.pi.clone())
+        .or_else(|| options.default_model.clone())
         .unwrap_or_else(|| "default".into());
     let pct = context_percent(r)
         .map(|p| format!("{p}%"))
@@ -1571,17 +1555,12 @@ pub fn context_line(r: &crate::session::SessionRecord, options: &TurnOptions) ->
 }
 
 pub fn settings_to_options(s: &Settings) -> TurnOptions {
-    let default_model = match s.agent_driver {
-        crate::config::AgentDriverKind::Opencode => s.models.opencode.clone(),
-        crate::config::AgentDriverKind::Claude => s.models.claude.clone(),
-        crate::config::AgentDriverKind::Pi => s.models.pi.clone(),
-    };
     TurnOptions {
         context_footer: s.context_footer,
         auto_compact_at: s.auto_compact_at,
         debounce_ms: s.debounce_ms,
-        default_model,
-        default_driver: s.agent_driver,
+        default_model: s.models.pi.clone(),
+        default_driver: crate::config::AgentDriverKind::Pi,
         default_models: s.models.clone(),
         personas: s.personas.clone(),
     }
@@ -1678,7 +1657,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 0,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
             }),
@@ -1735,7 +1714,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 0,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: (*personas2).clone(),
             }),
@@ -1783,7 +1762,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 0,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
             }),
@@ -1835,7 +1814,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 0,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
             }),
@@ -2164,7 +2143,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 0,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
             }),
@@ -2192,7 +2171,7 @@ mod tests {
                 auto_compact_at: 0,
                 debounce_ms: 300,
                 default_model: None,
-                default_driver: crate::config::AgentDriverKind::Opencode,
+                default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
                 personas: vec![],
             }),
@@ -2300,9 +2279,16 @@ Beto: yo tambien");
         let transcripts = Arc::new(crate::transcripts::TranscriptStore::open(dir.path().join("t"), 50));
         let reopened = Arc::new(crate::turn_ledger::TurnLedger::open(dir.path().join("turns.json")));
         assert_eq!(crate::turn_ledger::recover(deps.clone(), reopened.clone(), transcripts.clone()).await, 1);
+        for _ in 0..100 {
+            if chat.posts.lock().unwrap().len() >= 2
+                && reopened.state("m1") == Some(crate::turn_ledger::TurnState::Failed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         assert_eq!(crate::turn_ledger::recover(deps.clone(), reopened.clone(), transcripts.clone()).await, 0);
         let posts = chat.posts.lock().unwrap().clone();
-        assert_eq!(posts.len(), 2);
         assert!(posts.iter().any(|(_, b)| b.text == crate::turn_ledger::CUT_NOTICE));
         assert!(posts.iter().any(|(_, b)| b.text == crate::turn_ledger::EXPIRED_NOTICE));
         assert!(deps.store.get("spaces/a/threads/t2").unwrap().pending_questions.is_none());

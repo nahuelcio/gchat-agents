@@ -18,6 +18,22 @@ fn last_message(text: &str) -> &str {
 #[async_trait]
 impl AgentDriver for EchoDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
+        if input.thread_key.starts_with("ai-draft/agent") {
+            return Ok(AgentTurnResult {
+                reply: r#"{"name":"ventas","prompt":"Especialista en ventas y cotizaciones.","mcps":["google-drive"],"skills":[],"delegates":[]}"#.into(),
+                session_ref: Some(format!("echo-{}", input.thread_key)),
+                usage: None,
+                pending: None,
+            });
+        }
+        if input.thread_key.starts_with("ai-draft/skill") {
+            return Ok(AgentTurnResult {
+                reply: r#"{"name":"cotizaciones","description":"Precios y planes","mcps":["google-drive"],"body":"Respondé con precios vigentes. No inventar cifras."}"#.into(),
+                session_ref: Some(format!("echo-{}", input.thread_key)),
+                usage: None,
+                pending: None,
+            });
+        }
         if input.text.contains("[Room message") {
             let me = input.thread_key.rsplit_once('#').map(|(_, p)| format!("@{p}"));
             let body = input.text.split("[Room message").last().and_then(|t| t.split_once('\n')).map(|(_, b)| b).unwrap_or("");
@@ -113,6 +129,8 @@ mod tests {
                 driver: None,
                 answer_questions: true,
                 request_id: None,
+                mcps_override: None,
+                instructions_override: None,
             })
             .await
             .unwrap();
@@ -138,6 +156,8 @@ Ana: @qa check this".into(),
             driver: None,
             answer_questions: true,
             request_id: None,
+            mcps_override: None,
+            instructions_override: None,
         };
         assert_eq!(EchoDriver.run_turn(turn("team/t#qa")).await.unwrap().reply, "Echo: Ana: @qa check this");
         assert_eq!(EchoDriver.run_turn(turn("team/t#architect")).await.unwrap().reply, PASS);
@@ -157,6 +177,8 @@ Ana: @qa check this".into(),
                 driver: None,
                 answer_questions: true,
                 request_id: None,
+                mcps_override: None,
+                instructions_override: None,
             })
             .await
             .unwrap();

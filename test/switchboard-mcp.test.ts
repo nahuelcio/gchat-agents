@@ -50,9 +50,8 @@ describe("switchboard MCP → admin", () => {
     sessions = new SessionStore(join(dir, "sessions.json"));
     await sessions.update("share/team-1", "team-chat", {});
     const settings = new SettingsStore(join(dir, "config.json"), {
-      agentDriver: "opencode",
+      agentDriver: "pi",
       models: {},
-      agents: {},
       repos: { app: { path: repoPath } },
       allowedSpaces: [],
     });

@@ -28,12 +28,8 @@ export interface AdminContext {
   fetch?: FetchFn;
   /** ADO credentials from the machine's `ado` CLI setup. */
   detectAdo?: () => DetectedAdo | undefined;
-  /** Installed coding agents and the models each driver can use (slow: shelled out, cached here). */
   detectAgents?: () => Promise<DetectedAgent[]>;
-  opencodeModels?: () => Promise<string[]>;
-  opencodeAgents?: () => Promise<string[]>;
-  claudeModels?: () => Promise<string[]>;
-  /** The bridge's handler deps: the team chat runs real turns through them. */
+  piModels?: () => Promise<string[]>;
   handler?: HandlerDeps;
   schedules?: ScheduleStore;
   scheduler?: Scheduler;
@@ -94,9 +90,7 @@ async function jsonBody<T>(req: IncomingMessage): Promise<T> {
 export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {}): ReturnType<typeof createServer> {
   const fetchFn: FetchFn = (url, init) => (ctx.fetch ?? fetch)(url, init);
   const agents = cached(() => ctx.detectAgents?.() ?? Promise.resolve([]));
-  const models = cached(() => ctx.opencodeModels?.() ?? Promise.resolve([]));
-  const opencodeAgentList = cached(() => ctx.opencodeAgents?.() ?? Promise.resolve([]));
-  const claudeModelList = cached(() => ctx.claudeModels?.() ?? Promise.resolve([]));
+  const piModelList = cached(() => ctx.piModels?.() ?? Promise.resolve([]));
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const parsed = new URL(req.url ?? "/", "http://localhost");
@@ -418,14 +412,8 @@ export function createAdminServer(settings: SettingsStore, ctx: AdminContext = {
 
     const refresh = parsed.searchParams.get("refresh") === "1";
     if (url === "/api/agents" && method === "GET") return send(res, 200, await agents(refresh));
-    if (url === "/api/agents/opencode/models" && method === "GET") {
-      return send(res, 200, await upstream(() => models(refresh)));
-    }
-    if (url === "/api/agents/opencode/agents" && method === "GET") {
-      return send(res, 200, await upstream(() => opencodeAgentList(refresh)));
-    }
-    if (url === "/api/agents/claude/models" && method === "GET") {
-      return send(res, 200, await upstream(() => claudeModelList(refresh)));
+    if (url === "/api/agents/pi/models" && method === "GET") {
+      return send(res, 200, await upstream(() => piModelList(refresh)));
     }
 
     if (url.startsWith("/api/ado/")) {

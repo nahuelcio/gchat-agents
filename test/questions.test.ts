@@ -14,7 +14,7 @@ const questions = normalizeQuestions([
 ]);
 
 describe("questions", () => {
-  it("normalizes Claude and OpenCode shapes into one question", () => {
+  it("normalizes multiple and multiSelect shapes into one question", () => {
     expect(questions).toEqual([
       {
         header: "Library",

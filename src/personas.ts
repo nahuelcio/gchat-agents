@@ -5,17 +5,11 @@ export const BOT_NAME = "Switchi";
 
 /** Named agents (@ventas, @dev…) that live inside a chat thread, each with its own session. */
 export interface Persona {
-  /** Mention handle, without the @. */
   name: string;
-  /** Who this agent is and what it knows; sent as the opening of its session. */
   prompt: string;
-  driver?: "opencode" | "claude";
+  driver?: "pi";
   model?: string;
-  /** Existing OpenCode agent to run as (opencode --agent), e.g. orchestrator. */
-  agent?: string;
-  /** "all" = room mode: sees every message in a thread and speaks up only when useful. Default "mentions". */
   listen?: "mentions" | "all";
-  /** "people" = ignores questions from other agents. Default "anyone". */
   respondTo?: "anyone" | "people";
 }
 

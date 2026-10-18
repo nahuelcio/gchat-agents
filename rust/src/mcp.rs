@@ -6,12 +6,6 @@ use serde_json::{json, Value};
 
 use crate::driver::types::AgentTurnResult;
 
-#[derive(Debug, Clone)]
-pub struct SwitchboardMcp {
-    pub server_path: String,
-    pub admin_url: String,
-}
-
 pub fn mcp_env(thread_key: &str, admin_url: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     m.insert(
@@ -22,50 +16,6 @@ pub fn mcp_env(thread_key: &str, admin_url: &str) -> HashMap<String, String> {
     m
 }
 
-pub fn claude_mcp_config(server_path: &str, thread_key: &str, admin_url: &str) -> String {
-    let exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "switchboard".into());
-    json!({
-        "mcpServers": {
-            "switchboard": {
-                "command": exe,
-                "args": ["mcp", "--server", server_path],
-                "env": mcp_env(thread_key, admin_url)
-            }
-        }
-    })
-    .to_string()
-}
-
-pub fn switchboard_thread_note(thread_key: &str) -> String {
-    format!("[Switchboard thread: {thread_key}. Pass it as \"thread\" when you call switchboard tools.]")
-}
-
-pub fn opencode_mcp_args(server_path: &str, admin_url: &str) -> Vec<String> {
-    let exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "switchboard".into());
-    vec![
-        "mcp".into(),
-        "add".into(),
-        "switchboard".into(),
-        "--global".into(),
-        "--env".into(),
-        format!("SWITCHBOARD_ADMIN_URL={}", admin_url.trim_end_matches('/')),
-        "--".into(),
-        exe,
-        "mcp".into(),
-        "--server".into(),
-        server_path.to_string(),
-    ]
-}
-
-pub const SWITCHBOARD_HINT: &str = "You have Switchboard MCP tools for this chat thread. After creating or choosing an Azure work item, call link_work_item. To work in a configured git repo, call list_repos then attach_repo (detach_repo to leave). Use start_app / stop_app for the repo's configured up command. Use thread_status to inspect the panel state. For recurring work, create_schedule / list_schedules / update_schedule / delete_schedule.";
-
-/// Persistent-memory protocol for the Engram MCP (tools are named `engram__mem_*`).
 pub const ENGRAM_HINT: &str = "\
 You have Engram persistent memory (tools engram__mem_save, engram__mem_search, engram__mem_context, \
 engram__mem_session_summary, engram__mem_get_observation, engram__mem_update, engram__mem_suggest_topic_key). \
@@ -91,14 +41,6 @@ pub fn engram_registered(settings: &crate::settings::Settings) -> bool {
         .mcp_servers
         .iter()
         .any(|m| m.name == crate::mcp_client::ENGRAM_NAME)
-}
-
-pub fn claude_system_prompt(engram: bool) -> String {
-    if engram {
-        format!("{SWITCHBOARD_HINT}\n\n{ENGRAM_HINT}")
-    } else {
-        SWITCHBOARD_HINT.to_string()
-    }
 }
 
 fn tools() -> Value {
@@ -129,6 +71,10 @@ pub fn group_of(tool: &str) -> &'static str {
         "ask_agent" | "list_agents" => "agents",
         _ => "switchboard",
     }
+}
+
+fn wants_drive(env: &HashMap<String, String>) -> bool {
+    allowed_groups(env).is_none_or(|groups| groups.iter().any(|g| g == "google-drive"))
 }
 
 fn allowed_groups(env: &HashMap<String, String>) -> Option<Vec<String>> {
@@ -256,6 +202,47 @@ pub async fn call_admin(
     Ok(data)
 }
 
+fn drive_args(args: &Value, mut body: Value) -> Value {
+    if let Some(id) = args.get("taskId").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("taskId".into(), json!(id));
+        }
+    }
+    body
+}
+
+fn drive_created(data: &Value, unit: &str) -> String {
+    let link = data.pointer("/file/webViewLink").and_then(|v| v.as_str()).unwrap_or("(no link)");
+    let n = data.get("rows").and_then(|v| v.as_u64()).unwrap_or(0);
+    let verb = if data.get("created").and_then(|v| v.as_bool()) == Some(false) { "Already created" } else { "Created" };
+    if unit.is_empty() {
+        format!("{verb}: {link}")
+    } else if unit.chars().all(|c| c.is_ascii_alphabetic()) {
+        format!("{verb}: {link} ({n} {unit})")
+    } else {
+        format!("{verb}: {link} ({unit})")
+    }
+}
+
+fn drive_list(data: &Value, empty: &str) -> String {
+    let files = data.as_array().cloned().unwrap_or_default();
+    if files.is_empty() {
+        return empty.into();
+    }
+    files
+        .iter()
+        .map(|f| {
+            let name = f["name"].as_str().unwrap_or("");
+            let link = f["webViewLink"].as_str().unwrap_or("");
+            match f["mimeType"].as_str().filter(|m| !m.is_empty()) {
+                Some(mime) => format!("{name} · {mime} · {link}"),
+                None => format!("{name} · {link}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub async fn run_tool(
     name: &str,
     args: &Value,
@@ -303,25 +290,11 @@ pub async fn run_tool(
             Ok("Cleared the work item on this thread.".into())
         }
         "create_xlsx" => {
-            let body = json!({ "title": args.get("title").cloned().unwrap_or(Value::Null), "sheets": args.get("sheets").cloned().unwrap_or(Value::Null) });
+            let body = drive_args(args, json!({ "title": args.get("title").cloned().unwrap_or(Value::Null), "sheets": args.get("sheets").cloned().unwrap_or(Value::Null) }));
             let data = call_admin("/api/drive/xlsx", "POST", Some(body), true, &env, client).await?;
-            let link = data.pointer("/file/webViewLink").and_then(|v| v.as_str()).unwrap_or("(no link)");
-            let rows = data.get("rows").and_then(|v| v.as_u64()).unwrap_or(0);
-            let verb = if data.get("created").and_then(|v| v.as_bool()) == Some(false) { "Already created" } else { "Created" };
-            Ok(format!("{verb}: {link} ({rows} rows)"))
+            Ok(drive_created(&data, "rows"))
         }
-        "list_spreadsheets" => {
-            let data = call_admin("/api/drive/spreadsheets", "GET", None, true, &env, client).await?;
-            let files = data.as_array().cloned().unwrap_or_default();
-            if files.is_empty() {
-                return Ok("No spreadsheets in the Drive folder yet.".into());
-            }
-            Ok(files
-                .iter()
-                .map(|f| format!("{} · {}", f["name"].as_str().unwrap_or(""), f["webViewLink"].as_str().unwrap_or("")))
-                .collect::<Vec<_>>()
-                .join("\n"))
-        }
+        "list_spreadsheets" => Ok(drive_list(&call_admin("/api/drive/spreadsheets", "GET", None, true, &env, client).await?, "No spreadsheets in the Drive folder yet.")),
         "list_agents" => {
             let data = call_admin("/api/agents/delegates", "GET", None, true, &env, client).await?;
             let list = data.as_array().cloned().unwrap_or_default();
@@ -527,7 +500,18 @@ pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client:
         )),
         "notifications/initialized" | "initialized" => None,
         "tools/list" => {
-            let listed = listed_tools(env, external);
+            let mut listed = listed_tools(env, external);
+            if wants_drive(env) {
+                if let Ok(data) = call_admin("/api/drive/mcp/tools", "GET", None, false, env, client).await {
+                    if let Some(tools) = data.get("tools").and_then(|v| v.as_array()) {
+                        for tool in tools {
+                            let mut t = tool.clone();
+                            t["_meta"] = json!({ "group": "google-drive" });
+                            listed.push(t);
+                        }
+                    }
+                }
+            }
             Some(frame(
                 &json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": listed } }),
                 line_mode,
@@ -559,14 +543,32 @@ pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client:
                     }),
                     line_mode,
                 )),
-                Err(err) => Some(frame(
-                    &json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32000, "message": err }
-                    }),
-                    line_mode,
-                )),
+                Err(err) => {
+                    if wants_drive(env) && err.starts_with("unknown tool:") {
+                        let mut forwarded = args.clone();
+                        if let Some(obj) = forwarded.as_object_mut() {
+                            obj.remove("thread");
+                        }
+                        match call_admin("/api/drive/mcp/call", "POST", Some(json!({ "name": name, "arguments": forwarded })), false, env, client).await {
+                            Ok(result) => return Some(frame(&json!({ "jsonrpc": "2.0", "id": id, "result": result }), line_mode)),
+                            Err(remote) if remote.starts_with("unknown tool:") => {}
+                            Err(remote) => {
+                                return Some(frame(
+                                    &json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": remote } }),
+                                    line_mode,
+                                ))
+                            }
+                        }
+                    }
+                    Some(frame(
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": -32000, "message": err }
+                        }),
+                        line_mode,
+                    ))
+                }
             }
         }
         "ping" => Some(frame(&json!({ "jsonrpc": "2.0", "id": id, "result": {} }), line_mode)),
@@ -646,23 +648,6 @@ mod tests {
         let call = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "fake__shout", "arguments": { "text": "hola" } } });
         let out = handle_rpc_with(&call, &env, &reqwest::Client::new(), &external).await.unwrap();
         assert!(out.contains("HOLA"), "{out}");
-    }
-
-    #[test]
-    fn mcp_config_json() {
-        let raw = claude_mcp_config("/tmp/x", "thread-1", "http://127.0.0.1:8081/");
-        let v: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(
-            v["mcpServers"]["switchboard"]["env"]["SWITCHBOARD_THREAD_KEY"],
-            "thread-1"
-        );
-    }
-
-    #[test]
-    fn claude_system_prompt_adds_engram_protocol() {
-        assert!(!claude_system_prompt(false).contains("engram__mem_save"));
-        assert!(claude_system_prompt(true).contains("engram__mem_save"));
-        assert!(claude_system_prompt(true).contains(SWITCHBOARD_HINT));
     }
 
     #[tokio::test]

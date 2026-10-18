@@ -1,10 +1,3 @@
-/**
- * Switchboard MCP (stdio): tools for the coding agent to drive the current chat
- * thread (work item, repo, app, schedules). Env set by the driver per turn:
- *
- *   SWITCHBOARD_ADMIN_URL  http://127.0.0.1:<adminPort>
- *   SWITCHBOARD_THREAD_KEY thread key in SessionStore
- */
 import { pathToFileURL } from "node:url";
 
 const TOOLS = [
@@ -113,32 +106,6 @@ const TOOLS = [
   },
 ] as const;
 
-/** How drivers point the agent CLI at this MCP server for one turn. */
-export interface SwitchboardMcp {
-  serverPath: string;
-  adminUrl: string;
-}
-
-export function mcpEnv(threadKey: string, adminUrl: string): Record<string, string> {
-  return {
-    SWITCHBOARD_ADMIN_URL: adminUrl.replace(/\/$/, ""),
-    SWITCHBOARD_THREAD_KEY: threadKey,
-  };
-}
-
-/** Claude Code `--mcp-config` JSON. */
-export function claudeMcpConfig(serverPath: string, threadKey: string, adminUrl: string): string {
-  return JSON.stringify({
-    mcpServers: {
-      switchboard: {
-        command: process.execPath,
-        args: [serverPath],
-        env: mcpEnv(threadKey, adminUrl),
-      },
-    },
-  });
-}
-
 function withThreadArg(tool: (typeof TOOLS)[number]) {
   const schema = tool.inputSchema as { type: string; properties?: Record<string, unknown>; required?: string[] };
   return {
@@ -150,44 +117,9 @@ function withThreadArg(tool: (typeof TOOLS)[number]) {
   };
 }
 
-export function switchboardThreadNote(threadKey: string): string {
-  return `[Switchboard thread: ${threadKey}. Pass it as "thread" when you call switchboard tools.]`;
-}
-
-export function opencodeMcpArgs(serverPath: string, adminUrl: string): string[] {
-  return ["mcp", "add", "switchboard", "--global", "--env", `SWITCHBOARD_ADMIN_URL=${adminUrl}`, "--", process.execPath, serverPath];
-}
-
-export const SWITCHBOARD_HINT = [
-  "You have Switchboard MCP tools for this chat thread.",
-  "After creating or choosing an Azure work item, call link_work_item.",
-  "To work in a configured git repo, call list_repos then attach_repo (detach_repo to leave).",
-  "Use start_app / stop_app for the repo's configured up command.",
-  "Use thread_status to inspect the panel state.",
-  "For recurring work, create_schedule / list_schedules / update_schedule / delete_schedule.",
-].join(" ");
-
-/** Persistent-memory protocol for the Engram MCP (tools are named `engram__mem_*`). */
-export const ENGRAM_HINT = [
-  "You have Engram persistent memory (tools engram__mem_save, engram__mem_search, engram__mem_context, engram__mem_session_summary, engram__mem_get_observation, engram__mem_update, engram__mem_suggest_topic_key).",
-  "It survives sessions and compaction — use it proactively; do not wait to be asked.",
-  "SAVE immediately with engram__mem_save after: architecture/design decisions, conventions, bug fixes (with root cause), non-obvious discoveries, tool/library choices, and user preferences or confirmations/rejections.",
-  "Self-check after every task: if any of those happened, save now.",
-  "Format: title = verb + what; type = bugfix|decision|architecture|discovery|pattern|config|preference; scope = project (default)|personal; topic_key = stable key for evolving topics (reuse to upsert); content = What / Why / Where / Learned.",
-  "SEARCH when the user asks to recall past work, or proactively when starting something that may have been done before, or on a first message that names a feature/problem: engram__mem_context first, then engram__mem_search, then engram__mem_get_observation for full text.",
-  "Before saying you are done, call engram__mem_session_summary (Goal, Instructions, Discoveries, Accomplished, Next Steps, Relevant Files).",
-  "After compaction/context reset, save the summary, then mem_context, then continue.",
-  "Memory calls are bookkeeping — finish them before the user-facing answer.",
-].join(" ");
-
-export function claudeSystemPrompt(engram: boolean): string {
-  return engram ? `${SWITCHBOARD_HINT}\n\n${ENGRAM_HINT}` : SWITCHBOARD_HINT;
-}
-
 export interface AdminCall {
   method?: string;
   body?: Record<string, unknown>;
-  /** Merge SWITCHBOARD_THREAD_KEY into body or query (default true). */
   thread?: boolean;
   query?: Record<string, string>;
 }

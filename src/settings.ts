@@ -6,18 +6,13 @@ import type { ContextFooter } from "./handler.js";
 import { PERSONA_NAME, type Persona } from "./personas.js";
 import type { RepoConfig } from "./workspace.js";
 
-/** Everything the control plane can change at runtime. Persisted in DATA_DIR/config.json. */
 export interface Settings {
   agentDriver: AgentDriverKind;
-  models: { opencode?: string; claude?: string };
-  agents: { opencode?: string };
+  models: { pi?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
-  /** When agent replies in Chat carry the context footer. */
   contextFooter: ContextFooter;
-  /** Compact a thread automatically at this context percent; 0 = never. */
   autoCompactAt: number;
-  /** Named agents people can @mention inside a thread. */
   personas: Persona[];
 }
 
@@ -25,12 +20,14 @@ const DEFAULTS = { contextFooter: "every5" as ContextFooter, autoCompactAt: 85, 
 
 const REPO_NAME = /^[a-zA-Z0-9._-]+$/;
 
+function stripPersonaRuntime(p: Persona): Persona {
+  const { driver: _d, agent: _a, ...rest } = p as Persona & { driver?: unknown; agent?: unknown };
+  return rest;
+}
+
 function validate(s: Settings): void {
-  if (s.agentDriver !== "opencode" && s.agentDriver !== "claude") {
-    throw new Error(`agentDriver must be "opencode" or "claude"`);
-  }
-  if (s.agents?.opencode !== undefined && (typeof s.agents.opencode !== "string" || !/^[\w.-]+$/.test(s.agents.opencode))) {
-    throw new Error(`agents.opencode must be a simple agent id (letters, digits, . _ -)`);
+  if (s.agentDriver !== "pi") {
+    throw new Error(`agentDriver must be "pi"`);
   }
   for (const [name, repo] of Object.entries(s.repos)) {
     if (!REPO_NAME.test(name)) throw new Error(`"${name}" is not a valid repo name (letters, digits, . _ -)`);
@@ -51,11 +48,10 @@ function validate(s: Settings): void {
     if (names.has(p.name.toLowerCase())) throw new Error(`agent @${p.name} is defined twice`);
     names.add(p.name.toLowerCase());
     if (typeof p.prompt !== "string") throw new Error(`agent @${p.name}: prompt must be text`);
-    if (p.driver !== undefined && p.driver !== "opencode" && p.driver !== "claude") throw new Error(`agent @${p.name}: driver must be opencode or claude`);
+    if (p.driver !== undefined && p.driver !== "pi") throw new Error(`agent @${p.name}: driver must be pi`);
     if (p.model !== undefined && typeof p.model !== "string") throw new Error(`agent @${p.name}: model must be text`);
     if (p.listen !== undefined && p.listen !== "mentions" && p.listen !== "all") throw new Error(`agent @${p.name}: listen must be mentions or all`);
     if (p.respondTo !== undefined && p.respondTo !== "anyone" && p.respondTo !== "people") throw new Error(`agent @${p.name}: respondTo must be anyone or people`);
-    if (p.agent !== undefined && (typeof p.agent !== "string" || !/^[\w.-]+$/.test(p.agent))) throw new Error(`agent @${p.name}: OpenCode agent must be a simple id`);
   }
   for (const space of s.allowedSpaces) {
     if (!/^spaces\/[^/\s]+$/.test(space)) throw new Error(`"${space}" is not a space name (spaces/XXXX)`);
@@ -67,20 +63,26 @@ export class SettingsStore {
   private current: Settings;
   private listeners: ((s: Settings) => void)[] = [];
 
-  /** `defaults` come from env; anything saved in the file wins. */
   constructor(filePath: string, defaults: Omit<Settings, keyof typeof DEFAULTS> & Partial<Settings>) {
     this.filePath = filePath;
-    let saved: Partial<Settings> = {};
+    let saved: Partial<Settings> & { models?: { pi?: string; opencode?: string; claude?: string } } = {};
     try {
-      saved = JSON.parse(readFileSync(filePath, "utf8")) as Partial<Settings>;
+      saved = JSON.parse(readFileSync(filePath, "utf8")) as typeof saved;
     } catch {
-      // missing or corrupt file -> env defaults
+      saved = {};
     }
-    // Only known fields: files from older versions may carry removed ones.
     const merged = { ...DEFAULTS, ...defaults, ...saved };
-    const { agentDriver, models, repos, allowedSpaces, contextFooter, autoCompactAt, personas } = merged;
-    const agents = { ...(defaults.agents ?? {}), ...(saved.agents ?? {}) };
-    this.current = { agentDriver, models, agents, repos, allowedSpaces, contextFooter, autoCompactAt, personas };
+    const personas = (merged.personas ?? []).map(stripPersonaRuntime);
+    const piModel = saved.models?.pi ?? defaults.models?.pi;
+    this.current = {
+      agentDriver: "pi",
+      models: piModel ? { pi: piModel } : {},
+      repos: merged.repos,
+      allowedSpaces: merged.allowedSpaces,
+      contextFooter: merged.contextFooter,
+      autoCompactAt: merged.autoCompactAt,
+      personas,
+    };
   }
 
   get(): Settings {
@@ -91,9 +93,14 @@ export class SettingsStore {
     this.listeners.push(listener);
   }
 
-  /** Replaces the given fields, validates, persists atomically, then notifies. */
   async update(patch: Partial<Settings>): Promise<Settings> {
-    const next: Settings = { ...this.current, ...patch };
+    const next: Settings = {
+      ...this.current,
+      ...patch,
+      agentDriver: "pi",
+      models: patch.models ? { pi: patch.models.pi } : this.current.models,
+      personas: (patch.personas ?? this.current.personas).map(stripPersonaRuntime),
+    };
     validate(next);
     const tmp = `${this.filePath}.${Date.now()}.tmp`;
     try {

@@ -8,15 +8,13 @@ const base = {
 };
 
 describe("loadConfig driver selection", () => {
-  it("defaults to the opencode driver", () => {
-    expect(loadConfig(base).agentDriver).toBe("opencode");
+  it("defaults to pi", () => {
+    expect(loadConfig(base).agentDriver).toBe("pi");
   });
 
-  it("selects the claude driver and carries its bin/model", () => {
-    const config = loadConfig({ ...base, AGENT_DRIVER: "claude", CLAUDE_MODEL: "claude-sonnet-4-5" });
-    expect(config.agentDriver).toBe("claude");
-    expect(config.claudeBin).toBe("claude");
-    expect(config.claudeModel).toBe("claude-sonnet-4-5");
+  it("coerces legacy opencode/claude seeds to pi", () => {
+    expect(loadConfig({ ...base, AGENT_DRIVER: "opencode" }).agentDriver).toBe("pi");
+    expect(loadConfig({ ...base, AGENT_DRIVER: "claude" }).agentDriver).toBe("pi");
   });
 
   it("rejects unknown driver kinds instead of silently falling back", () => {

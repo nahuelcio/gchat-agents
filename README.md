@@ -1,8 +1,8 @@
 # Switchboard
 
-Talk to local coding agents — [OpenCode](https://github.com/opencode-ai/opencode) or [Claude Code](https://claude.com/claude-code) — from **Google Chat**.
+Talk to a local [Pi Durable](https://earendil.com/posts/pi-durable/) agent from **Google Chat**.
 
-A Google Chat App receives messages in DMs and spaces, this service drives `opencode` headlessly on your machine, and the agent's answer is posted back into the same Chat thread. Local-first: the agent, its files, and its sessions never leave the machine where this runs.
+A Google Chat App receives messages in DMs and spaces, this service runs Pi headlessly on your machine (via `harness/`), and the agent's answer is posted back into the same Chat thread. Local-first: the agent, its files, and its sessions never leave the machine where this runs.
 
 ```
  Google Chat                       your machine
@@ -11,30 +11,17 @@ A Google Chat App receives messages in DMs and spaces, this service drives `open
 │ space / DM       │           │  1. verify Google token     │
 │                  │           │  2. allowlist check         │
 │ thread = session │◄──────────┤  3. queue turn (per thread) │
-└──────────────────┘  REST API │  4. agent CLI (headless)    │
+└──────────────────┘  REST API │  4. Pi harness (durable)    │
                         ▲      │  5. post reply in thread    │
                         └──────┤ service account + chat.bot  │
                                └─────────────────────────────┘
 ```
 
-One Chat thread = one opencode session. New thread, fresh session.
+One Chat thread = one Pi session. New thread, fresh session.
 
 ## How it drives agents
 
-One Chat thread = one agent session. New thread, fresh session. Pick the runtime with `AGENT_DRIVER`:
-
-| Driver | Headless command | Session continuation |
-| --- | --- | --- |
-| `opencode` (default) | `opencode run --format json [--session ses_...] -- "msg"` | `--session` continues the session **or creates it** (v2.0.26) |
-| `claude` | `claude -p --output-format json [--resume <uuid>] -- "msg"` | `--resume` with the UUID from the previous turn (v2.1.296) |
-
-Details that the drivers handle for you:
-
-- **`--` before the message** — text starting with `-` would otherwise be eaten as CLI flags (verified on both CLIs).
-- **Session-ref guarding** — each driver only resumes refs in its own format; a thread started with one driver and switched to the other starts a fresh session instead of failing.
-- **Output parsing** — opencode emits NDJSON text parts; claude emits a single result JSON where `is_error` is the only reliable error signal (`subtype` can say `"success"` on failures — verified live).
-- **Headless permission posture** — opencode gets no auto-approve flag; claude headless auto-denies anything that would prompt. Both answer chat/read work without granting write/exec from a chat message.
-- **Timeouts** — the whole agent process group is SIGKILLed; agents spawn background children that would otherwise linger.
+The production runtime is **Pi only**. Switchboard starts `harness/server.ts` (Node 22.19+) by itself; turns survive restarts and crashes, a repeated message never runs twice, and a `bash` cut by a crash is reported to the model instead of run again. Set the model as `provider/model` with that provider's API key in `.env` (for example `ANTHROPIC_API_KEY`). `PI_HARNESS=off` disables the harness; `PI_PORT` moves it. `AGENT_DRIVER=opencode|claude` in env is accepted only as a legacy seed and coerced to Pi.
 
 ## Setup
 
@@ -72,15 +59,15 @@ npm start
 
 That builds the control-plane UI and runs the Rust binary. Open `http://127.0.0.1:8081`.
 
-Dev (backend + UI hot reload + tunnel), or `npm run dev:echo` without an agent CLI:
+Dev (backend + UI hot reload + tunnel), or `npm run dev:echo` without a live model:
 
 ```
 npm run dev
 ```
 
-Production runtime is the Rust binary (`rust/`). Node is only used to build the control-plane UI. Nothing is required to start: without credentials the playground and control plane work and Chat replies are off. To answer in Google Chat, set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`.
+Production runtime is the Rust binary (`rust/`). Node builds the control-plane UI and runs the Pi harness. Nothing is required to start: without credentials the playground and control plane work and Chat replies are off. To answer in Google Chat, set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`.
 
-Then open `http://127.0.0.1:8081` to pick the agent, add repos and allow spaces. Add the bot to a space or DM it.
+Then open `http://127.0.0.1:8081` to pick the model, add repos and allow spaces. Add the bot to a space or DM it.
 
 ## Environment
 
@@ -93,8 +80,9 @@ Then open `http://127.0.0.1:8081` to pick the agent, add repos and allow spaces.
 | `AGENT_WORKDIR` | Where chat-only threads run the agent (default `data/workspace`). `/repo a b c` gives a thread one worktree per repo under one folder; `/status`, `/up [repo]`, `/down`, `/logs`, `/close [repo]` manage them |
 | `DATA_DIR` | Settings, sessions, schedules, worktrees, clones (default `./data`) |
 | `AGENT_TURN_TIMEOUT_MS` | Max turn duration (default 600000) |
+| `PI_HARNESS` / `PI_PORT` | `off` disables the Pi sidecar; port override for the harness |
 
-Everything else — agent, models, repos, spaces, context footer — lives in the control plane. `AGENT_DRIVER`, `OPENCODE_MODEL`, `CLAUDE_MODEL`, `CHAT_ALLOWED_SPACES`, `AGENT_REPOS_FILE`, `OPENCODE_BIN` and `CLAUDE_BIN` still work as first-run seeds.
+Everything else — model, repos, spaces, personas, skills, MCP (Engram defaults on), context footer — lives in the control plane. `CHAT_ALLOWED_SPACES` and `AGENT_REPOS_FILE` still work as first-run seeds.
 
 ## Security
 
@@ -112,16 +100,14 @@ This endpoint **triggers an agent that executes code on this machine**. Take it 
 npm install
 npm test               # cargo test
 npm run e2e            # build debug binary + healthz /api contract
-npm run dev            # echo driver on :8080 / :8081
+npm run dev            # rust + vite hot reload
 npm run build:web      # control plane UI (vite)
 npm run dev:web        # UI only (needs bridge already on :8081)
 npm run test:browser   # browser e2e (tester-army/e2e) against the real binary, echo driver
-E2E_DRIVER=opencode npx e2e run e2e/rooms.e2e.ts --workers 1   # rooms with real opencode agents
+npx e2e run e2e/pi.e2e.ts --workers 1   # Pi harness rooms (needs API keys)
 ```
 
-**Durable agents with Pi.** Besides `opencode` and `claude`, an agent can run on [Pi Durable](https://earendil.com/posts/pi-durable/): pick "Pi (durable)" in Settings (globally or per agent) and set the model as `provider/model` with that provider's API key in `.env` (for example `ANTHROPIC_API_KEY`). Switchboard starts `harness/server.ts` (Node 22.19+) by itself; turns survive restarts and crashes, a repeated message never runs twice, and a `bash` cut by a crash is reported to the model instead of run again. `PI_HARNESS=off` disables it, `PI_PORT` moves it.
-
-Agents are a persona plus skills plus tools. A skill is `data/skills/<name>/SKILL.md` (or `skills/<name>/SKILL.md` in this repo) with `name`, `description` and `mcps` in the frontmatter; its text goes into the agent's instructions and its `mcps` turn on by themselves. The Finance example: create a persona with the `finanzas` skill, set the Drive folder id in Settings › Google Drive, and share that folder with the service account email as Editor. The agent then calls `create_xlsx`, which uploads one `.xlsx` per request (a retry returns the same file).
+Agents are a persona plus skills plus tools. A skill is `data/skills/<name>/SKILL.md` (or `skills/<name>/SKILL.md` in this repo) with `name`, `description` and `mcps` in the frontmatter; its text goes into the agent's instructions and its `mcps` turn on by themselves. Settings can **Generar / Mejorar** personas and skills with AI. If `engram` is installed it is registered automatically (opt out by removing it under Skills & tools). The Finance example: create a persona with the `finanzas` skill, set the Drive folder id in Settings › Google Drive, and share that folder with the service account email as Editor.
 
 Agent-first CLI over the local control plane (JSON in, JSON out, errors as `{"error": ...}` with exit 1):
 
@@ -142,18 +128,17 @@ rust/              production backend (axum + tokio)
     bridge.rs      /healthz, /google/chat
     admin.rs       /api/* control plane (loopback)
     handler.rs     auth → allowlist → per-thread queue → driver
-    driver/        echo, opencode, claude, spawn+timeout
+    driver/        echo, pi, spawn+timeout
     session.rs     sessions.json atomic store
-    settings.rs    config.json
+    settings.rs    config.json (Pi-only, templates, Engram defaults)
     schedules.rs   cron + job store + scheduler
     workspace.rs   git worktrees / app up
     share.rs       share-token
-web/               control-plane UI (React + Vite) — unchanged
-src/               legacy TypeScript backend (retired from runtime)
+harness/           Pi Durable sidecar (started by Rust)
+web/               control-plane UI (React + Vite)
+src/               legacy TypeScript backend (retired; npm start → Rust)
 ```
-
-Another runtime (Codex, Cursor, …) means writing one more `AgentDriver` adapter in `rust/src/driver/` — nothing else changes.
 
 ## Status
 
-MVP. Works: DM + space mentions, thread-per-session, async replies, chunked output, timeouts, allowlist, OpenCode and Claude Code drivers. Thread commands with per-thread worktrees and dev servers. Not yet: ADO work items, cards, attachments, approval gate before the agent writes.
+MVP. Works: DM + space mentions, thread-per-session, async replies, chunked output, timeouts, allowlist, Pi Durable driver, personas + skill packs + Engram, AI draft in Settings. Thread commands with per-thread worktrees and dev servers. Not yet: ADO work items, cards, attachments, approval gate before the agent writes.

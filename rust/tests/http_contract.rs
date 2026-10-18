@@ -17,12 +17,8 @@ async fn start_servers(data_dir: std::path::PathBuf) -> (u16, u16, Arc<switchboa
         tunnel: Some(switchboard::tunnel::TunnelMode::Off),
         service_account_json: None,
         allowed_spaces: vec!["spaces/test".into()],
-        agent_driver: AgentDriverKind::Opencode,
+        agent_driver: AgentDriverKind::Pi,
         workdir: data_dir.join("workspace"),
-        opencode_bin: "opencode".into(),
-        opencode_model: None,
-        claude_bin: "claude".into(),
-        claude_model: None,
         turn_timeout_ms: 5_000,
         data_dir,
         repos: HashMap::new(),
@@ -107,10 +103,12 @@ async fn healthz_and_admin_contract() {
 
     let (status, body) = get_json(admin_port, "/api/settings").await;
     assert_eq!(status, 200);
-    assert_eq!(body["agentDriver"], "opencode");
+    assert_eq!(body["agentDriver"], "pi");
     assert!(body.get("repos").is_some());
     assert!(body.get("personas").is_some());
     assert!(body.get("contextFooter").is_some());
+    assert!(body.get("models").is_some());
+    assert!(body.get("agents").is_none());
 
     let (status, body) = put_json(admin_port, "/api/settings", json!({ "contextFooter": "never" })).await;
     assert_eq!(status, 200);
@@ -118,7 +116,8 @@ async fn healthz_and_admin_contract() {
 
     let (status, body) = get_json(admin_port, "/api/agents").await;
     assert_eq!(status, 200);
-    assert!(body.as_array().unwrap().len() >= 2);
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["id"], "pi");
 
     let (status, body) = get_json(admin_port, "/api/threads").await;
     assert_eq!(status, 200);
@@ -505,6 +504,27 @@ async fn agents_delegate_to_the_specialists_they_may_ask() {
     assert!(tool("share/r#finanzas", "ask_agent", json!({ "agent": "soporte", "question": "x" })).await.unwrap_err().contains("add the agents tool"));
     let (_, events) = get_json(admin, "/api/activity?kind=agent_ask").await;
     assert_eq!(events.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn ai_draft_endpoints_return_echo_drafts_without_persisting() {
+    let dir = tempdir().unwrap();
+    let (_bridge, admin, state) = start_servers(dir.path().to_path_buf()).await;
+    let before = state.settings.get().personas.len();
+    let (status, body) = post_json(admin, "/api/ai/draft-agent", json!({ "brief": "ventas B2B" })).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["name"], "ventas");
+    assert!(body["prompt"].as_str().unwrap().contains("ventas"));
+    assert_eq!(state.settings.get().personas.len(), before);
+    let (bad, err) = post_json(admin, "/api/ai/draft-agent", json!({ "brief": "ab" })).await;
+    assert_eq!(bad, 400);
+    assert!(err["error"].as_str().unwrap().contains("brief"));
+    let (status, skill) = post_json(admin, "/api/ai/draft-skill", json!({ "brief": "precios y planes" })).await;
+    assert_eq!(status, 200, "{skill}");
+    assert_eq!(skill["name"], "cotizaciones");
+    assert!(skill["body"].as_str().unwrap().contains("precios"));
+    let (_, listed) = get_json(admin, "/api/skills").await;
+    assert!(listed.as_array().unwrap().iter().all(|s| s["name"] != "cotizaciones"));
 }
 
 #[tokio::test]

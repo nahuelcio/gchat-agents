@@ -15,6 +15,8 @@ fn turn(text: &str, session: Option<String>, workdir: &std::path::Path) -> Agent
         driver: None,
         answer_questions: false,
         request_id: None,
+        mcps_override: None,
+        instructions_override: None,
     }
 }
 
@@ -82,12 +84,8 @@ async fn a_restart_resumes_pi_turns_without_empty_or_duplicate_replies() {
         tunnel: Some(switchboard::tunnel::TunnelMode::Off),
         service_account_json: None,
         allowed_spaces: vec![],
-        agent_driver: switchboard::config::AgentDriverKind::Opencode,
+        agent_driver: switchboard::config::AgentDriverKind::Pi,
         workdir: dir.path().join("ws"),
-        opencode_bin: "opencode-missing".into(),
-        opencode_model: None,
-        claude_bin: "claude-missing".into(),
-        claude_model: None,
         turn_timeout_ms: 30_000,
         data_dir: dir.path().join("data"),
         repos: Default::default(),

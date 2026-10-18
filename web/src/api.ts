@@ -9,9 +9,8 @@ export type ContextFooter = "every" | "every5" | "above60" | "never";
 export type TunnelMode = "auto" | "opentunnel" | "cloudflared" | "off";
 
 export interface Settings {
-  agentDriver: "opencode" | "claude" | "pi";
-  models: { opencode?: string; claude?: string; pi?: string };
-  agents: { opencode?: string };
+  agentDriver: "pi";
+  models: { pi?: string };
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
   contextFooter: ContextFooter;
@@ -21,19 +20,22 @@ export interface Settings {
   googleDriveFolderId?: string | null;
   mcpServers?: McpServer[];
   personas: Persona[];
+  templates?: PersonaTemplate[];
 }
 
 export interface Persona {
   name: string;
   prompt: string;
-  driver?: "opencode" | "claude" | "pi";
   model?: string;
-  agent?: string;
   listen?: "mentions" | "all";
   respondTo?: "anyone" | "people";
   skills?: string[];
   mcps?: string[];
   delegates?: string[];
+}
+
+export interface PersonaTemplate extends Persona {
+  id: string;
 }
 
 export interface McpServer {
@@ -50,6 +52,13 @@ export interface PiKey {
   source: "settings" | "env" | "none";
 }
 
+export interface DriveMcpStatus {
+  configured: boolean;
+  connected: boolean;
+  clientId?: string | null;
+  redirectUri: string;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -61,8 +70,10 @@ export const BUILTIN_MCPS = [
   { name: "coding", label: "Code — read, write, edit files and run commands" },
   { name: "agents", label: "Ask other agents — delegate a question to a specialist" },
   { name: "switchboard", label: "Switchboard — repos, schedules, work item, room" },
-  { name: "google-drive", label: "Google Drive — create .xlsx in the shared folder" },
+  { name: "google-drive", label: "Google Drive — .xlsx in the shared folder, plus Google's Drive MCP" },
 ];
+
+export const DEFAULT_PERSONA_MCPS = ["engram"];
 
 export interface SearchHit {
   threadKey: string;
@@ -93,7 +104,7 @@ export interface Thread {
   app: { running: boolean; port?: number };
   members?: string[];
   title?: string | null;
-  driver?: "opencode" | "claude" | null;
+  driver?: "pi" | null;
   model?: string | null;
 }
 
@@ -191,6 +202,8 @@ export const api = {
   saveSkill: (skill: SkillInfo) => call<SkillInfo[]>("/api/skills", skill, "PUT"),
   deleteSkill: (name: string) => call<SkillInfo[]>(`/api/skills?name=${encodeURIComponent(name)}`, undefined, "DELETE"),
   installSkill: (source: string) => call<{ installed: string[]; skills: SkillInfo[] }>("/api/skills/install", { source }),
+  draftAgent: (brief: string, current?: Persona) => call<Persona>("/api/ai/draft-agent", { brief, current }),
+  draftSkill: (brief: string, current?: SkillInfo) => call<SkillInfo>("/api/ai/draft-skill", { brief, current }),
   importMcp: (json: string) => call<{ imported: string[]; skipped: string[]; settings: Settings }>("/api/mcp/import", { json }),
   piKeys: () => call<PiKey[]>("/api/pi/keys"),
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
@@ -199,10 +212,7 @@ export const api = {
   logs: (slug: string) => call<{ logs: string }>(`/api/threads/logs?slug=${encodeURIComponent(slug)}`),
   stop: (slug: string) => call("/api/threads/down", { slug }),
   agents: () => call<Agent[]>("/api/agents"),
-  models: (agent: "opencode" | "claude" | "pi" = "opencode", refresh = false) =>
-    agent === "pi" ? Promise.resolve<string[]>([]) :
-    call<string[]>(`/api/agents/${agent}/models${refresh ? "?refresh=1" : ""}`),
-  opencodeAgents: (refresh = false) => call<string[]>(`/api/agents/opencode/agents${refresh ? "?refresh=1" : ""}`),
+  models: (refresh = false) => call<string[]>(`/api/agents/pi/models${refresh ? "?refresh=1" : ""}`),
   health: () => call<Health>("/api/health"),
   share: () => call<{ link: string }>("/api/share"),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
@@ -220,6 +230,10 @@ export const api = {
   googleKey: (key: string) => call<GoogleStatus>("/api/google/key", { key }),
   googleClear: () => call<GoogleStatus>("/api/google/key/delete", {}),
   googleTest: (space: string) => call<GoogleStatus>("/api/google/test", { space }),
+  driveMcp: () => call<DriveMcpStatus>("/api/google/drive-mcp"),
+  driveMcpSave: (clientId: string, clientSecret: string) => call<DriveMcpStatus>("/api/google/drive-mcp", { clientId, clientSecret }),
+  driveMcpStart: () => call<{ url: string }>("/api/google/drive-mcp/start", {}),
+  driveMcpClear: () => call<DriveMcpStatus>("/api/google/drive-mcp/delete", {}),
   adoStatus: () => call<AdoStatus>("/api/ado/status"),
   adoProjects: () => call<{ name: string }[]>("/api/ado/projects"),
   adoRepos: (project: string) => call<AdoRepo[]>(`/api/ado/repos?project=${encodeURIComponent(project)}`),
@@ -312,7 +326,7 @@ export interface AgentRun {
 
 export interface TeamThreadState {
   messages: TeamMessage[];
-  agent: "opencode" | "claude" | null;
+  agent: "pi" | null;
   model?: string | null;
   repo?: string | null;
   branch?: string | null;

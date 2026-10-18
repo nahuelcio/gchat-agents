@@ -37,9 +37,8 @@ beforeEach(async () => {
     fetch: fakeFetch,
   };
   store = new SettingsStore(join(dir, "config.json"), {
-    agentDriver: "opencode",
+    agentDriver: "pi",
     models: {},
-    agents: {},
     repos: {},
     allowedSpaces: ["spaces/AAA"],
   });
@@ -61,10 +60,11 @@ describe("admin server", () => {
     const res = await fetch(`${base}/api/settings`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentDriver: "claude", models: { claude: "claude-opus-5-5" } }),
+      body: JSON.stringify({ models: { pi: "anthropic/claude-sonnet-5-5" } }),
     });
     expect(res.status).toBe(200);
-    expect(store.get().agentDriver).toBe("claude");
+    expect(store.get().agentDriver).toBe("pi");
+    expect(store.get().models.pi).toBe("anthropic/claude-sonnet-5-5");
   });
 
   it("returns 400 with the validation message on bad input", async () => {
@@ -165,11 +165,11 @@ describe("admin server", () => {
     let calls = 0;
     ctx.detectAgents = async () => {
       calls++;
-      return [{ id: "opencode", name: "OpenCode", installed: true, version: "2.0.31", supported: true, ready: true }];
+      return [{ id: "pi", name: "Pi (durable)", installed: true, version: "pi-durable 1.3.0", supported: true, ready: true }];
     };
     const first = (await (await fetch(`${base}/api/agents`)).json()) as { id: string }[];
     await fetch(`${base}/api/agents`);
-    expect(first[0]?.id).toBe("opencode");
+    expect(first[0]?.id).toBe("pi");
     expect(calls).toBe(1);
     await fetch(`${base}/api/agents?refresh=1`);
     expect(calls).toBe(2);

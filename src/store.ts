@@ -14,7 +14,7 @@ export interface SessionRecord {
   /** Per-thread model override set with /model. */
   model?: string;
   /** Per-thread agent set with /agent. */
-  driver?: "opencode" | "claude";
+  driver?: "pi";
   /** Azure DevOps work item id — from /wi or the switchboard MCP link_work_item tool. */
   workItemId?: number;
   /** Summary from /compact, prepended to the next turn of the fresh session. */

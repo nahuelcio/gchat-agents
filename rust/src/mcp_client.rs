@@ -22,6 +22,15 @@ pub const BUILTIN_GROUPS: &[&str] = &["coding", "switchboard", "google-drive", "
 
 pub const ENGRAM_NAME: &str = "engram";
 
+pub const DEFAULT_PERSONA_MCPS: &[&str] = &[ENGRAM_NAME];
+
+pub fn with_default_persona_mcps(mcps: Option<Vec<String>>) -> Vec<String> {
+    match mcps {
+        Some(m) if !m.is_empty() => m,
+        _ => DEFAULT_PERSONA_MCPS.iter().map(|s| (*s).to_string()).collect(),
+    }
+}
+
 pub fn default_engram() -> McpServer {
     McpServer {
         name: ENGRAM_NAME.into(),
@@ -129,9 +138,6 @@ pub struct McpImport {
     pub skipped: Vec<String>,
 }
 
-/// Claude, Cursor and Claude Code all paste a different shape of the same idea.
-/// Stdio servers come back ready to save. Remote (`url`) servers are skipped:
-/// this bridge only spawns a local command.
 pub fn parse_mcp_config(raw: &str) -> Result<McpImport, String> {
     let value: Value = serde_json::from_str(raw.trim()).map_err(|e| format!("that is not JSON ({e})"))?;
     let mut servers = Vec::new();
@@ -271,6 +277,16 @@ rl.on('line', (l) => {
         assert_eq!(s.name, "engram");
         assert_eq!(s.command, "engram");
         assert_eq!(s.args, vec!["mcp", "--tools=agent"]);
+    }
+
+    #[test]
+    fn draft_mcps_default_to_engram_when_empty() {
+        assert_eq!(with_default_persona_mcps(None), vec!["engram".to_string()]);
+        assert_eq!(with_default_persona_mcps(Some(vec![])), vec!["engram".to_string()]);
+        assert_eq!(
+            with_default_persona_mcps(Some(vec!["google-drive".into()])),
+            vec!["google-drive".to_string()]
+        );
     }
 
     #[tokio::test]
