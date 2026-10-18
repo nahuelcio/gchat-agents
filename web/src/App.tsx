@@ -16,9 +16,24 @@ const VIEWS = [
 ] as const;
 type ViewId = (typeof VIEWS)[number]["id"];
 
-// "#team/<thread>" deeplinks into a team thread.
-const current = (): ViewId => (VIEWS.find((v) => location.hash.split("/")[0] === `#${v.id}`)?.id ?? "overview") as ViewId;
-const hashThread = (): string | undefined => location.hash.split("/")[1] || undefined;
+/** "#create?starter=finanzas" or "#team/<id>" or "#settings/runtime". */
+function parseOwnerHash(): { view: ViewId; path?: string; query: URLSearchParams } {
+  const raw = location.hash.slice(1);
+  const qIdx = raw.indexOf("?");
+  const pathPart = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+  const query = new URLSearchParams(qIdx >= 0 ? raw.slice(qIdx + 1) : "");
+  const [viewPart = "overview", ...rest] = pathPart.split("/");
+  const view = (VIEWS.find((v) => v.id === viewPart)?.id ?? "overview") as ViewId;
+  const path = rest.join("/") || undefined;
+  return { view, path, query };
+}
+
+const current = (): ViewId => parseOwnerHash().view;
+const hashThread = (): string | undefined => {
+  const h = parseOwnerHash();
+  return h.view === "team" ? h.path : undefined;
+};
+export const hashQuery = (): URLSearchParams => parseOwnerHash().query;
 
 /** Public link: "/play#<token>" or "/play#<token>&thread=<id>". */
 function parseGuestHash(): { token: string; thread?: string } {
@@ -65,17 +80,36 @@ export function App() {
   return location.pathname.startsWith("/play") ? <GuestApp /> : <OwnerApp />;
 }
 
+function rememberNavOpen(): boolean {
+  try {
+    const raw = localStorage.getItem("switchboard.navOpen");
+    return raw == null ? true : JSON.parse(raw) === true;
+  } catch {
+    return true;
+  }
+}
+
 function OwnerApp() {
   const [view, setView] = useState<ViewId>(current);
   const [hash, setHash] = useState(location.hash);
   const [shareLink, setShareLink] = useState<string>();
   const [settings, setSettings] = useState<Settings>();
   const [toast, setToast] = useState<{ text: string; error?: boolean }>();
+  const [navOpen, setNavOpen] = useState(rememberNavOpen);
 
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error });
     setTimeout(() => setToast((t) => (t?.text === text ? undefined : t)), error ? 6000 : 2500);
   }, []);
+
+  function toggleNav(open: boolean) {
+    setNavOpen(open);
+    try {
+      localStorage.setItem("switchboard.navOpen", JSON.stringify(open));
+    } catch {
+      // private window
+    }
+  }
 
   useEffect(() => {
     const onHash = () => {
@@ -104,42 +138,66 @@ function OwnerApp() {
   const props = settings && { settings, save, setSettings, notify };
 
   return (
-    <div className="shell">
-      <nav className="sidebar" aria-label="Control plane">
+    <div className={`shell${navOpen ? "" : " nav-collapsed"}`}>
+      <nav className={`sidebar${navOpen ? "" : " collapsed"}`} aria-label="Control plane">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" width="36" height="36">
-              
+          <button
+            type="button"
+            className="brand-mark"
+            aria-label={navOpen ? "Switchboard" : "Expand navigation"}
+            title={navOpen ? "Switchboard" : "Expand navigation"}
+            onClick={() => {
+              if (!navOpen) toggleNav(true);
+              else location.hash = "#overview";
+            }}
+          >
+            <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true">
               <path d="M9 9 L16 16 L23 9 M16 16 L16 24" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" fill="none" />
               <circle cx="9" cy="9" r="3.2" fill="#00f0ff" />
               <circle cx="23" cy="9" r="3.2" fill="#7107e7" />
               <circle cx="16" cy="24" r="3.2" fill="#f59e0b" />
               <circle cx="16" cy="16" r="3.6" fill="#16a34a" />
             </svg>
-          </span>
+          </button>
           <span className="brand-text">
             <strong>Switchboard</strong>
             <small>this machine</small>
           </span>
+          <button
+            type="button"
+            className="btn icon ghost sidebar-toggle"
+            aria-label={navOpen ? "Collapse navigation" : "Expand navigation"}
+            title={navOpen ? "Collapse navigation" : "Expand navigation"}
+            aria-pressed={!navOpen}
+            onClick={() => toggleNav(!navOpen)}
+          >
+            <Icon size={16}>{navOpen ? <path d="M15 18l-6-6 6-6" /> : <path d="M9 18l6-6-6-6" />}</Icon>
+          </button>
         </div>
-        <SearchBox />
+        {navOpen && <SearchBox />}
         <div className="nav">
           {VIEWS.map((v) => (
-            <a key={v.id} href={`#${v.id}`} className={view === v.id ? "active" : ""} aria-current={view === v.id ? "page" : undefined}>
+            <a
+              key={v.id}
+              href={`#${v.id}`}
+              className={view === v.id ? "active" : ""}
+              aria-current={view === v.id ? "page" : undefined}
+              title={v.label}
+            >
               <Icon>{v.icon}</Icon>
-              {v.label}
+              <span className="nav-label">{v.label}</span>
             </a>
           ))}
         </div>
         {settings && (
-          <a className="agent-card" href="#settings/runtime" title="Change the Pi model">
+          <a className="agent-card" href="#settings/runtime" title={model ? `Pi · ${model}` : "Change the Pi model"}>
             <small>Pi</small>
             <span>Pi (durable)</span>
             <code>{model ?? "default model"}</code>
           </a>
         )}
       </nav>
-      <main className={`content${view === "team" ? "" : " content-narrow"}`}>
+      <main className={`content${view === "team" ? " content-fill" : " content-narrow"}`}>
         {!props && <div className="skeleton" aria-busy="true" />}
         {props && view === "overview" && <Overview {...props} />}
         {props && view === "team" && (

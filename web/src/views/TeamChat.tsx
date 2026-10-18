@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AgentBlob } from "../AgentBlob";
 import { agentTint, BOT_NAME } from "../agent-color";
 import {
@@ -15,13 +15,8 @@ import {
   type TeamTransport,
 } from "../api";
 import { Icon } from "../App";
-import { MermaidDiagram } from "../MermaidDiagram";
+import { MessageMarkdown } from "../MessageMarkdown";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
-
-const IMAGE_PART =
-  /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>"]+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>"]*)?))/gi;
-
-const MERMAID_FENCE = /```mermaid[ \t]*\r?\n([\s\S]*?)```/gi;
 
 /** @handle being typed at the caret, if any. */
 function activeMention(text: string, caret: number): { start: number; query: string } | null {
@@ -121,41 +116,7 @@ function isImageType(contentType: string): boolean {
   return contentType.startsWith("image/");
 }
 
-function textWithImages(text: string, keyPrefix: string): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let last = 0;
-  const re = new RegExp(IMAGE_PART.source, "gi");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const url = m[3] || m[4] || m[1];
-    const alt = m[2] || "image";
-    parts.push(<img key={`${keyPrefix}-img-${m.index}`} className="message-image" src={url} alt={alt} loading="lazy" />);
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
-}
-
 function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
-  const parts: ReactNode[] = [];
-  let last = 0;
-  const re = new RegExp(MERMAID_FENCE.source, "gi");
-  let m: RegExpExecArray | null;
-  let chunk = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) {
-      const chunkParts = textWithImages(text.slice(last, m.index), `t${chunk}`);
-      if (chunkParts.length) parts.push(<div key={`t-${chunk}`} className="message-text">{chunkParts}</div>);
-      chunk++;
-    }
-    parts.push(<MermaidDiagram key={`m-${m.index}`} source={m[1]!.replace(/\s+$/, "")} />);
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) {
-    const chunkParts = textWithImages(text.slice(last), `t${chunk}`);
-    if (chunkParts.length) parts.push(<div key={`t-${chunk}`} className="message-text">{chunkParts}</div>);
-  }
   const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
   const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
   const hidePlaceholder = Boolean(images.length) && text.trim() === "(image)";
@@ -170,7 +131,7 @@ function MessageContent({ text, attachments, mediaUrl }: { text: string; attachm
           ))}
         </div>
       )}
-      {!hidePlaceholder && parts}
+      {!hidePlaceholder && <MessageMarkdown text={text} mediaUrl={mediaUrl} />}
       {files.map((a) => (
         <a key={a.id} className="message-file" href={mediaUrl(a.id)} target="_blank" rel="noreferrer">
           {a.name ?? a.contentType}
@@ -210,6 +171,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+  const [threadsOpen, setThreadsOpen] = useState(() => remember("switchboard.threadsOpen", true));
+  const [contextOpen, setContextOpen] = useState(() => remember("switchboard.contextOpen", true));
   const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
   const [nameDraft, setNameDraft] = useState("");
   const [threads, setThreads] = useState<TeamThreadSummary[]>(() => (transport.guest ? remember("switchboard.guest-threads", []) : []));
@@ -462,42 +425,48 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     if (chosen.length) void send(`/repo ${chosen.join(" ")}`, id);
   }
 
-  async function archive() {
-    if (!activeId || !transport.archive) return;
-    await transport.archive(activeId, !showArchived).then(
+  async function archiveThread(id: string) {
+    if (!transport.archive) return;
+    await transport.archive(id, !showArchived).then(
       () => notify(showArchived ? "Thread restored" : "Thread archived — find it under Archived"),
       (e: Error) => notify(e.message, true),
     );
-    setActiveId(undefined);
-    setState(undefined);
+    if (activeId === id) {
+      setActiveId(undefined);
+      setState(undefined);
+    }
     loadThreads();
   }
 
-  async function remove() {
-    if (!activeId) return;
+  async function removeThread(id: string) {
     if (!transport.remove) {
       // Guests only forget it locally; the thread stays for everyone else.
-      setThreads((list) => list.filter((t) => t.id !== activeId));
-      setActiveId(undefined);
-      setState(undefined);
+      setThreads((list) => list.filter((t) => t.id !== id));
+      if (activeId === id) {
+        setActiveId(undefined);
+        setState(undefined);
+      }
       return;
     }
-    const hasRepo = Boolean(state?.repo);
+    const isActive = activeId === id;
+    const hasRepo = isActive && Boolean(state?.repo);
     const ok = confirm(
       `Delete this thread for everyone? Its history and agent session are removed${hasRepo ? `, and its worktree too (branch ${state?.branch} stays in the repo)` : ""}. This cannot be undone.`,
     );
     if (!ok) return;
-    await transport.remove(activeId).then(
+    await transport.remove(id).then(
       (r) => notify(r.branchKept ? `Thread deleted; branch ${r.branchKept} kept` : "Thread deleted"),
       (e: Error) => notify(e.message, true),
     );
-    setActiveId(undefined);
-    setState(undefined);
+    if (isActive) {
+      setActiveId(undefined);
+      setState(undefined);
+    }
     loadThreads();
   }
 
-  function copyLink() {
-    const link = activeId && linkFor?.(activeId);
+  function copyThreadLink(id: string) {
+    const link = linkFor?.(id);
     if (!link) return notify("Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.", true);
     navigator.clipboard.writeText(link).then(() => notify("Link to this thread copied"), () => notify("Copy failed", true));
   }
@@ -530,16 +499,46 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const active = threads.find((t) => t.id === activeId);
   const working = sending || state?.busy;
 
+  function toggleThreads(open: boolean) {
+    setThreadsOpen(open);
+    store("switchboard.threadsOpen", open);
+  }
+  function toggleContext(open: boolean) {
+    setContextOpen(open);
+    store("switchboard.contextOpen", open);
+  }
+
   return (
     <div className={`playground ${transport.guest ? "standalone" : ""}`}>
-      <aside className="play-threads" aria-label="Threads">
-        <div className="play-threads-head">
-          <h1>Team chat</h1>
-          <button className="btn icon" onClick={() => (repos?.length ? setPicking(!picking) : newThread())} aria-label="New thread" aria-expanded={picking}>
-            <Icon>
-              <path d="M12 5v14M5 12h14" />
+      <aside className={`play-threads${threadsOpen ? "" : " collapsed"}`} aria-label="Threads">
+        {!threadsOpen ? (
+          <button type="button" className="play-rail-toggle" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
+            <Icon size={16}>
+              <path d="M4 6h16M4 12h10M4 18h14" />
             </Icon>
           </button>
+        ) : (
+          <>
+        <div className="play-threads-head">
+          <h1>Team chat</h1>
+          <span className="play-threads-tools">
+            <button
+              type="button"
+              className="btn icon ghost"
+              aria-label="Hide threads"
+              title="Hide threads"
+              onClick={() => toggleThreads(false)}
+            >
+              <Icon size={16}>
+                <path d="M15 18l-6-6 6-6" />
+              </Icon>
+            </button>
+            <button className="btn icon" onClick={() => (repos?.length ? setPicking(!picking) : newThread())} aria-label="New thread" aria-expanded={picking}>
+              <Icon>
+                <path d="M12 5v14M5 12h14" />
+              </Icon>
+            </button>
+          </span>
         </div>
         <p className="muted small">
           {transport.guest ? `Chatting as ${name}. ` : "Every team thread. "}
@@ -584,18 +583,82 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         <div className="play-list">
           {threads.length === 0 && <p className="muted small pad">{showArchived ? "No archived threads." : "No threads yet. Start one with +."}</p>}
           {threads.map((t) => (
-            <button key={t.id} className={t.id === activeId ? "active" : ""} onClick={() => setActiveId(t.id)}>
-              <span className="strong">{t.title}</span>
-              <span className="muted small">
-                {t.count} messages{t.updatedAt ? ` · ${ago(t.updatedAt)}` : ""}
-              </span>
-            </button>
+            <div key={t.id} className={`play-thread${t.id === activeId ? " active" : ""}`}>
+              <button type="button" className="play-thread-main" onClick={() => setActiveId(t.id)}>
+                <span className="strong">{t.title}</span>
+                <span className="muted small">
+                  {t.count} messages{t.updatedAt ? ` · ${ago(t.updatedAt)}` : ""}
+                </span>
+              </button>
+              <div className="play-thread-actions">
+                {linkFor && (
+                  <button
+                    type="button"
+                    className="btn icon ghost"
+                    title="Copy link"
+                    aria-label={`Copy link to ${t.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyThreadLink(t.id);
+                    }}
+                  >
+                    <Icon size={14}>
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </Icon>
+                  </button>
+                )}
+                {transport.archive && (
+                  <button
+                    type="button"
+                    className="btn icon ghost"
+                    title={showArchived ? "Restore" : "Archive"}
+                    aria-label={showArchived ? `Restore ${t.title}` : `Archive ${t.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void archiveThread(t.id);
+                    }}
+                  >
+                    <Icon size={14}>
+                      {showArchived ? (
+                        <path d="M3 7h18M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7M9 11l3 3 3-3" />
+                      ) : (
+                        <path d="M3 7h18M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7M10 12h4" />
+                      )}
+                    </Icon>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn icon ghost danger"
+                  title={transport.remove ? "Delete" : "Hide"}
+                  aria-label={transport.remove ? `Delete ${t.title}` : `Hide ${t.title}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void removeThread(t.id);
+                  }}
+                >
+                  <Icon size={14}>
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </Icon>
+                </button>
+              </div>
+            </div>
           ))}
         </div>
+          </>
+        )}
       </aside>
 
       <section className="play-chat" aria-label="Conversation">
         <header className="play-head">
+          {!threadsOpen && (
+            <button type="button" className="btn icon ghost" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
+              <Icon size={16}>
+                <path d="M4 6h16M4 12h10M4 18h14" />
+              </Icon>
+            </button>
+          )}
           <span className="strong title">{state?.title ?? active?.title ?? "Team chat"}</span>
           {state?.repo ? <code className="tag">{state.repo} · {state.branch}</code> : state?.title?.startsWith("switchboard/") && <code className="tag muted">branch kept</code>}
           {(state?.agent || state?.model) && <code className="tag">{[state.agent, state.model].filter(Boolean).join(" · ")}</code>}
@@ -618,18 +681,32 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           )}
           <span className="head-actions push">
             {activeId && linkFor && (
-              <button className="btn small" onClick={copyLink}>
+              <button className="btn small" onClick={() => copyThreadLink(activeId)}>
                 Copy link
               </button>
             )}
             {activeId && transport.archive && (
-              <button className="btn small" onClick={() => void archive()} disabled={working}>
+              <button className="btn small" onClick={() => void archiveThread(activeId)} disabled={working}>
                 {showArchived ? "Restore" : "Archive"}
               </button>
             )}
             {activeId && (
-              <button className="btn small danger" onClick={() => void remove()} disabled={working}>
+              <button className="btn small danger" onClick={() => void removeThread(activeId)} disabled={working}>
                 {transport.remove ? "Delete" : "Hide"}
+              </button>
+            )}
+            {activeId && (
+              <button
+                type="button"
+                className="btn icon ghost"
+                aria-label={contextOpen ? "Hide context" : "Show context"}
+                title={contextOpen ? "Hide context" : "Show context"}
+                aria-pressed={contextOpen}
+                onClick={() => toggleContext(!contextOpen)}
+              >
+                <Icon size={16}>
+                  {contextOpen ? <path d="M9 18l6-6-6-6" /> : <path d="M15 18l-6-6 6-6" />}
+                </Icon>
               </button>
             )}
           </span>
@@ -849,7 +926,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         )}
         </div>
 
-        {activeId && (
+        {activeId && contextOpen && (
           <ThreadContextPanel
             state={state}
             guest={transport.guest}
@@ -865,6 +942,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 : undefined
             }
           />
+        )}
+        {activeId && !contextOpen && (
+          <aside className="play-context collapsed" aria-label="Thread context">
+            <button type="button" className="play-rail-toggle" aria-label="Show context" title="Show context" onClick={() => toggleContext(true)}>
+              <Icon size={16}>
+                <path d="M4 6h16M4 12h16M4 18h10" />
+              </Icon>
+            </button>
+          </aside>
         )}
         </div>
       </section>

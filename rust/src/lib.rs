@@ -2,6 +2,7 @@ pub mod activity;
 pub mod admin;
 pub mod agents;
 pub mod ai_draft;
+pub mod artifacts;
 pub mod atomic;
 pub mod cli;
 pub mod bridge;

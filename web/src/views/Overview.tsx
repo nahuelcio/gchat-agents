@@ -9,7 +9,7 @@ const ACTIVITY_FILTERS = {
   Rooms: (e: ActivityEvent) => e.kind.startsWith("member_") || e.kind.startsWith("turn_") || e.kind === "repo_attach",
 };
 
-export function Overview({ notify }: ViewProps) {
+export function Overview({ settings, notify }: ViewProps) {
   const [threads, setThreads] = useState<Thread[]>();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>();
@@ -44,6 +44,16 @@ export function Overview({ notify }: ViewProps) {
   const running = chats.filter((t) => t.app.running).length;
   const next = jobs.filter((j) => j.enabled && j.nextRunAt).sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))[0];
 
+  const hasPersonas = (settings.personas?.length ?? 0) > 0;
+  const hasJobs = jobs.length > 0;
+  const showSetup = !chatConnected || !hasPersonas || !hasJobs;
+
+  const primaryCta = !hasPersonas
+    ? { href: "#create", label: "Create agent" }
+    : !hasJobs
+      ? { href: "#schedules?new=1", label: "New schedule" }
+      : { href: "#team", label: "Open team chat" };
+
   return (
     <>
       <header className="page-head">
@@ -51,8 +61,8 @@ export function Overview({ notify }: ViewProps) {
           <h1>Overview</h1>
           <p className="sub">Threads this machine is working on, live.</p>
         </div>
-        <a className="btn primary" href="#team">
-          Open team chat
+        <a className="btn primary" href={primaryCta.href}>
+          {primaryCta.label}
         </a>
       </header>
 
@@ -63,6 +73,98 @@ export function Overview({ notify }: ViewProps) {
           </span>
           <span className="btn primary">Set up</span>
         </a>
+      )}
+
+      {showSetup && (
+        <section className="card setup-checklist" aria-label="Get started">
+          <div className="card-title">
+            <h2>Get started</h2>
+            <p className="muted small">A few steps so this machine can run agents on its own.</p>
+          </div>
+          <ol className="steps">
+            <li className={`step${chatConnected ? " done" : ""}`}>
+              <span className="step-n" aria-hidden="true">
+                {chatConnected ? "✓" : "1"}
+              </span>
+              <div className="step-body">
+                <div className="step-title">
+                  <strong>Connect Google Chat</strong>
+                  {chatConnected && <span className="pill ok">Done</span>}
+                </div>
+                <p>Optional for team chat — required to answer in Google Chat spaces.</p>
+                {!chatConnected && (
+                  <a className="btn small" href="#settings">
+                    Open settings
+                  </a>
+                )}
+              </div>
+            </li>
+            <li className={`step${hasPersonas ? " done" : ""}`}>
+              <span className="step-n" aria-hidden="true">
+                {hasPersonas ? "✓" : "2"}
+              </span>
+              <div className="step-body">
+                <div className="step-title">
+                  <strong>Create an agent</strong>
+                  {hasPersonas && <span className="pill ok">Done</span>}
+                </div>
+                <p>Pick a starter (Finance / Support) or draft one with AI.</p>
+                {!hasPersonas && (
+                  <div className="row setup-actions">
+                    <a className="btn small primary" href="#create?starter=finanzas">
+                      Finance
+                    </a>
+                    <a className="btn small primary" href="#create?starter=soporte">
+                      Support
+                    </a>
+                    <a className="btn small" href="#create">
+                      Open Create
+                    </a>
+                  </div>
+                )}
+              </div>
+            </li>
+            <li className={`step${hasJobs ? " done" : ""}`}>
+              <span className="step-n" aria-hidden="true">
+                {hasJobs ? "✓" : "3"}
+              </span>
+              <div className="step-body">
+                <div className="step-title">
+                  <strong>Schedule a job</strong>
+                  {hasJobs && <span className="pill ok">Done</span>}
+                </div>
+                <p>Weekly close, incident summary, or standup — runs without anyone typing.</p>
+                {!hasJobs && (
+                  <div className="row setup-actions">
+                    <a className="btn small primary" href="#schedules?recipe=weekly-close">
+                      Weekly close
+                    </a>
+                    <a className="btn small primary" href="#schedules?recipe=incidents">
+                      Incidents
+                    </a>
+                    <a className="btn small" href="#schedules?new=1">
+                      New job
+                    </a>
+                  </div>
+                )}
+              </div>
+            </li>
+            <li className="step">
+              <span className="step-n" aria-hidden="true">
+                4
+              </span>
+              <div className="step-body">
+                <div className="step-title">
+                  <strong>Try team chat</strong>
+                </div>
+                <p>Invite an agent into a room and talk to it on this machine.</p>
+                <a className="btn small" href="#team">
+                  Open team chat
+                </a>
+              </div>
+            </li>
+          </ol>
+        </section>
       )}
 
       {endpoint && chatConnected && (

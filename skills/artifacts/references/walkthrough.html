@@ -1,0 +1,63 @@
+<section class="art">
+  <header>
+    <p class="eyebrow">{{EYEBROW}}</p>
+    <h1>{{TITLE}}</h1>
+    <p class="lead">{{LEAD}}</p>
+  </header>
+  <ol class="steps">
+    <li class="panel">
+      <h2>{{STEP1_TITLE}}</h2>
+      <p>{{STEP1_BODY}}</p>
+    </li>
+    <li class="panel">
+      <h2>{{STEP2_TITLE}}</h2>
+      <p>{{STEP2_BODY}}</p>
+    </li>
+    <li class="panel">
+      <h2>{{STEP3_TITLE}}</h2>
+      <p>{{STEP3_BODY}}</p>
+    </li>
+  </ol>
+  <p class="foot mono">{{FOOTNOTE}}</p>
+</section>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Bangers&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+:root {
+  --primary: #1c202b; --secondary: #7107e7; --surface: #f6f7f9; --panel: #fff;
+  --fg: #2b2f38; --muted: #6b7280; --accent-ink: #5a06b8; --accent-soft: #f1eafd; --cyan: #22d3ee;
+  --radius-md: 8px;
+  --font-display: "Bangers", system-ui, sans-serif;
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; padding: 20px; min-height: 100%;
+  font: 14px/1.55 var(--font-ui); color: var(--fg);
+  background:
+    radial-gradient(ellipse 80% 50% at 0% 0%, color-mix(in srgb, var(--secondary) 18%, transparent), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, color-mix(in srgb, var(--cyan) 14%, transparent), transparent 50%),
+    var(--surface);
+}
+.art { max-width: 42rem; margin: 0 auto; }
+.eyebrow { margin: 0 0 6px; font: 600 11px/1.2 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); }
+.art h1 {
+  margin: 0 0 8px; font-family: var(--font-display); font-weight: 400; font-size: 2rem;
+  line-height: 1.05; letter-spacing: .04em; text-transform: uppercase; color: var(--primary);
+}
+.lead { margin: 0 0 18px; color: var(--muted); font-size: 1rem; }
+.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 12px; }
+.steps li {
+  counter-increment: s; position: relative; padding: 14px 16px 14px 56px;
+  background: var(--panel); border: 2px solid var(--primary); border-radius: var(--radius-md);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--secondary) 55%, transparent);
+}
+.steps li::before {
+  content: counter(s); position: absolute; left: 12px; top: 14px; width: 28px; height: 28px;
+  border-radius: 4px; border: 2px solid var(--primary); background: var(--accent-soft);
+  color: var(--accent-ink); font: 700 13px/1 var(--font-mono); display: grid; place-items: center;
+}
+.art h2 { margin: 0 0 4px; font: 600 1rem/1.3 var(--font-ui); color: var(--primary); text-transform: none; letter-spacing: 0; }
+.steps p { margin: 0; color: var(--fg); }
+.foot { margin: 16px 0 0; font: 12px/1.4 var(--font-mono); color: var(--muted); }
+</style>

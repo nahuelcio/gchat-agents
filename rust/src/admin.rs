@@ -56,6 +56,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/delete", post(post_team_delete))
         .route("/api/team/members", post(post_team_members))
         .route("/api/media/{id}", get(get_media))
+        .route("/api/artifacts", post(post_artifact))
         .route("/api/thread/repos", get(get_thread_repos))
         .route("/api/thread/status", get(get_thread_status))
         .route("/api/thread/invite", post(post_thread_invite).put(post_thread_invite))
@@ -767,6 +768,52 @@ pub async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String
         }
     }
     (StatusCode::OK, headers, bytes).into_response()
+}
+
+#[derive(Deserialize)]
+struct ArtifactBody {
+    title: Option<String>,
+    /// Named Switchboard skin: walkthrough | compare | quiz | cards
+    template: Option<String>,
+    /// Placeholder map for the template (`TITLE`, `LEAD`, `Q1`, …).
+    fields: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Escape hatch only — ignored when `template` is set. Prefer templates.
+    html: Option<String>,
+}
+
+async fn post_artifact(State(state): State<Arc<AppState>>, Json(body): Json<ArtifactBody>) -> Response {
+    let title = body.title.unwrap_or_default();
+    let wrapped = if let Some(template) = body.template.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let fields = body.fields.unwrap_or_default();
+        match crate::artifacts::build_from_template(&title, template, &fields) {
+            Ok(w) => w,
+            Err(err) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+        }
+    } else {
+        let html = body.html.unwrap_or_default();
+        match crate::artifacts::validate_artifact(&title, &html) {
+            Ok(w) => w,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!("{err} — prefer template+fields (walkthrough|compare|quiz|cards)")
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let name = format!("{}.html", title.trim().chars().take(40).collect::<String>());
+    match state.media.save(wrapped.as_bytes(), "text/html", Some(&name)).await {
+        Ok(saved) => Json(json!({
+            "id": saved.id,
+            "title": title.trim(),
+            "marker": crate::artifacts::marker(&saved.id, title.trim()),
+        }))
+        .into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

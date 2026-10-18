@@ -13,12 +13,43 @@ import {
   DEFAULT_HOST_MCPS,
   DEFAULT_PERSONA_MCPS,
 } from "../api";
-import type { ViewProps } from "../App";
+import { hashQuery, type ViewProps } from "../App";
 
 type Kind = "agent" | "skill";
 
 const EMPTY_PERSONA: Persona = { name: "", prompt: "", mcps: [...DEFAULT_PERSONA_MCPS] };
 const EMPTY_SKILL: SkillInfo = { name: "", description: "", mcps: [], body: "", files: [] };
+
+const STARTERS: {
+  id: string;
+  name: string;
+  label: string;
+  blurb: string;
+  skill: string;
+  mcps: string[];
+  prompt: string;
+}[] = [
+  {
+    id: "finanzas",
+    name: "finanzas",
+    label: "Finance",
+    blurb: "Closings and .xlsx sheets in Google Drive",
+    skill: "finanzas",
+    mcps: ["engram", "google-drive"],
+    prompt:
+      "You are the Finance agent. Build closing sheets and reports with the finanzas skill. Do not invent numbers; ask if a value is missing. Reply with the Drive link and a short sheet summary.",
+  },
+  {
+    id: "soporte",
+    name: "soporte",
+    label: "Support",
+    blurb: "Incident triage, SLA, and integrations",
+    skill: "soporte",
+    mcps: ["engram", "switchboard"],
+    prompt:
+      "You are the Support agent. Prioritize impact and workarounds; use switchboard for repos and work items. Ask one concrete question if a detail is missing. Keep replies short with a clear next step.",
+  },
+];
 
 const SCRIPT_STUBS: Record<string, { path: string; content: string }> = {
   js: {
@@ -164,6 +195,8 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   const [aiOpen, setAiOpen] = useState(false);
   const [skillSource, setSkillSource] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [starterBusy, setStarterBusy] = useState<string | null>(null);
+  const starterHandled = useRef<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -258,6 +291,50 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     reset(kind);
     setAiOpen(true);
   };
+
+  const applyStarter = (id: string) => {
+    const starter = STARTERS.find((s) => s.id === id);
+    if (!starter || starterBusy) return;
+    const exists = personas.some((p) => p.name.toLowerCase() === starter.name.toLowerCase());
+    if (exists) {
+      const p = personas.find((x) => x.name.toLowerCase() === starter.name.toLowerCase())!;
+      startEditAgent(p, false);
+      notify(`@${starter.name} already exists — opened for edit`);
+      return;
+    }
+    setStarterBusy(starter.id);
+    api
+      .skills()
+      .then((list) => {
+        setSkills(list);
+        if (!list.some((s) => s.name === starter.skill)) {
+          notify(`Skill “${starter.skill}” is not available on this machine`, true);
+          return;
+        }
+        const draft = cleanPersona({
+          ...EMPTY_PERSONA,
+          name: starter.name,
+          prompt: starter.prompt,
+          skills: [starter.skill],
+          mcps: starter.mcps,
+          avatar: avatarFromName(starter.name),
+        });
+        return save({ personas: [...personas, draft] }, `@${draft.name} ready — invite them in team chat`).then(() => {
+          reset("agent");
+        });
+      }, (e: Error) => notify(e.message, true))
+      .finally(() => setStarterBusy(null));
+  };
+
+  useEffect(() => {
+    const starter = hashQuery().get("starter");
+    if (!starter || starterHandled.current === starter) return;
+    starterHandled.current = starter;
+    applyStarter(starter);
+    // Clear query so refresh does not re-apply.
+    history.replaceState(null, "", "#create");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per deep-link
+  }, []);
 
   const send = () => {
     const text = input.trim();
@@ -522,6 +599,41 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
         )}
         {kind === "agent" ? (
           <>
+            {!focusForm && (
+              <div className="create-ai-starters" aria-label="Starters">
+                <h3 className="muted small">Starters</h3>
+                <p className="muted small create-ai-starters-hint">
+                  {personas.length === 0
+                    ? "No agents yet — pick a starter or New with AI."
+                    : "One-click agents with a skill pack already wired."}
+                </p>
+                <div className="create-ai-starter-row">
+                  {STARTERS.map((s) => {
+                    const have = personas.some((p) => p.name.toLowerCase() === s.name.toLowerCase());
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className="create-ai-starter"
+                        disabled={starterBusy === s.id}
+                        onClick={() => applyStarter(s.id)}
+                      >
+                        <span className="create-ai-item-face" aria-hidden="true">
+                          <AgentBlob name={s.name} size={32} />
+                        </span>
+                        <span className="create-ai-starter-text">
+                          <span className="strong">@{s.name}</span>
+                          <span className="muted small">{s.blurb}</span>
+                        </span>
+                        <span className="btn small primary">
+                          {starterBusy === s.id ? "…" : have ? "Open" : `Add ${s.label}`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className={`create-ai-item${editingHost ? " on" : ""}`}>
               <span className="create-ai-item-face" aria-hidden="true">
                 <AgentBlob name={BOT_NAME} size={36} animate />

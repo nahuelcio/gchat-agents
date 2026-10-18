@@ -104,6 +104,24 @@ const TOOLS = [
       required: ["id"],
     },
   },
+  {
+    name: "create_artifact",
+    description:
+      "Publish a Switchboard-styled HTML artifact teammates view inline. ALWAYS use template+fields (never invent CSS or dark themes). Templates: walkthrough, compare, quiz, cards. After success, put the returned marker in your reply — do not paste HTML.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short label above the preview" },
+        template: { type: "string", description: "walkthrough | compare | quiz | cards" },
+        fields: {
+          type: "object",
+          description:
+            "Placeholder values e.g. TITLE, LEAD, STEP1_TITLE, Q1, Q1_A, Q1_ANSWER (0|1|2), …",
+        },
+      },
+      required: ["title", "template", "fields"],
+    },
+  },
 ] as const;
 
 function withThreadArg(tool: (typeof TOOLS)[number]) {
@@ -288,6 +306,25 @@ export async function runTool(
     if (!id) throw new Error("id is required");
     await callAdmin("/api/schedules/delete", { method: "POST", thread: false, body: { id } }, env, fetchFn);
     return `Deleted schedule ${id}.`;
+  }
+  if (name === "create_artifact") {
+    const title = String(args.title ?? "").trim();
+    const template = String(args.template ?? "").trim();
+    const fields = args.fields;
+    if (!title || !template) {
+      throw new Error("title and template are required (walkthrough|compare|quiz|cards)");
+    }
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+      throw new Error("fields must be an object of placeholder → string");
+    }
+    const data = (await callAdmin(
+      "/api/artifacts",
+      { method: "POST", thread: false, body: { title, template, fields } },
+      env,
+      fetchFn,
+    )) as { marker?: string };
+    const marker = data.marker ?? "";
+    return `Artifact "${title}" published (${template}). In your reply include a short intro and this marker on its own line (do not paste HTML):\n${marker}`;
   }
   throw new Error(`unknown tool: ${name}`);
 }

@@ -1,0 +1,97 @@
+<section class="art" id="quiz">
+  <p class="eyebrow">Quiz</p>
+  <h1>{{TITLE}}</h1>
+  <p class="lead">{{LEAD}}</p>
+
+  <div class="q panel" data-answer="{{Q1_ANSWER}}">
+    <p class="prompt">1) {{Q1}}</p>
+    <button type="button" data-i="0">{{Q1_A}}</button>
+    <button type="button" data-i="1">{{Q1_B}}</button>
+    <button type="button" data-i="2">{{Q1_C}}</button>
+    <p class="feedback" hidden></p>
+  </div>
+
+  <div class="q panel" data-answer="{{Q2_ANSWER}}">
+    <p class="prompt">2) {{Q2}}</p>
+    <button type="button" data-i="0">{{Q2_A}}</button>
+    <button type="button" data-i="1">{{Q2_B}}</button>
+    <button type="button" data-i="2">{{Q2_C}}</button>
+    <p class="feedback" hidden></p>
+  </div>
+
+  <div class="q panel" data-answer="{{Q3_ANSWER}}">
+    <p class="prompt">3) {{Q3}}</p>
+    <button type="button" data-i="0">{{Q3_A}}</button>
+    <button type="button" data-i="1">{{Q3_B}}</button>
+    <button type="button" data-i="2">{{Q3_C}}</button>
+    <p class="feedback" hidden></p>
+  </div>
+</section>
+<style>
+@import url("https://fonts.googleapis.com/css2?family=Bangers&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+:root {
+  --primary: #1c202b; --secondary: #7107e7; --surface: #f6f7f9; --panel: #fff; --soft: #e6e8ec;
+  --fg: #2b2f38; --muted: #6b7280; --accent-ink: #5a06b8; --accent-soft: #f1eafd;
+  --ok: #16a34a; --ok-soft: #dcfce7; --bad: #dc2626; --bad-soft: #fee2e2; --cyan: #22d3ee;
+  --radius-sm: 4px; --radius-md: 8px;
+  --font-display: "Bangers", system-ui, sans-serif;
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; padding: 20px; min-height: 100%;
+  font: 14px/1.55 var(--font-ui); color: var(--fg);
+  background:
+    radial-gradient(ellipse 80% 50% at 0% 0%, color-mix(in srgb, var(--secondary) 18%, transparent), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, color-mix(in srgb, var(--cyan) 14%, transparent), transparent 50%),
+    var(--surface);
+}
+.art { max-width: 36rem; margin: 0 auto; }
+.eyebrow { margin: 0 0 6px; font: 600 11px/1.2 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); }
+.art h1 {
+  margin: 0 0 8px; font-family: var(--font-display); font-weight: 400; font-size: 2rem;
+  line-height: 1.05; letter-spacing: .04em; text-transform: uppercase; color: var(--primary);
+}
+.lead { margin: 0 0 18px; color: var(--muted); font-size: 1rem; }
+.panel {
+  margin: 0 0 12px; padding: 16px; background: var(--panel); border: 2px solid var(--primary);
+  border-radius: var(--radius-md); box-shadow: 4px 4px 0 color-mix(in srgb, var(--secondary) 55%, transparent);
+}
+.prompt { margin: 0 0 12px; font-weight: 600; color: var(--primary); }
+.q button {
+  display: block; width: 100%; text-align: left; margin: 0 0 8px; padding: 10px 12px;
+  border: 2px solid var(--primary); border-radius: var(--radius-sm); background: var(--panel);
+  font: 500 14px/1.4 var(--font-ui); color: var(--fg); cursor: pointer;
+  box-shadow: 2px 2px 0 var(--soft);
+}
+.q button:hover:not(:disabled) { background: var(--accent-soft); box-shadow: 3px 3px 0 var(--secondary); }
+.q button.ok { background: var(--ok-soft); border-color: var(--ok); box-shadow: 2px 2px 0 var(--ok); }
+.q button.bad { background: var(--bad-soft); border-color: var(--bad); box-shadow: 2px 2px 0 var(--bad); }
+.feedback {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--accent-soft); border: 2px solid var(--secondary); font-size: 13px; color: var(--fg);
+}
+</style>
+<script>
+  (function () {
+    document.querySelectorAll("#quiz .q").forEach(function (q) {
+      var answer = String(q.getAttribute("data-answer") || "0");
+      var feedback = q.querySelector(".feedback");
+      q.querySelectorAll("button").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var ok = btn.getAttribute("data-i") === answer;
+          q.querySelectorAll("button").forEach(function (b) {
+            b.disabled = true;
+            if (b.getAttribute("data-i") === answer) b.classList.add("ok");
+            else if (b === btn) b.classList.add("bad");
+          });
+          if (feedback) {
+            feedback.hidden = false;
+            feedback.textContent = ok ? "Correcto." : "No — mirá la opción marcada en verde.";
+          }
+        });
+      });
+    });
+  })();
+</script>

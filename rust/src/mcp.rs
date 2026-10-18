@@ -60,6 +60,7 @@ fn tools() -> Value {
         {"name":"delete_schedule","description":"Delete a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
         {"name":"create_xlsx","description":"Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. Calling it again for the same request returns the same file.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"sheets":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"rows":{"type":"array","items":{"type":"array"}}},"required":["name","rows"]}}},"required":["title","sheets"]}},
         {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"create_artifact","description":"Publish a Switchboard-styled HTML artifact teammates view inline. ALWAYS use template+fields (never invent CSS or dark themes). Templates: walkthrough, compare, quiz, cards. After success, put the returned marker in your reply — do not paste HTML.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"Short label above the preview"},"template":{"type":"string","description":"walkthrough | compare | quiz | cards"},"fields":{"type":"object","description":"Placeholder values e.g. TITLE, LEAD, STEP1_TITLE, Q1, Q1_A, Q1_ANSWER (0|1|2), …"}},"required":["title","template","fields"]}},
         {"name":"list_agents","description":"List the specialised agents you can ask, with what each one knows.","inputSchema":{"type":"object","properties":{}}},
         {"name":"ask_agent","description":"Ask another specialised agent a question and get its answer. Use it when the question belongs to that agent's field.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"question":{"type":"string"}},"required":["agent","question"]}}
     ])
@@ -295,6 +296,30 @@ pub async fn run_tool(
             Ok(drive_created(&data, "rows"))
         }
         "list_spreadsheets" => Ok(drive_list(&call_admin("/api/drive/spreadsheets", "GET", None, true, &env, client).await?, "No spreadsheets in the Drive folder yet.")),
+        "create_artifact" => {
+            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let template = args.get("template").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let fields = args.get("fields").cloned().unwrap_or(json!({}));
+            if title.is_empty() || template.is_empty() {
+                return Err("title and template are required (walkthrough|compare|quiz|cards)".into());
+            }
+            if !fields.is_object() {
+                return Err("fields must be an object of placeholder → string".into());
+            }
+            let data = call_admin(
+                "/api/artifacts",
+                "POST",
+                Some(json!({ "title": title, "template": template, "fields": fields })),
+                false,
+                &env,
+                client,
+            )
+            .await?;
+            let marker = data.get("marker").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(format!(
+                "Artifact \"{title}\" published ({template}). In your reply include a short intro and this marker on its own line (do not paste HTML):\n{marker}"
+            ))
+        }
         "list_agents" => {
             let data = call_admin("/api/agents/delegates", "GET", None, true, &env, client).await?;
             let list = data.as_array().cloned().unwrap_or_default();

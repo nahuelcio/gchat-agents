@@ -105,6 +105,7 @@ fn ext_for(content_type: &str, name: Option<&str>) -> String {
         "image/gif" => ".gif".into(),
         "image/webp" => ".webp".into(),
         "image/svg+xml" => ".svg".into(),
+        "text/html" | "text/html; charset=utf-8" => ".html".into(),
         _ => String::new(),
     }
 }

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentTint, BOT_NAME } from "../agent-color";
 import { ago, api, duration, until, type Health, type Job, type JobTrigger, type ScheduleLogMessage } from "../api";
-import type { ViewProps } from "../App";
+import { hashQuery, type ViewProps } from "../App";
 
 const TRIGGERS: { value: JobTrigger; label: string }[] = [
   { value: "cron", label: "On a schedule" },
@@ -14,6 +14,29 @@ const PRESETS = [
   { label: "Weekdays at 09:00", cron: "0 9 * * 1-5" },
   { label: "Mondays at 08:00", cron: "0 8 * * 1" },
   { label: "Every day at 02:00", cron: "0 2 * * *" },
+];
+
+const RECIPES: { id: string; label: string; cron: string; prompt: string }[] = [
+  {
+    id: "weekly-close",
+    label: "Weekly close",
+    cron: "0 9 * * 1",
+    prompt:
+      "Weekly finance close: use only amounts from the week (do not invent numbers). If the finanzas skill and Drive are available, create a closing .xlsx; if data is missing, list what is missing. Summarize sheets/rows or key points.",
+  },
+  {
+    id: "incidents",
+    label: "Incident summary",
+    cron: "0 17 * * 1-5",
+    prompt:
+      "End-of-day incident summary (support tone): open items, impact, workaround if any, and a clear next step. Use only what the chat or tools confirm; do not invent IDs. Keep it short.",
+  },
+  {
+    id: "standup",
+    label: "Standup commits",
+    cron: "0 9 * * 1-5",
+    prompt: "Summarize yesterday's commits and list open PRs. Call out blockers and open questions.",
+  },
 ];
 
 function status(job: Job): { label: string; tone: string } {
@@ -47,6 +70,7 @@ export function Schedules({ settings, notify }: ViewProps) {
   });
   const [logId, setLogId] = useState<string>();
   const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
+  const deepLinkHandled = useRef(false);
 
   useEffect(() => {
     const load = () => {
@@ -56,6 +80,34 @@ export function Schedules({ settings, notify }: ViewProps) {
     load();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
+  }, []);
+
+  const applyRecipe = (id: string) => {
+    const recipe = RECIPES.find((r) => r.id === id);
+    if (!recipe) return;
+    setForm((f) => ({
+      ...f,
+      prompt: recipe.prompt,
+      cron: recipe.cron,
+      trigger: "cron",
+      space: f.space || settings.allowedSpaces[0] || TEAM_ONLY,
+    }));
+    setOpen(true);
+    setAiDraft("");
+    notify(`Recipe: ${recipe.label} — review and create`);
+  };
+
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    const q = hashQuery();
+    const recipe = q.get("recipe");
+    const wantNew = q.get("new") === "1" || Boolean(recipe);
+    if (!wantNew && !recipe) return;
+    deepLinkHandled.current = true;
+    if (recipe) applyRecipe(recipe);
+    else setOpen(true);
+    history.replaceState(null, "", "#schedules");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deep-link once on mount
   }, []);
 
   useEffect(() => {
@@ -142,6 +194,22 @@ export function Schedules({ settings, notify }: ViewProps) {
         )}
       </section>
 
+      {!open && (
+        <section className="card schedule-recipes" aria-label="Recipes">
+          <div className="card-title">
+            <h2>Recipes</h2>
+            <p className="muted small">Prefill a job — review cron and prompt, then create.</p>
+          </div>
+          <div className="chips">
+            {RECIPES.map((r) => (
+              <button key={r.id} type="button" className="chip" onClick={() => applyRecipe(r.id)}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {open && (
         <form
           className="card form"
@@ -165,6 +233,22 @@ export function Schedules({ settings, notify }: ViewProps) {
           }}
         >
           <h2>New job</h2>
+          <div className="field">
+            <span>Recipe</span>
+            <div className="chips">
+              {RECIPES.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`chip ${form.prompt === r.prompt && form.cron === r.cron ? "on" : ""}`}
+                  aria-pressed={form.prompt === r.prompt && form.cron === r.cron}
+                  onClick={() => applyRecipe(r.id)}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="field">
             <div className="field-head">
               <span>Describe with AI</span>
@@ -273,7 +357,12 @@ export function Schedules({ settings, notify }: ViewProps) {
             {active} active{failing ? ` · ${failing} failing` : ""}
           </span>
         </div>
-        {jobs && jobs.length === 0 && <p className="empty">No jobs yet. Create one, or in any thread: /schedule 0 9 * * 1-5 Summarize the standup</p>}
+        {jobs && jobs.length === 0 && (
+          <p className="empty">
+            No jobs yet. Pick a recipe above, or create one — also in any thread:{" "}
+            <code>/schedule 0 9 * * 1-5 Summarize the standup</code>
+          </p>
+        )}
         {jobs?.map((j) => {
           const s = status(j);
           const showingLog = logId === j.id;

@@ -144,7 +144,7 @@ export interface HostDraftChatReply {
 export const BUILTIN_MCPS = [
   { name: "coding", label: "Code — read, write, edit files and run commands" },
   { name: "agents", label: "Ask other agents — delegate a question to a specialist" },
-  { name: "switchboard", label: "Switchboard — repos, schedules, work item, room" },
+  { name: "switchboard", label: "Switchboard — repos, schedules, artifacts, work item, room" },
   { name: "google-drive", label: "Google Drive — .xlsx in the shared folder, plus Google's Drive MCP" },
 ];
 
