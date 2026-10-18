@@ -3,6 +3,7 @@ import { requestStop } from "./personas.js";
 import { join } from "node:path";
 import { adoProjects, adoRepos, cloneRepo, type DetectedAdo, type FetchFn } from "./integrations.js";
 import type { DetectedAgent } from "./agents.js";
+import { compressBody, withEncoding } from "./compress.js";
 import { contextLine, type HandlerDeps } from "./handler.js";
 import { serveMedia } from "./media.js";
 import { TEAM_PREFIX, teamDelete, teamInvite, teamMembers, teamSend, teamThread, THREAD_ID, type TeamAttachmentInput } from "./team.js";
@@ -58,8 +59,10 @@ function cached<T>(load: () => Promise<T>): (refresh: boolean) => Promise<T> {
 
 
 function send(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
-  res.end(JSON.stringify(body));
+  const type = "application/json";
+  const packed = compressBody(Buffer.from(JSON.stringify(body)), res.req.headers["accept-encoding"], type);
+  res.writeHead(status, withEncoding({ "content-type": type, "cache-control": "no-store" }, packed.encoding));
+  res.end(packed.body);
 }
 
 class HttpError extends Error {

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
+import { compressBody, withEncoding } from "./compress.js";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -39,7 +40,8 @@ export async function serveStatic(res: ServerResponse, webDir: string | undefine
       return true;
     }
   }
-  res.writeHead(200, { "content-type": type, "content-security-policy": CSP });
-  res.end(body);
+  const packed = compressBody(body, res.req.headers["accept-encoding"], type);
+  res.writeHead(200, withEncoding({ "content-type": type, "content-security-policy": CSP }, packed.encoding));
+  res.end(packed.body);
   return true;
 }

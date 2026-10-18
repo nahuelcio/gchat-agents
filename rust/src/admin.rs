@@ -8,6 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tower_http::compression::CompressionLayer;
 
 use crate::agents::{detect_agents, pi_models};
 use crate::handler::TEAM_PREFIX;
@@ -85,6 +86,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
         .layer(axum::middleware::from_fn(require_local_host))
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 

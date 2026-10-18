@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { DetectedAgent } from "./agents.js";
+import { compressBody, withEncoding } from "./compress.js";
 import { handleEvent, type ChatEvent, type HandlerDeps } from "./handler.js";
 import { GUEST_COMMANDS, type ShareToken } from "./share.js";
 import { serveStatic } from "./static.js";
@@ -40,8 +41,10 @@ export function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
+  const type = "application/json";
+  const packed = compressBody(Buffer.from(JSON.stringify(body)), res.req.headers["accept-encoding"], type);
+  res.writeHead(status, withEncoding({ "content-type": type }, packed.encoding));
+  res.end(packed.body);
 }
 
 async function handlePlay(req: IncomingMessage, res: ServerResponse, url: string, deps: HandlerDeps, share: ShareOptions): Promise<void> {

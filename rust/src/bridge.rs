@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
+use tower_http::compression::CompressionLayer;
 
 use crate::handler::{handle_event, ChatEvent};
 use crate::state::AppState;
@@ -26,6 +27,7 @@ pub fn bridge_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/google/chat", post(google_chat).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)))
         .fallback(bridge_fallback)
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 
