@@ -39,6 +39,88 @@ pub struct DetectedAdo {
     pub projects: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
+    /// "settings" (saved in Switchboard) or "cli" (ado init / env).
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAdo {
+    org: String,
+    pat: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_project: Option<String>,
+}
+
+pub fn ado_config_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("ado.json")
+}
+
+pub fn load_stored_ado(data_dir: &Path) -> Option<DetectedAdo> {
+    let raw = std::fs::read_to_string(ado_config_path(data_dir)).ok()?;
+    let stored: StoredAdo = serde_json::from_str(&raw).ok()?;
+    let org = stored.org.trim().to_string();
+    let pat = stored.pat.trim().to_string();
+    if org.is_empty() || pat.is_empty() {
+        return None;
+    }
+    let default_project = stored
+        .default_project
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Some(DetectedAdo {
+        org,
+        pat,
+        profile: "settings".into(),
+        projects: default_project.iter().cloned().collect(),
+        default_project,
+        source: "settings".into(),
+    })
+}
+
+pub async fn save_ado(data_dir: &Path, org: &str, pat: &str, default_project: Option<&str>) -> Result<DetectedAdo, String> {
+    let org = org.trim();
+    let pat = pat.trim();
+    if org.is_empty() {
+        return Err("organization is required".into());
+    }
+    if pat.is_empty() {
+        return Err("PAT (personal access token) is required".into());
+    }
+    let default_project = default_project
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let stored = StoredAdo {
+        org: org.into(),
+        pat: pat.into(),
+        default_project: default_project.clone(),
+    };
+    let raw = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
+    crate::atomic::write_atomic(&ado_config_path(data_dir), &raw)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(DetectedAdo {
+        org: org.into(),
+        pat: pat.into(),
+        profile: "settings".into(),
+        projects: default_project.iter().cloned().collect(),
+        default_project,
+        source: "settings".into(),
+    })
+}
+
+pub async fn clear_ado(data_dir: &Path) -> Result<(), String> {
+    let path = ado_config_path(data_dir);
+    if path.exists() {
+        tokio::fs::remove_file(&path).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Prefer Switchboard-saved credentials; fall back to `ado` CLI / env.
+pub fn resolve_ado(data_dir: &Path) -> Option<DetectedAdo> {
+    load_stored_ado(data_dir).or_else(detect_ado_from_env)
 }
 
 pub fn ado_auth_header(pat: &str) -> String {
@@ -224,6 +306,7 @@ pub fn detect_ado(home: &Path, env: &HashMap<String, String>) -> Option<Detected
         profile: name,
         projects,
         default_project: profile.project.clone(),
+        source: "cli".into(),
     })
 }
 
@@ -256,6 +339,25 @@ mod tests {
         assert_eq!(d.pat, "secret");
         assert_eq!(d.default_project.as_deref(), Some("proj"));
         assert!(d.projects.contains(&"proj".to_string()));
+        assert_eq!(d.source, "cli");
+    }
+
+    #[tokio::test]
+    async fn stored_ado_beats_cli() {
+        let dir = tempdir().unwrap();
+        save_ado(dir.path(), "from-ui", "ui-pat", Some("P1")).await.unwrap();
+        let cfg = dir.path().join(".config/opencode");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(
+            cfg.join("ado.json"),
+            r#"{"defaultProfile":"x","profiles":{"x":{"org":"cli-org","project":"cli","pat":"cli-pat"}}}"#,
+        )
+        .unwrap();
+        // resolve prefers data_dir ado.json; detect_ado still sees cli under home
+        let resolved = resolve_ado(dir.path()).unwrap();
+        assert_eq!(resolved.org, "from-ui");
+        assert_eq!(resolved.pat, "ui-pat");
+        assert_eq!(resolved.source, "settings");
     }
 
     #[test]

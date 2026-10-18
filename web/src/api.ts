@@ -146,6 +146,8 @@ export const BUILTIN_MCPS = [
   { name: "agents", label: "Ask other agents — delegate a question to a specialist" },
   { name: "switchboard", label: "Switchboard — repos, schedules, artifacts, work item, room" },
   { name: "google-drive", label: "Google Drive — .xlsx in the shared folder, plus Google's Drive MCP" },
+  { name: "google-calendar", label: "Google Calendar — list and manage events (remote MCP)" },
+  { name: "google-gmail", label: "Gmail — search threads and create drafts (remote MCP)" },
 ];
 
 export const DEFAULT_PERSONA_MCPS = ["engram"];
@@ -251,7 +253,9 @@ export interface GoogleStatus {
   endpoint?: string;
 }
 
-export type AdoStatus = { connected: false } | { connected: true; org: string; defaultProject?: string };
+export type AdoStatus =
+  | { connected: false }
+  | { connected: true; org: string; defaultProject?: string; source?: "settings" | "cli" | string };
 
 export interface AdoRepo {
   id: string;
@@ -318,7 +322,20 @@ export const api = {
   driveMcpSave: (clientId: string, clientSecret: string) => call<DriveMcpStatus>("/api/google/drive-mcp", { clientId, clientSecret }),
   driveMcpStart: () => call<{ url: string }>("/api/google/drive-mcp/start", {}),
   driveMcpClear: () => call<DriveMcpStatus>("/api/google/drive-mcp/delete", {}),
+  calendarMcp: () => call<DriveMcpStatus>("/api/google/calendar-mcp"),
+  calendarMcpSave: (clientId: string, clientSecret: string) =>
+    call<DriveMcpStatus>("/api/google/calendar-mcp", { clientId, clientSecret }),
+  calendarMcpStart: () => call<{ url: string }>("/api/google/calendar-mcp/start", {}),
+  calendarMcpClear: () => call<DriveMcpStatus>("/api/google/calendar-mcp/delete", {}),
+  gmailMcp: () => call<DriveMcpStatus>("/api/google/gmail-mcp"),
+  gmailMcpSave: (clientId: string, clientSecret: string) =>
+    call<DriveMcpStatus>("/api/google/gmail-mcp", { clientId, clientSecret }),
+  gmailMcpStart: () => call<{ url: string }>("/api/google/gmail-mcp/start", {}),
+  gmailMcpClear: () => call<DriveMcpStatus>("/api/google/gmail-mcp/delete", {}),
   adoStatus: () => call<AdoStatus>("/api/ado/status"),
+  adoSave: (org: string, pat: string, defaultProject?: string) =>
+    call<AdoStatus>("/api/ado", { org, pat, defaultProject: defaultProject || undefined }),
+  adoClear: () => call<AdoStatus>("/api/ado/delete", {}),
   adoProjects: () => call<{ name: string }[]>("/api/ado/projects"),
   adoRepos: (project: string) => call<AdoRepo[]>(`/api/ado/repos?project=${encodeURIComponent(project)}`),
   adoClone: (project: string, repo: string) => call<Settings>("/api/ado/clone", { project, repo }),

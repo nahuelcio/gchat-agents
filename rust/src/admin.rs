@@ -45,6 +45,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/google/key/delete", post(post_google_clear))
         .route("/api/google/test", post(post_google_test))
         .route("/api/ado/status", get(get_ado_status))
+        .route("/api/ado", post(post_ado_config))
+        .route("/api/ado/delete", post(post_ado_clear))
         .route("/api/ado/projects", get(get_ado_projects))
         .route("/api/ado/repos", get(get_ado_repos))
         .route("/api/ado/clone", post(post_ado_clone))
@@ -70,6 +72,18 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/google/drive-mcp/delete", post(post_drive_mcp_clear))
         .route("/api/drive/mcp/tools", get(get_drive_mcp_tools))
         .route("/api/drive/mcp/call", post(post_drive_mcp_call))
+        .route("/api/google/calendar-mcp", get(get_calendar_mcp).post(post_calendar_mcp))
+        .route("/api/google/calendar-mcp/start", post(post_calendar_mcp_start))
+        .route("/api/google/calendar-mcp/callback", get(get_calendar_mcp_callback))
+        .route("/api/google/calendar-mcp/delete", post(post_calendar_mcp_clear))
+        .route("/api/calendar/mcp/tools", get(get_calendar_mcp_tools))
+        .route("/api/calendar/mcp/call", post(post_calendar_mcp_call))
+        .route("/api/google/gmail-mcp", get(get_gmail_mcp).post(post_gmail_mcp))
+        .route("/api/google/gmail-mcp/start", post(post_gmail_mcp_start))
+        .route("/api/google/gmail-mcp/callback", get(get_gmail_mcp_callback))
+        .route("/api/google/gmail-mcp/delete", post(post_gmail_mcp_clear))
+        .route("/api/gmail/mcp/tools", get(get_gmail_mcp_tools))
+        .route("/api/gmail/mcp/call", post(post_gmail_mcp_call))
         .route("/api/skills", get(get_skills).put(put_skill).delete(delete_skill))
         .route("/api/skills/install", post(post_install_skill))
         .route("/api/mcp/import", post(post_mcp_import))
@@ -469,27 +483,90 @@ async fn post_google_test(State(state): State<Arc<AppState>>, Json(body): Json<G
     }
 }
 
-async fn get_ado_status() -> Response {
-    match crate::integrations::detect_ado_from_env() {
+async fn get_ado_status(State(state): State<Arc<AppState>>) -> Response {
+    match crate::integrations::resolve_ado(&state.data_dir) {
         Some(ado) => Json(json!({
             "connected": true,
             "org": ado.org,
             "profile": ado.profile,
             "projects": ado.projects,
             "defaultProject": ado.default_project,
+            "source": ado.source,
         }))
         .into_response(),
         None => Json(json!({ "connected": false })).into_response(),
     }
 }
 
-async fn get_ado_projects() -> Response {
-    let Some(ado) = crate::integrations::detect_ado_from_env() else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "Azure DevOps not configured on this machine — run `ado init`" })),
-        )
-            .into_response();
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdoConfigBody {
+    org: Option<String>,
+    pat: Option<String>,
+    default_project: Option<String>,
+}
+
+async fn post_ado_config(State(state): State<Arc<AppState>>, Json(body): Json<AdoConfigBody>) -> Response {
+    let org = body.org.unwrap_or_default();
+    let mut pat = body.pat.unwrap_or_default();
+    // Empty PAT keeps the previous stored token when updating org/project.
+    if pat.trim().is_empty() {
+        if let Some(prev) = crate::integrations::load_stored_ado(&state.data_dir) {
+            pat = prev.pat;
+        }
+    }
+    match crate::integrations::save_ado(
+        &state.data_dir,
+        &org,
+        &pat,
+        body.default_project.as_deref(),
+    )
+    .await
+    {
+        Ok(ado) => Json(json!({
+            "connected": true,
+            "org": ado.org,
+            "profile": ado.profile,
+            "projects": ado.projects,
+            "defaultProject": ado.default_project,
+            "source": ado.source,
+        }))
+        .into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_ado_clear(State(state): State<Arc<AppState>>) -> Response {
+    if let Err(err) = crate::integrations::clear_ado(&state.data_dir).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err }))).into_response();
+    }
+    match crate::integrations::resolve_ado(&state.data_dir) {
+        Some(ado) => Json(json!({
+            "connected": true,
+            "org": ado.org,
+            "profile": ado.profile,
+            "projects": ado.projects,
+            "defaultProject": ado.default_project,
+            "source": ado.source,
+        }))
+        .into_response(),
+        None => Json(json!({ "connected": false })).into_response(),
+    }
+}
+
+fn ado_missing() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "Azure DevOps not configured — paste your org and PAT in Settings → Connections, or run `ado init`"
+        })),
+    )
+        .into_response()
+}
+
+async fn get_ado_projects(State(state): State<Arc<AppState>>) -> Response {
+    let Some(ado) = crate::integrations::resolve_ado(&state.data_dir) else {
+        return ado_missing();
     };
     let client = reqwest::Client::new();
     let auth = crate::integrations::AdoAuth {
@@ -507,13 +584,9 @@ struct AdoReposQuery {
     project: Option<String>,
 }
 
-async fn get_ado_repos(Query(q): Query<AdoReposQuery>) -> Response {
-    let Some(ado) = crate::integrations::detect_ado_from_env() else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "Azure DevOps not configured on this machine — run `ado init`" })),
-        )
-            .into_response();
+async fn get_ado_repos(State(state): State<Arc<AppState>>, Query(q): Query<AdoReposQuery>) -> Response {
+    let Some(ado) = crate::integrations::resolve_ado(&state.data_dir) else {
+        return ado_missing();
     };
     let Some(project) = q.project.filter(|s| !s.is_empty()) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "project is required" }))).into_response();
@@ -536,12 +609,8 @@ struct AdoCloneBody {
 }
 
 async fn post_ado_clone(State(state): State<Arc<AppState>>, Json(body): Json<AdoCloneBody>) -> Response {
-    let Some(ado) = crate::integrations::detect_ado_from_env() else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "Azure DevOps not configured on this machine — run `ado init`" })),
-        )
-            .into_response();
+    let Some(ado) = crate::integrations::resolve_ado(&state.data_dir) else {
+        return ado_missing();
     };
     let project = body.project.unwrap_or_default();
     let repo = body.repo.unwrap_or_default();
@@ -1259,59 +1328,11 @@ fn request_host(headers: &HeaderMap) -> String {
     headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("127.0.0.1:8081").to_string()
 }
 
-async fn get_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    Json(state.drive_mcp.status(&crate::drive_mcp::redirect_uri(&request_host(&headers))).await).into_response()
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DriveMcpClient {
     client_id: Option<String>,
     client_secret: Option<String>,
-}
-
-async fn post_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DriveMcpClient>) -> Response {
-    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
-    match state.drive_mcp.set_client(body.client_id.as_deref().unwrap_or(""), body.client_secret.as_deref().unwrap_or("")).await {
-        Ok(_) => Json(state.drive_mcp.status(&redirect).await).into_response(),
-        Err(err) => drive_bad(err),
-    }
-}
-
-async fn post_drive_mcp_start(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
-    match state.drive_mcp.start_url(&redirect).await {
-        Ok(url) => Json(json!({ "url": url })).into_response(),
-        Err(err) => drive_bad(err),
-    }
-}
-
-async fn get_drive_mcp_callback(State(state): State<Arc<AppState>>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let code = q.get("code").cloned().unwrap_or_default();
-    let oauth_state = q.get("state").cloned().unwrap_or_default();
-    let page = match state.drive_mcp.exchange(&code, &oauth_state).await {
-        Ok(()) => "Google Drive is connected. You can close this tab and return to Settings.".into(),
-        Err(err) => err.replace('<', ""),
-    };
-    axum::response::Html(format!("<!doctype html><title>Google Drive</title><p>{page}</p>")).into_response()
-}
-
-async fn post_drive_mcp_clear(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let redirect = crate::drive_mcp::redirect_uri(&request_host(&headers));
-    if let Err(err) = state.drive_mcp.clear().await {
-        return drive_failed(err);
-    }
-    Json(state.drive_mcp.status(&redirect).await).into_response()
-}
-
-async fn get_drive_mcp_tools(State(state): State<Arc<AppState>>) -> Response {
-    match state.drive_mcp.tools().await {
-        Ok(tools) => Json(json!({ "tools": tools })).into_response(),
-        Err(err) => {
-            eprintln!("drive mcp: {err}");
-            Json(json!({ "tools": [] })).into_response()
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -1320,12 +1341,138 @@ struct DriveMcpCall {
     arguments: Option<Value>,
 }
 
-async fn post_drive_mcp_call(State(state): State<Arc<AppState>>, Json(body): Json<DriveMcpCall>) -> Response {
+fn google_mcp_redirect(headers: &HeaderMap, kind: crate::drive_mcp::GoogleMcpKind) -> String {
+    crate::drive_mcp::redirect_uri_for(&request_host(headers), kind)
+}
+
+async fn google_mcp_status(mcp: &crate::drive_mcp::DriveMcp, headers: &HeaderMap) -> Response {
+    let redirect = google_mcp_redirect(headers, mcp.kind());
+    Json(mcp.status(&redirect).await).into_response()
+}
+
+async fn google_mcp_set_client(
+    mcp: &crate::drive_mcp::DriveMcp,
+    headers: &HeaderMap,
+    body: DriveMcpClient,
+) -> Response {
+    let redirect = google_mcp_redirect(headers, mcp.kind());
+    match mcp
+        .set_client(body.client_id.as_deref().unwrap_or(""), body.client_secret.as_deref().unwrap_or(""))
+        .await
+    {
+        Ok(_) => Json(mcp.status(&redirect).await).into_response(),
+        Err(err) => drive_bad(err),
+    }
+}
+
+async fn google_mcp_start(mcp: &crate::drive_mcp::DriveMcp, headers: &HeaderMap) -> Response {
+    let redirect = google_mcp_redirect(headers, mcp.kind());
+    match mcp.start_url(&redirect).await {
+        Ok(url) => Json(json!({ "url": url })).into_response(),
+        Err(err) => drive_bad(err),
+    }
+}
+
+async fn google_mcp_callback(mcp: &crate::drive_mcp::DriveMcp, q: HashMap<String, String>, title: &str) -> Response {
+    let code = q.get("code").cloned().unwrap_or_default();
+    let oauth_state = q.get("state").cloned().unwrap_or_default();
+    let page = match mcp.exchange(&code, &oauth_state).await {
+        Ok(()) => format!("{title} is connected. You can close this tab and return to Settings."),
+        Err(err) => err.replace('<', ""),
+    };
+    axum::response::Html(format!("<!doctype html><title>{title}</title><p>{page}</p>")).into_response()
+}
+
+async fn google_mcp_clear(mcp: &crate::drive_mcp::DriveMcp, headers: &HeaderMap) -> Response {
+    let redirect = google_mcp_redirect(headers, mcp.kind());
+    if let Err(err) = mcp.clear().await {
+        return drive_failed(err);
+    }
+    Json(mcp.status(&redirect).await).into_response()
+}
+
+async fn google_mcp_tools(mcp: &crate::drive_mcp::DriveMcp, label: &str) -> Response {
+    match mcp.tools().await {
+        Ok(tools) => Json(json!({ "tools": tools })).into_response(),
+        Err(err) => {
+            eprintln!("{label} mcp: {err}");
+            Json(json!({ "tools": [] })).into_response()
+        }
+    }
+}
+
+async fn google_mcp_call(mcp: &crate::drive_mcp::DriveMcp, body: DriveMcpCall) -> Response {
     let name = body.name.unwrap_or_default();
-    match state.drive_mcp.call(&name, body.arguments.unwrap_or(json!({}))).await {
+    match mcp.call(&name, body.arguments.unwrap_or(json!({}))).await {
         Ok(result) => Json(result).into_response(),
         Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
     }
+}
+
+async fn get_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_status(&state.drive_mcp, &headers).await
+}
+async fn post_drive_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DriveMcpClient>) -> Response {
+    google_mcp_set_client(&state.drive_mcp, &headers, body).await
+}
+async fn post_drive_mcp_start(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_start(&state.drive_mcp, &headers).await
+}
+async fn get_drive_mcp_callback(State(state): State<Arc<AppState>>, Query(q): Query<HashMap<String, String>>) -> Response {
+    google_mcp_callback(&state.drive_mcp, q, "Google Drive").await
+}
+async fn post_drive_mcp_clear(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_clear(&state.drive_mcp, &headers).await
+}
+async fn get_drive_mcp_tools(State(state): State<Arc<AppState>>) -> Response {
+    google_mcp_tools(&state.drive_mcp, "drive").await
+}
+async fn post_drive_mcp_call(State(state): State<Arc<AppState>>, Json(body): Json<DriveMcpCall>) -> Response {
+    google_mcp_call(&state.drive_mcp, body).await
+}
+
+async fn get_calendar_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_status(&state.calendar_mcp, &headers).await
+}
+async fn post_calendar_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DriveMcpClient>) -> Response {
+    google_mcp_set_client(&state.calendar_mcp, &headers, body).await
+}
+async fn post_calendar_mcp_start(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_start(&state.calendar_mcp, &headers).await
+}
+async fn get_calendar_mcp_callback(State(state): State<Arc<AppState>>, Query(q): Query<HashMap<String, String>>) -> Response {
+    google_mcp_callback(&state.calendar_mcp, q, "Google Calendar").await
+}
+async fn post_calendar_mcp_clear(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_clear(&state.calendar_mcp, &headers).await
+}
+async fn get_calendar_mcp_tools(State(state): State<Arc<AppState>>) -> Response {
+    google_mcp_tools(&state.calendar_mcp, "calendar").await
+}
+async fn post_calendar_mcp_call(State(state): State<Arc<AppState>>, Json(body): Json<DriveMcpCall>) -> Response {
+    google_mcp_call(&state.calendar_mcp, body).await
+}
+
+async fn get_gmail_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_status(&state.gmail_mcp, &headers).await
+}
+async fn post_gmail_mcp(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DriveMcpClient>) -> Response {
+    google_mcp_set_client(&state.gmail_mcp, &headers, body).await
+}
+async fn post_gmail_mcp_start(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_start(&state.gmail_mcp, &headers).await
+}
+async fn get_gmail_mcp_callback(State(state): State<Arc<AppState>>, Query(q): Query<HashMap<String, String>>) -> Response {
+    google_mcp_callback(&state.gmail_mcp, q, "Gmail").await
+}
+async fn post_gmail_mcp_clear(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    google_mcp_clear(&state.gmail_mcp, &headers).await
+}
+async fn get_gmail_mcp_tools(State(state): State<Arc<AppState>>) -> Response {
+    google_mcp_tools(&state.gmail_mcp, "gmail").await
+}
+async fn post_gmail_mcp_call(State(state): State<Arc<AppState>>, Json(body): Json<DriveMcpCall>) -> Response {
+    google_mcp_call(&state.gmail_mcp, body).await
 }
 
 async fn get_drive_spreadsheets(State(state): State<Arc<AppState>>, Query(q): Query<ThreadKeyQuery>) -> Response {

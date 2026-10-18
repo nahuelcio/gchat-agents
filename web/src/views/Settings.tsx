@@ -1,4 +1,4 @@
-import { useEffect, useState, type FocusEvent } from "react";
+import { useEffect, useState, type FocusEvent, type ReactNode } from "react";
 import {
   api,
   type AdoRepo,
@@ -41,7 +41,7 @@ const TABS = [
   { id: "runtime", label: "Runtime", hint: "Default Pi model and provider keys." },
   { id: "tools", label: "Tools", hint: "Custom MCP servers for agents and skill packs." },
   { id: "chat", label: "Chat", hint: "Google Chat, spaces and how context shows up." },
-  { id: "connections", label: "Connections", hint: "Public tunnel, Google Drive and repos." },
+  { id: "connections", label: "Connections", hint: "Tunnel, Google Drive / Calendar / Gmail, and Azure DevOps repos." },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -91,6 +91,41 @@ export function SettingsView(props: ViewProps) {
         <>
           <TunnelCard {...props} />
           <DriveCard {...props} />
+          <GoogleWorkspaceMcpCard
+            title="Google Calendar"
+            blurb={
+              <>
+                Agendas and reminders via{" "}
+                <a href="https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server" target="_blank" rel="noreferrer">
+                  Google&apos;s Calendar MCP
+                </a>
+                . Enable Calendar API + Calendar MCP in your Cloud project, then connect. Add the{" "}
+                <code>google-calendar</code> tool group to an agent in Create.
+              </>
+            }
+            load={api.calendarMcp}
+            save={api.calendarMcpSave}
+            start={api.calendarMcpStart}
+            clear={api.calendarMcpClear}
+            notify={props.notify}
+          />
+          <GoogleWorkspaceMcpCard
+            title="Gmail"
+            blurb={
+              <>
+                Drafts and follow-up via{" "}
+                <a href="https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server" target="_blank" rel="noreferrer">
+                  Google&apos;s Gmail MCP
+                </a>
+                . Enable Gmail API + Gmail MCP, then connect. Add the <code>google-gmail</code> tool group to an agent in Create.
+              </>
+            }
+            load={api.gmailMcp}
+            save={api.gmailMcpSave}
+            start={api.gmailMcpStart}
+            clear={api.gmailMcpClear}
+            notify={props.notify}
+          />
           <ReposCard {...props} />
         </>
       )}
@@ -558,6 +593,113 @@ function DriveCard({ settings, save, notify }: ViewProps) {
   );
 }
 
+function GoogleWorkspaceMcpCard({
+  title,
+  blurb,
+  load,
+  save,
+  start,
+  clear,
+  notify,
+}: {
+  title: string;
+  blurb: ReactNode;
+  load: () => Promise<DriveMcpStatus>;
+  save: (clientId: string, clientSecret: string) => Promise<DriveMcpStatus>;
+  start: () => Promise<{ url: string }>;
+  clear: () => Promise<DriveMcpStatus>;
+  notify: ViewProps["notify"];
+}) {
+  const [mcp, setMcp] = useState<DriveMcpStatus>();
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    load().then((status) => {
+      setMcp(status);
+      setClientId(status.clientId ?? "");
+    }, () => {});
+  }, [load]);
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const { url } = await start();
+      window.open(url, "_blank", "noopener");
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const next = await load();
+        setMcp(next);
+        if (next.connected) {
+          notify(`${title} connected`);
+          return;
+        }
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="card" open aria-label={title}>
+      <summary className="card-title">
+        <h2>{title}</h2>
+        <p className="muted small">{blurb}</p>
+      </summary>
+      <form
+        className="field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBusy(true);
+          save(clientId.trim(), clientSecret)
+            .then((status) => {
+              setMcp(status);
+              setClientSecret("");
+              notify("OAuth client saved");
+            }, (err: Error) => notify(err.message, true))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <span>OAuth client</span>
+        <input className="mono" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client id" autoComplete="off" />
+        <input
+          className="mono"
+          type="password"
+          value={clientSecret}
+          onChange={(e) => setClientSecret(e.target.value)}
+          placeholder={mcp?.configured ? "Client secret saved — paste a new one to replace it" : "Client secret"}
+          autoComplete="off"
+        />
+        {mcp?.redirectUri && <code className="muted small">{mcp.redirectUri}</code>}
+        <div className="row">
+          <button className="btn" disabled={busy || !clientId.trim()}>
+            Save client
+          </button>
+          <button type="button" className="btn primary" disabled={busy || !mcp?.configured} onClick={() => void connect()}>
+            {mcp?.connected ? "Reconnect" : "Connect"}
+          </button>
+          {mcp?.connected && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                clear().then(setMcp, (err: Error) => notify(err.message, true)).finally(() => setBusy(false));
+              }}
+            >
+              Disconnect
+            </button>
+          )}
+        </div>
+      </form>
+    </details>
+  );
+}
+
 const BATCH_OPTIONS = [
   { value: 0, label: "Off" },
   { value: 2000, label: "2 s" },
@@ -718,20 +860,29 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
   const [repos, setRepos] = useState<AdoRepo[]>([]);
   const [repo, setRepo] = useState("");
   const [cloning, setCloning] = useState(false);
+  const [orgDraft, setOrgDraft] = useState("");
+  const [patDraft, setPatDraft] = useState("");
+  const [projectDraft, setProjectDraft] = useState("");
+  const [busyKey, setBusyKey] = useState(false);
+
+  function applyAdo(s: AdoStatus) {
+    setAdo(s);
+    if (!s.connected) {
+      setProjects([]);
+      setProject("");
+      return;
+    }
+    setOrgDraft(s.org);
+    setProjectDraft(s.defaultProject ?? "");
+    api.adoProjects().then((list) => {
+      setProjects(list.map((p) => p.name));
+      const match = list.find((p) => p.name.toLowerCase() === s.defaultProject?.toLowerCase());
+      if (match) setProject(match.name);
+    }, () => {});
+  }
 
   useEffect(() => {
-    api.adoStatus().then(
-      (s) => {
-        setAdo(s);
-        if (!s.connected) return;
-        api.adoProjects().then((list) => {
-          setProjects(list.map((p) => p.name));
-          const match = list.find((p) => p.name.toLowerCase() === s.defaultProject?.toLowerCase());
-          if (match) setProject(match.name);
-        }, () => {});
-      },
-      () => setAdo({ connected: false }),
-    );
+    api.adoStatus().then(applyAdo, () => setAdo({ connected: false }));
   }, []);
   useEffect(() => {
     setRepos([]);
@@ -740,15 +891,99 @@ function ReposCard({ settings, save, setSettings, notify }: ViewProps) {
   }, [project]);
 
   const entries = Object.entries(settings.repos);
+  const sourceLabel =
+    ado?.connected && ado.source === "settings"
+      ? "saved in Switchboard"
+      : ado?.connected
+        ? "from ado CLI / env"
+        : null;
 
   return (
     <details className="card" open>
       <summary className="card-title">
         <h2>Repos</h2>
         <p className="muted small">
-          {ado?.connected ? `Azure DevOps · ${ado.org}, from your ado CLI setup.` : ado ? "Azure DevOps not configured on this machine — run ado init." : " "}
+          {ado?.connected
+            ? `Azure DevOps · ${ado.org}${sourceLabel ? ` (${sourceLabel})` : ""}.`
+            : ado
+              ? "Paste your org and PAT below, or run ado init on this machine."
+              : " "}
         </p>
       </summary>
+      <form
+        className="field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBusyKey(true);
+          api
+            .adoSave(orgDraft.trim(), patDraft, projectDraft.trim() || undefined)
+            .then((s) => {
+              setPatDraft("");
+              applyAdo(s);
+              notify("Azure DevOps credentials saved");
+            }, (err: Error) => notify(err.message, true))
+            .finally(() => setBusyKey(false));
+        }}
+      >
+        <span>Azure DevOps</span>
+        <input
+          className="mono"
+          value={orgDraft}
+          onChange={(e) => setOrgDraft(e.target.value)}
+          placeholder="Organization (dev.azure.com/ORG → ORG)"
+          autoComplete="off"
+          required
+        />
+        <input
+          className="mono"
+          type="password"
+          value={patDraft}
+          onChange={(e) => setPatDraft(e.target.value)}
+          placeholder={
+            ado?.connected && ado.source === "settings"
+              ? "PAT saved — paste a new one to replace it"
+              : "Personal access token (Code Read)"
+          }
+          autoComplete="off"
+          required={!ado?.connected || ado.source !== "settings"}
+        />
+        <input
+          className="mono"
+          value={projectDraft}
+          onChange={(e) => setProjectDraft(e.target.value)}
+          placeholder="Default project (optional)"
+          autoComplete="off"
+        />
+        <div className="row">
+          <button className="btn primary" disabled={busyKey || !orgDraft.trim()}>
+            {busyKey ? "Saving…" : "Save key"}
+          </button>
+          {ado?.connected && ado.source === "settings" && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busyKey}
+              onClick={() => {
+                setBusyKey(true);
+                api
+                  .adoClear()
+                  .then((s) => {
+                    setOrgDraft(s.connected ? s.org : "");
+                    setProjectDraft(s.connected ? (s.defaultProject ?? "") : "");
+                    applyAdo(s);
+                    notify("Switchboard Azure credentials cleared");
+                  }, (err: Error) => notify(err.message, true))
+                  .finally(() => setBusyKey(false));
+              }}
+            >
+              Clear saved key
+            </button>
+          )}
+        </div>
+        <span className="muted small">
+          Create a PAT in Azure DevOps → User settings → Personal access tokens (scope: Code → Read). Stored only in this machine&apos;s data folder.
+        </span>
+      </form>
       {entries.length === 0 && <p className="empty">No repos yet. Add one from Azure DevOps, then use /repo &lt;name&gt; in a thread.</p>}
       {entries.map(([name, r]) => (
         <RepoRow

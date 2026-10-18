@@ -16,6 +16,8 @@ use crate::workspace::Workspaces;
 pub struct AppState {
     pub drive: Arc<crate::google_drive::Drive>,
     pub drive_mcp: Arc<crate::drive_mcp::DriveMcp>,
+    pub calendar_mcp: Arc<crate::drive_mcp::DriveMcp>,
+    pub gmail_mcp: Arc<crate::drive_mcp::DriveMcp>,
     pub activity: Arc<crate::activity::ActivityLog>,
     pub settings: Arc<SettingsStore>,
     pub health: Arc<Mutex<Health>>,

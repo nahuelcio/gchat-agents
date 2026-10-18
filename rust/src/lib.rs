@@ -219,6 +219,8 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let state = Arc::new(AppState {
         drive: Arc::new(crate::google_drive::Drive::new(google.clone())),
         drive_mcp: Arc::new(crate::drive_mcp::DriveMcp::open(&config.data_dir)),
+        calendar_mcp: Arc::new(crate::drive_mcp::DriveMcp::open_calendar(&config.data_dir)),
+        gmail_mcp: Arc::new(crate::drive_mcp::DriveMcp::open_gmail(&config.data_dir)),
         activity,
         settings,
         health,

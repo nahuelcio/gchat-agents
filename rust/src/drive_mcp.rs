@@ -7,10 +7,65 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 pub const ENDPOINT: &str = "https://drivemcp.googleapis.com/mcp/v1";
+pub const CALENDAR_ENDPOINT: &str = "https://calendarmcp.googleapis.com/mcp/v1";
+pub const GMAIL_ENDPOINT: &str = "https://gmailmcp.googleapis.com/mcp/v1";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const SCOPES: &str = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file";
+const DRIVE_SCOPES: &str =
+    "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file";
+const CALENDAR_SCOPES: &str = "https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events.freebusy https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.events";
+const GMAIL_SCOPES: &str =
+    "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose";
 const PROTOCOL: &str = "2025-03-26";
+
+#[derive(Debug, Clone, Copy)]
+pub enum GoogleMcpKind {
+    Drive,
+    Calendar,
+    Gmail,
+}
+
+impl GoogleMcpKind {
+    fn file(self) -> &'static str {
+        match self {
+            Self::Drive => "drive-mcp.json",
+            Self::Calendar => "calendar-mcp.json",
+            Self::Gmail => "gmail-mcp.json",
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Drive => ENDPOINT,
+            Self::Calendar => CALENDAR_ENDPOINT,
+            Self::Gmail => GMAIL_ENDPOINT,
+        }
+    }
+
+    fn scopes(self) -> &'static str {
+        match self {
+            Self::Drive => DRIVE_SCOPES,
+            Self::Calendar => CALENDAR_SCOPES,
+            Self::Gmail => GMAIL_SCOPES,
+        }
+    }
+
+    pub fn callback_path(self) -> &'static str {
+        match self {
+            Self::Drive => "/api/google/drive-mcp/callback",
+            Self::Calendar => "/api/google/calendar-mcp/callback",
+            Self::Gmail => "/api/google/gmail-mcp/callback",
+        }
+    }
+
+    pub fn group(self) -> &'static str {
+        match self {
+            Self::Drive => "google-drive",
+            Self::Calendar => "google-calendar",
+            Self::Gmail => "google-gmail",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +110,9 @@ struct Live {
 pub struct DriveMcp {
     http: reqwest::Client,
     file: PathBuf,
+    kind: GoogleMcpKind,
     endpoint: String,
+    scopes: String,
     auth_url: String,
     token_url: String,
     inner: Mutex<Live>,
@@ -63,16 +120,34 @@ pub struct DriveMcp {
 
 impl DriveMcp {
     pub fn open(dir: &Path) -> Self {
-        Self::with_endpoints(dir, ENDPOINT, AUTH_URL, TOKEN_URL)
+        Self::open_kind(dir, GoogleMcpKind::Drive)
     }
 
-    pub fn with_endpoints(dir: &Path, endpoint: &str, auth_url: &str, token_url: &str) -> Self {
-        let file = dir.join("drive-mcp.json");
+    pub fn open_calendar(dir: &Path) -> Self {
+        Self::open_kind(dir, GoogleMcpKind::Calendar)
+    }
+
+    pub fn open_gmail(dir: &Path) -> Self {
+        Self::open_kind(dir, GoogleMcpKind::Gmail)
+    }
+
+    pub fn open_kind(dir: &Path, kind: GoogleMcpKind) -> Self {
+        Self::with_endpoints(dir, kind, kind.endpoint(), AUTH_URL, TOKEN_URL)
+    }
+
+    pub fn kind(&self) -> GoogleMcpKind {
+        self.kind
+    }
+
+    pub fn with_endpoints(dir: &Path, kind: GoogleMcpKind, endpoint: &str, auth_url: &str, token_url: &str) -> Self {
+        let file = dir.join(kind.file());
         let creds = std::fs::read_to_string(&file).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default();
         Self {
             http: reqwest::Client::new(),
             file,
+            kind,
             endpoint: endpoint.into(),
+            scopes: kind.scopes().into(),
             auth_url: auth_url.into(),
             token_url: token_url.into(),
             inner: Mutex::new(Live { creds, pending: HashMap::new(), access: None, session: None, tools: Vec::new(), tools_at: None, next: 1 }),
@@ -137,7 +212,7 @@ impl DriveMcp {
             self.auth_url,
             urlencoding(&live.creds.client_id),
             urlencoding(redirect),
-            urlencoding(SCOPES),
+            urlencoding(&self.scopes),
         );
         Ok(url)
     }
@@ -345,7 +420,11 @@ fn sse_message(body: &str, id: u64) -> Result<Value, String> {
 }
 
 pub fn redirect_uri(host: &str) -> String {
-    format!("http://{host}/api/google/drive-mcp/callback")
+    redirect_uri_for(host, GoogleMcpKind::Drive)
+}
+
+pub fn redirect_uri_for(host: &str, kind: GoogleMcpKind) -> String {
+    format!("http://{host}{}", kind.callback_path())
 }
 
 #[cfg(test)]
@@ -398,7 +477,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.ok() });
         let dir = tempfile::tempdir().unwrap();
-        let drive = DriveMcp::with_endpoints(dir.path(), &format!("http://{addr}/mcp"), &format!("http://{addr}/auth"), &format!("http://{addr}/token"));
+        let drive = DriveMcp::with_endpoints(
+            dir.path(),
+            GoogleMcpKind::Drive,
+            &format!("http://{addr}/mcp"),
+            &format!("http://{addr}/auth"),
+            &format!("http://{addr}/token"),
+        );
         let status = drive.set_client("client", "secret").await.unwrap();
         assert!(status.configured && !status.connected);
         let url = drive.start_url("http://127.0.0.1/cb").await.unwrap();

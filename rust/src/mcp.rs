@@ -75,7 +75,19 @@ pub fn group_of(tool: &str) -> &'static str {
 }
 
 fn wants_drive(env: &HashMap<String, String>) -> bool {
-    allowed_groups(env).is_none_or(|groups| groups.iter().any(|g| g == "google-drive"))
+    wants_group(env, "google-drive")
+}
+
+fn wants_calendar(env: &HashMap<String, String>) -> bool {
+    wants_group(env, "google-calendar")
+}
+
+fn wants_gmail(env: &HashMap<String, String>) -> bool {
+    wants_group(env, "google-gmail")
+}
+
+fn wants_group(env: &HashMap<String, String>, group: &str) -> bool {
+    allowed_groups(env).is_none_or(|groups| groups.iter().any(|g| g == group))
 }
 
 fn allowed_groups(env: &HashMap<String, String>) -> Option<Vec<String>> {
@@ -526,12 +538,19 @@ pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client:
         "notifications/initialized" | "initialized" => None,
         "tools/list" => {
             let mut listed = listed_tools(env, external);
-            if wants_drive(env) {
-                if let Ok(data) = call_admin("/api/drive/mcp/tools", "GET", None, false, env, client).await {
+            for (want, path, group) in [
+                (wants_drive(env), "/api/drive/mcp/tools", "google-drive"),
+                (wants_calendar(env), "/api/calendar/mcp/tools", "google-calendar"),
+                (wants_gmail(env), "/api/gmail/mcp/tools", "google-gmail"),
+            ] {
+                if !want {
+                    continue;
+                }
+                if let Ok(data) = call_admin(path, "GET", None, false, env, client).await {
                     if let Some(tools) = data.get("tools").and_then(|v| v.as_array()) {
                         for tool in tools {
                             let mut t = tool.clone();
-                            t["_meta"] = json!({ "group": "google-drive" });
+                            t["_meta"] = json!({ "group": group });
                             listed.push(t);
                         }
                     }
@@ -569,19 +588,30 @@ pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client:
                     line_mode,
                 )),
                 Err(err) => {
-                    if wants_drive(env) && err.starts_with("unknown tool:") {
+                    if err.starts_with("unknown tool:") {
                         let mut forwarded = args.clone();
                         if let Some(obj) = forwarded.as_object_mut() {
                             obj.remove("thread");
                         }
-                        match call_admin("/api/drive/mcp/call", "POST", Some(json!({ "name": name, "arguments": forwarded })), false, env, client).await {
-                            Ok(result) => return Some(frame(&json!({ "jsonrpc": "2.0", "id": id, "result": result }), line_mode)),
-                            Err(remote) if remote.starts_with("unknown tool:") => {}
-                            Err(remote) => {
-                                return Some(frame(
-                                    &json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": remote } }),
-                                    line_mode,
-                                ))
+                        for (want, path) in [
+                            (wants_drive(env), "/api/drive/mcp/call"),
+                            (wants_calendar(env), "/api/calendar/mcp/call"),
+                            (wants_gmail(env), "/api/gmail/mcp/call"),
+                        ] {
+                            if !want {
+                                continue;
+                            }
+                            match call_admin(path, "POST", Some(json!({ "name": name, "arguments": forwarded })), false, env, client).await {
+                                Ok(result) => {
+                                    return Some(frame(&json!({ "jsonrpc": "2.0", "id": id, "result": result }), line_mode))
+                                }
+                                Err(remote) if remote.starts_with("unknown tool:") => {}
+                                Err(remote) => {
+                                    return Some(frame(
+                                        &json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": remote } }),
+                                        line_mode,
+                                    ))
+                                }
                             }
                         }
                     }
