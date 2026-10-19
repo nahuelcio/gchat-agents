@@ -230,8 +230,8 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
       <summary className="card-title">
         <h2>MCP servers</h2>
         <p className="muted small">
-          Bring any MCP server (stdio). Paste a Claude or Cursor mcp.json, or add one by hand. Its tools show up as name__tool for the agents you allow, on every runtime. If{" "}
-          <code>engram</code> is installed, it is registered automatically (remove it here to opt out).
+          Bring any MCP server (stdio). Paste a Claude or Cursor mcp.json, or add one by hand. Its tools show up as name__tool for the agents you allow, on every runtime.{" "}
+          <code>engram</code> and <code>context7</code> register automatically when available (remove either here to opt out).
         </p>
       </summary>
       {blob !== null ? (

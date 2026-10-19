@@ -21,8 +21,9 @@ pub struct McpServer {
 pub const BUILTIN_GROUPS: &[&str] = &["coding", "switchboard", "google-drive", "agents"];
 
 pub const ENGRAM_NAME: &str = "engram";
+pub const CONTEXT7_NAME: &str = "context7";
 
-pub const DEFAULT_PERSONA_MCPS: &[&str] = &[ENGRAM_NAME];
+pub const DEFAULT_PERSONA_MCPS: &[&str] = &[ENGRAM_NAME, CONTEXT7_NAME];
 
 pub fn with_default_persona_mcps(mcps: Option<Vec<String>>) -> Vec<String> {
     match mcps {
@@ -40,8 +41,28 @@ pub fn default_engram() -> McpServer {
     }
 }
 
+pub fn default_context7() -> McpServer {
+    McpServer {
+        name: CONTEXT7_NAME.into(),
+        command: "npx".into(),
+        args: vec!["-y".into(), "@upstash/context7-mcp".into()],
+        env: BTreeMap::new(),
+    }
+}
+
 pub async fn engram_installed() -> bool {
     Command::new(crate::driver::spawn::resolve_bin("engram"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+pub async fn npx_installed() -> bool {
+    Command::new(crate::driver::spawn::resolve_bin("npx"))
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -280,13 +301,27 @@ rl.on('line', (l) => {
     }
 
     #[test]
-    fn draft_mcps_default_to_engram_when_empty() {
-        assert_eq!(with_default_persona_mcps(None), vec!["engram".to_string()]);
-        assert_eq!(with_default_persona_mcps(Some(vec![])), vec!["engram".to_string()]);
+    fn draft_mcps_default_to_engram_and_context7_when_empty() {
+        assert_eq!(
+            with_default_persona_mcps(None),
+            vec!["engram".to_string(), "context7".to_string()]
+        );
+        assert_eq!(
+            with_default_persona_mcps(Some(vec![])),
+            vec!["engram".to_string(), "context7".to_string()]
+        );
         assert_eq!(
             with_default_persona_mcps(Some(vec!["google-drive".into()])),
             vec!["google-drive".to_string()]
         );
+    }
+
+    #[test]
+    fn default_context7_uses_npx_package() {
+        let s = default_context7();
+        assert_eq!(s.name, "context7");
+        assert_eq!(s.command, "npx");
+        assert_eq!(s.args, vec!["-y", "@upstash/context7-mcp"]);
     }
 
     #[tokio::test]

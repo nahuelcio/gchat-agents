@@ -210,7 +210,13 @@ impl SettingsStore {
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, String> {
-        let had_engram = self.inner.lock().unwrap().mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME);
+        let had = {
+            let servers = &self.inner.lock().unwrap().mcp_servers;
+            (
+                servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME),
+                servers.iter().any(|m| m.name == crate::mcp_client::CONTEXT7_NAME),
+            )
+        };
         let patched_mcps = patch.mcp_servers.is_some();
         let next = {
             let mut current = self.inner.lock().unwrap().clone();
@@ -269,10 +275,16 @@ impl SettingsStore {
         *self.inner.lock().unwrap() = next.clone();
         if patched_mcps {
             let has_engram = next.mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME);
-            if had_engram && !has_engram {
-                self.set_engram_declined(true);
+            if had.0 && !has_engram {
+                self.set_mcp_declined(crate::mcp_client::ENGRAM_NAME, true);
             } else if has_engram {
-                self.set_engram_declined(false);
+                self.set_mcp_declined(crate::mcp_client::ENGRAM_NAME, false);
+            }
+            let has_context7 = next.mcp_servers.iter().any(|m| m.name == crate::mcp_client::CONTEXT7_NAME);
+            if had.1 && !has_context7 {
+                self.set_mcp_declined(crate::mcp_client::CONTEXT7_NAME, true);
+            } else if has_context7 {
+                self.set_mcp_declined(crate::mcp_client::CONTEXT7_NAME, false);
             }
         }
         for listener in self.listeners.lock().unwrap().iter() {
@@ -282,17 +294,43 @@ impl SettingsStore {
     }
 
     pub async fn ensure_default_engram(&self) {
-        if self.engram_declined() {
+        self.ensure_default_mcp(
+            crate::mcp_client::ENGRAM_NAME,
+            crate::mcp_client::default_engram,
+            crate::mcp_client::engram_installed().await,
+            "Engram",
+        )
+        .await;
+    }
+
+    pub async fn ensure_default_context7(&self) {
+        self.ensure_default_mcp(
+            crate::mcp_client::CONTEXT7_NAME,
+            crate::mcp_client::default_context7,
+            crate::mcp_client::npx_installed().await,
+            "Context7",
+        )
+        .await;
+    }
+
+    async fn ensure_default_mcp(
+        &self,
+        name: &str,
+        make: fn() -> crate::mcp_client::McpServer,
+        available: bool,
+        label: &str,
+    ) {
+        if self.mcp_declined(name) {
             return;
         }
-        if self.get().mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME) {
+        if self.get().mcp_servers.iter().any(|m| m.name == name) {
             return;
         }
-        if !crate::mcp_client::engram_installed().await {
+        if !available {
             return;
         }
         let mut servers = self.get().mcp_servers;
-        servers.push(crate::mcp_client::default_engram());
+        servers.push(make());
         if let Err(err) = self
             .update(SettingsPatch {
                 mcp_servers: Some(servers),
@@ -300,22 +338,22 @@ impl SettingsStore {
             })
             .await
         {
-            tracing::warn!("could not enable Engram by default: {err}");
+            tracing::warn!("could not enable {label} by default: {err}");
         } else {
-            tracing::info!("Engram detected — registered as default MCP server");
+            tracing::info!("{label} detected — registered as default MCP server");
         }
     }
 
-    fn engram_declined_path(&self) -> Option<PathBuf> {
-        self.file_path.parent().map(|d| d.join("engram.declined"))
+    fn mcp_declined_path(&self, name: &str) -> Option<PathBuf> {
+        self.file_path.parent().map(|d| d.join(format!("{name}.declined")))
     }
 
-    fn engram_declined(&self) -> bool {
-        self.engram_declined_path().is_some_and(|p| p.is_file())
+    fn mcp_declined(&self, name: &str) -> bool {
+        self.mcp_declined_path(name).is_some_and(|p| p.is_file())
     }
 
-    fn set_engram_declined(&self, declined: bool) {
-        let Some(path) = self.engram_declined_path() else {
+    fn set_mcp_declined(&self, name: &str, declined: bool) {
+        let Some(path) = self.mcp_declined_path(name) else {
             return;
         };
         if declined {
@@ -494,6 +532,31 @@ mod tests {
             .unwrap();
         assert!(dir.path().join("engram.declined").is_file());
         store.ensure_default_engram().await;
+        assert!(store.get().mcp_servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn removing_context7_opts_out_of_auto_default() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = SettingsStore::open(&path, SettingsDefaults::default());
+        store
+            .update(SettingsPatch {
+                mcp_servers: Some(vec![crate::mcp_client::default_context7()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!dir.path().join("context7.declined").is_file());
+        store
+            .update(SettingsPatch {
+                mcp_servers: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(dir.path().join("context7.declined").is_file());
+        store.ensure_default_context7().await;
         assert!(store.get().mcp_servers.is_empty());
     }
 

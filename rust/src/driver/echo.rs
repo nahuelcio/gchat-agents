@@ -20,7 +20,7 @@ impl AgentDriver for EchoDriver {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
         if input.thread_key.starts_with("ai-draft/chat-host") {
             return Ok(AgentTurnResult {
-                reply: r#"{"message":"Host prompt ready. Want it shorter?","draft":{"prompt":"Stay concise. Prefer routing specialist topics to the right @agent.","mcps":["coding","switchboard","engram","agents","google-drive"],"skills":[]},"ready":true}"#.into(),
+                reply: r#"{"message":"Host prompt ready. Want it shorter?","draft":{"prompt":"Stay concise. Prefer routing specialist topics to the right @agent.","mcps":["coding","switchboard","engram","context7","agents","google-drive"],"skills":[]},"ready":true}"#.into(),
                 session_ref: Some(format!("echo-{}", input.thread_key)),
                 usage: None,
                 pending: None,

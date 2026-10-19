@@ -28,7 +28,7 @@ export interface Settings {
   hostSkills?: string[];
 }
 
-export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "agents", "google-drive"];
+export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "context7", "agents", "google-drive"];
 
 export const DEFAULT_HOST_SKILLS = ["artifacts"];
 
@@ -158,7 +158,7 @@ export const BUILTIN_MCPS = [
   { name: "google-gmail", label: "Gmail — search threads and create drafts (remote MCP)" },
 ];
 
-export const DEFAULT_PERSONA_MCPS = ["engram"];
+export const DEFAULT_PERSONA_MCPS = ["engram", "context7"];
 
 export interface SearchHit {
   threadKey: string;

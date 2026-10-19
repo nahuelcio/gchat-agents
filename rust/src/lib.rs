@@ -269,6 +269,7 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     let runtime = build_runtime(config, echo)?;
     let state = runtime.state.clone();
     state.settings.ensure_default_engram().await;
+    state.settings.ensure_default_context7().await;
     if let Some(ledger) = state.handler.ledger.clone() {
         let cut = crate::turn_ledger::recover(state.handler.clone(), ledger, state.transcripts.clone()).await;
         if cut > 0 {

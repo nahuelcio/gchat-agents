@@ -23,7 +23,8 @@ pub fn pi_model(model: &str) -> String {
     }
 }
 
-pub const DEFAULT_HOST_MCPS: &[&str] = &["coding", "switchboard", "engram", "agents", "google-drive"];
+pub const DEFAULT_HOST_MCPS: &[&str] =
+    &["coding", "switchboard", "engram", "context7", "agents", "google-drive"];
 
 pub const DEFAULT_HOST_SKILLS: &[&str] = &["artifacts"];
 

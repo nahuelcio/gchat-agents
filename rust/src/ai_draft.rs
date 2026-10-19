@@ -653,7 +653,13 @@ mod tests {
 
     fn ctx() -> DraftContext {
         DraftContext {
-            available_mcps: vec!["coding".into(), "google-drive".into(), "agents".into(), "engram".into()],
+            available_mcps: vec![
+                "coding".into(),
+                "google-drive".into(),
+                "agents".into(),
+                "engram".into(),
+                "context7".into(),
+            ],
             available_skills: vec!["finanzas".into()],
             workdir: ".".into(),
             model: None,
@@ -687,17 +693,17 @@ mod tests {
 "#;
         let d = parse_agent_draft(reply, &ctx()).unwrap();
         assert_eq!(d.name, "ventas_pro");
-        assert_eq!(d.mcps, vec!["google-drive", "engram"]);
+        assert_eq!(d.mcps, vec!["google-drive", "engram", "context7"]);
         assert_eq!(d.skills, vec!["finanzas"]);
         assert_eq!(d.listen.as_deref(), Some("all"));
         assert!(d.respond_to.is_none());
     }
 
     #[test]
-    fn empty_agent_mcps_default_to_engram_when_available() {
+    fn empty_agent_mcps_default_to_persona_defaults_when_available() {
         let reply = r#"{"name":"memo","prompt":"Recuerda.","mcps":[]}"#;
         let d = parse_agent_draft(reply, &ctx()).unwrap();
-        assert_eq!(d.mcps, vec!["engram"]);
+        assert_eq!(d.mcps, vec!["engram", "context7"]);
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
   type SkillInfo,
   type SkillSearchHit,
   BUILTIN_MCPS,
+  DEFAULT_HOST_MCPS,
   DEFAULT_HOST_SKILLS,
   DEFAULT_PERSONA_MCPS,
 } from "../api";
@@ -285,7 +286,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
           : `${HOST_DEFAULT_PROMPT}\n\n${saved}`;
       setHostDraft({
         prompt,
-        mcps: settings.hostMcps ?? [],
+        mcps: settings.hostMcps?.length ? settings.hostMcps : [...DEFAULT_HOST_MCPS],
         skills: settings.hostSkills?.length ? settings.hostSkills : [...DEFAULT_HOST_SKILLS],
       });
     }
@@ -534,8 +535,11 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     ...BUILTIN_MCPS.map((m) => [m.name, m.label] as const),
     ...(settings.mcpServers ?? []).map((m) => [m.name, `${m.name} — custom MCP`] as const),
     ["engram", "engram — your MCP server"] as const,
+    ["context7", "context7 — up-to-date library docs"] as const,
   ]);
-  const toolNames = [...new Set(["engram", ...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)])];
+  const toolNames = [
+    ...new Set(["engram", "context7", ...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)]),
+  ];
   const toolOpts = toolNames.map((id) => ({ id, label: toolLabels.get(id) ?? id }));
   // skill-creator steers Create AI; don't attach it to agents/host.
   const attachableSkills = skills.filter((s) => s.name !== "skill-creator");
