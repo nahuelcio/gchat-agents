@@ -196,8 +196,7 @@ pub async fn team_send(
     if text.is_empty() && attachments.is_empty() {
         return Err("thread and text or an image are required".into());
     }
-    if let (Some(allowed), Some(cmd)) = (allowed_commands, text.strip_prefix('/')) {
-        let cmd = cmd.split_whitespace().next().unwrap_or("");
+    if let (Some(allowed), Some(cmd)) = (allowed_commands, crate::handler::command_of(text)) {
         if !allowed.contains(&cmd) {
             return Err(format!("/{cmd} is not available on the shared link"));
         }

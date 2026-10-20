@@ -17,8 +17,9 @@ pub fn mcp_env(thread_key: &str, admin_url: &str) -> HashMap<String, String> {
 }
 
 pub const ENGRAM_HINT: &str = "\
-You have Engram persistent memory (tools engram__mem_save, engram__mem_search, engram__mem_context, \
+You have Engram persistent memory (engram__mem_save, engram__mem_search, engram__mem_context, \
 engram__mem_session_summary, engram__mem_get_observation, engram__mem_update, engram__mem_suggest_topic_key). \
+When you have a `codemode` tool, call them from a script as `await tools.engram__mem_save({...})`. \
 It survives sessions and compaction — use it proactively; do not wait to be asked.\n\
 \n\
 SAVE immediately with engram__mem_save after: architecture/design decisions, conventions, bug fixes \

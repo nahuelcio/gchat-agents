@@ -297,7 +297,7 @@ static BATCHES: std::sync::Mutex<Option<std::collections::HashMap<String, Batch>
 
 pub async fn debounce(deps: &HandlerDeps, req: TurnRequest) -> Option<TurnRequest> {
     let ms = (deps.options)().debounce_ms;
-    if ms == 0 || req.text.trim_start().starts_with('/') {
+    if ms == 0 || command_of(&req.text).is_some() {
         return Some(req);
     }
     let generation = {
@@ -403,7 +403,7 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
     let key = req.thread_key.clone();
     deps.queue
         .run(&key, || async {
-            if req.text.starts_with('/') {
+            if command_of(&req.text).is_some() {
                 let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
                 deliver_reply(&req, &deps, &reply, None, None).await;
                 return Ok(true);
@@ -1180,10 +1180,16 @@ async fn mark_seen(deps: &HandlerDeps, thread_key: &str, space: &str, who: &str,
         .await;
 }
 
+/// The slash command a message invokes, if any. A first token with another `/` is a path, not a command.
+pub fn command_of(text: &str) -> Option<&str> {
+    let rest = text.trim_start().strip_prefix('/')?;
+    let cmd = rest.split_whitespace().next().filter(|_| !rest.starts_with(char::is_whitespace))?;
+    (!cmd.contains('/')).then_some(cmd)
+}
+
 async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, String> {
-    let mut parts = req.text.trim_start_matches('/').split_whitespace();
-    let cmd = parts.next().unwrap_or("");
-    let args: Vec<&str> = parts.collect();
+    let cmd = command_of(&req.text).unwrap_or("");
+    let args: Vec<&str> = req.text.split_whitespace().skip(1).collect();
     match cmd {
         "help" => Ok("Commands: /help /clear [@agent] /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
@@ -1664,6 +1670,15 @@ pub fn settings_to_options(s: &Settings) -> TurnOptions {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paths_are_not_commands() {
+        assert_eq!(super::command_of("/help"), Some("help"));
+        assert_eq!(super::command_of("  /repo yFlow"), Some("repo"));
+        assert_eq!(super::command_of("/home/me/yFlow analizá esto"), None);
+        assert_eq!(super::command_of("/ hola"), None);
+        assert_eq!(super::command_of("hola /help"), None);
+    }
+
     use super::*;
     use crate::driver::types::AgentTurnResult;
     use crate::driver::EchoDriver;

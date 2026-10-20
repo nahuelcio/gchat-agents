@@ -5,12 +5,16 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { envApiKeyAuth, Type, type Model } from "@earendil-works/pi-ai";
+import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from "@earendil-works/pi-ai";
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { toolCallStreamFixer } from "./tool-call-stream.ts";
+import { progressMapper } from "./progress.ts";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { AssistantEntry, createRegistry, defineExtension, defineTool, Harness, type Conversation } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, defineExtension, defineTool, Harness, watchEvents, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -115,6 +119,8 @@ function buildCustomProvider(cfg: CustomProviderConfig) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
+        // Send pi-durable's per-conversation session id as `x-session-id`, so proxies like TokenBank group and pin sessions.
+        compat: { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openrouter" },
       }),
     );
   const envVar = customEnv(cfg.id, cfg.apiKeyEnv);
@@ -127,8 +133,17 @@ function buildCustomProvider(cfg: CustomProviderConfig) {
       ? { apiKey: envApiKeyAuth(cfg.name || cfg.id, [envVar]) }
       : { apiKey: { name: cfg.name || cfg.id, resolve: async () => ({ auth: {} }) } },
     models,
-    api: openAICompletionsApi(),
+    api: lenientToolCalls(openAICompletionsApi()),
   });
+}
+
+/** Custom OpenAI-compatible proxies (e.g. TokenBank) can garble tool call streams; repair each chunk before pi-ai reads it. */
+function lenientToolCalls(api: ProviderStreams): ProviderStreams {
+  const withFix = <O extends { onProviderStreamEvent?: (data: unknown, model: Model<Api>) => void | Promise<void> }>(o?: O) => {
+    const fix = toolCallStreamFixer();
+    return { ...o, onProviderStreamEvent: (data: unknown, model: Model<Api>) => (fix(data), o?.onProviderStreamEvent?.(data, model)) } as O;
+  };
+  return { ...api, stream: (m, c, o) => api.stream(m, c, withFix(o)), streamSimple: (m, c, o) => api.streamSimple(m, c, withFix(o)) };
 }
 
 function applyCustomProviders(m: MutableModels) {
@@ -208,7 +223,13 @@ class McpClient {
 }
 
 let mcp: McpClient | undefined;
+// Groups whose tools stay direct for the model; every other MCP tool is reachable only from code mode scripts (opencode-style).
+const DIRECT_GROUPS = new Set(["skills"]);
+// Direct tools are model-only, so they stay out of the code mode catalog and leave its budget to the deferred ones.
+const modelOnly = <T extends object>(tool: T) => ({ ...tool, callers: ["model"] as const });
+const coding = { ...CodingTools, tools: (CodingTools.tools ?? []).map(modelOnly) };
 let mcpTools: { group: string; tool: ReturnType<typeof defineTool> }[] = [];
+const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ timeoutMs: 120_000 }), models: false });
 
 async function loadMcp() {
   mcp?.close();
@@ -227,6 +248,7 @@ async function loadMcp() {
       description: t.description ?? t.name,
       parameters: Type.Unsafe<Record<string, unknown>>(schema),
       ...(SAFE.has(t.name) ? { replay: "safe" as const } : {}),
+      callers: DIRECT_GROUPS.has(t._meta?.group ?? "") ? (["model"] as const) : (["tools"] as const),
       execute: async (args, api) => {
         const thread = threads[api.conversationId] ?? "";
         const extra = SAFE.has(t.name) && t.name === "create_xlsx" ? { taskId: `pi:${api.taskId}` } : {};
@@ -241,12 +263,14 @@ async function loadMcp() {
 
 function toolsFor(groups?: string[] | null) {
   const all = !groups || groups.length === 0;
-  const coding = all || groups.includes("coding") ? [...(CodingTools.tools ?? [])] : [];
-  return [...coding, ...mcpTools.filter((t) => all || groups.includes(t.group)).map((t) => t.tool)];
+  const codingTools = all || groups.includes("coding") ? coding.tools : [];
+  const mcp = mcpTools.filter((t) => all || groups.includes(t.group)).map((t) => t.tool);
+  return [...codingTools, ...mcp, ...(codemode.tools ?? [])];
 }
 
 const registry = createRegistry();
-registry.install(CodingTools);
+registry.install(coding);
+registry.install(codemode);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
 
 const harness = await Harness.open(
@@ -372,8 +396,30 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
+/** SSE of live progress for the thread's newest conversation; ends quietly when none exists. */
+async function streamEvents(req: IncomingMessage, res: ServerResponse) {
+  const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
+  // ponytail: last-inserted conversation for the thread; fine while threads map ~1:1 to conversations.
+  const conversationId = Object.entries(threads).findLast(([, key]) => key === thread)?.[0];
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+  if (!conversationId) return res.end();
+  const stream = await watchEvents(harness, conversationId as never, ctx);
+  const map = progressMapper();
+  stream.start(async (events) => {
+    for (const item of map(events)) res.write(`data: ${JSON.stringify(item)}\n\n`);
+  });
+  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+  const close = () => {
+    clearInterval(ping);
+    void stream.stop().catch(() => {});
+  };
+  req.on("close", close);
+  void stream.closed.then(() => res.end(), () => res.end());
+}
+
 createServer(async (req, res) => {
   try {
+    if (req.method === "GET" && req.url?.startsWith("/events?")) return await streamEvents(req, res);
     if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, faux: process.env.PI_FAUX === "1" });
     if (req.method === "POST" && req.url === "/submit") return send(res, 200, await admit(JSON.parse(await read(req)) as SubmitBody));
     if (req.method === "POST" && req.url === "/wait") {
