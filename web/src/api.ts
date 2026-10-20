@@ -343,7 +343,7 @@ export const api = {
   approvals: () => call<Approval[]>("/api/approvals"),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
-  updateSchedule: (id: string, patch: { enabled?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
+  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
   scheduleLog: (id: string) => call<{ messages: ScheduleLogMessage[] }>(`/api/schedules/log?id=${encodeURIComponent(id)}`),

@@ -93,9 +93,11 @@ export function Schedules({ settings, notify }: ViewProps) {
   const [jobs, setJobs] = useState<Job[]>();
   const [health, setHealth] = useState<Health>();
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Job>();
   const [suggesting, setSuggesting] = useState(false);
   const [aiDraft, setAiDraft] = useState("");
   const [form, setForm] = useState({
+    name: "",
     prompt: "",
     cron: PRESETS[1]!.cron,
     space: settings.allowedSpaces[0] ?? TEAM_ONLY,
@@ -193,7 +195,7 @@ export function Schedules({ settings, notify }: ViewProps) {
           <h1>Schedules</h1>
           <p className="sub">Recurring prompts the agent runs on its own — describe one in plain language, or use /schedule in a thread.</p>
         </div>
-        <button className="btn primary" onClick={() => setOpen(!open)}>
+        <button className="btn primary" onClick={() => { setEditing(undefined); if (!open) setForm((f) => ({ ...f, name: "", prompt: "" })); setOpen(!open); }}>
           New job
         </button>
       </header>
@@ -255,6 +257,18 @@ export function Schedules({ settings, notify }: ViewProps) {
           className="card form"
           onSubmit={(e) => {
             e.preventDefault();
+            if (editing) {
+              const cronChanged = editing.trigger === "cron" && form.cron !== editing.cron;
+              void act(api.updateSchedule(editing.id, {
+                ...(form.name.trim() && { name: form.name.trim() }),
+                prompt: form.prompt,
+                ...(cronChanged && { cron: form.cron }),
+              }), "Job updated").then(() => {
+                setOpen(false);
+                setEditing(undefined);
+              });
+              return;
+            }
             const job = {
               prompt: form.prompt,
               cron: form.trigger === "cron" ? form.cron : "",
@@ -272,7 +286,8 @@ export function Schedules({ settings, notify }: ViewProps) {
             });
           }}
         >
-          <h2>New job</h2>
+          <h2>{editing ? "Edit job" : "New job"}</h2>
+          {!editing && (
           <div className="field">
             <span>Recipe</span>
             <div className="chips">
@@ -289,6 +304,8 @@ export function Schedules({ settings, notify }: ViewProps) {
               ))}
             </div>
           </div>
+          )}
+          {!editing && (
           <div className="field">
             <div className="field-head">
               <span>Describe with AI</span>
@@ -310,10 +327,18 @@ export function Schedules({ settings, notify }: ViewProps) {
             />
             <span className="muted small">Plain language → the agent fills prompt and cron. Review below, then create.</span>
           </div>
+          )}
+          {editing && (
+            <label className="field">
+              <span>Name</span>
+              <input className="mono" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={editing.name} />
+            </label>
+          )}
           <label className="field">
             <span>What should the agent do?</span>
             <textarea rows={2} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />
           </label>
+          {!editing && (
           <fieldset className="field">
             <legend>Runs</legend>
             <div className="chips">
@@ -336,7 +361,18 @@ export function Schedules({ settings, notify }: ViewProps) {
               </label>
             )}
           </fieldset>
-          {form.trigger === "cron" && (
+          )}
+          {editing && (
+            <div className="field">
+              <span>Runs</span>
+              <div className="muted small">
+                {editing.trigger === "command" ? <>When someone writes <code>/{editing.command}</code></>
+                : editing.trigger === "mention" ? <>When a message contains “{editing.pattern}”</>
+                : <>On a schedule</>}
+              </div>
+            </div>
+          )}
+          {(editing ? editing.trigger === "cron" : form.trigger === "cron") && (
           <fieldset className="field">
             <legend>When</legend>
             <div className="chips">
@@ -352,6 +388,8 @@ export function Schedules({ settings, notify }: ViewProps) {
             </label>
           </fieldset>
           )}
+          {!editing && (
+          <>
           <label className="inline check">
             <input type="checkbox" checked={form.needsApproval} onChange={(e) => setForm({ ...form, needsApproval: e.target.checked })} />
             <span>Ask for approval before each run</span>
@@ -381,11 +419,20 @@ export function Schedules({ settings, notify }: ViewProps) {
               </select>
             </label>
           </div>
+          </>
+          )}
+          {editing && (
+            <div className="field muted small">
+              <span>Fixed</span> posts to {editing.space.startsWith("spaces/") ? editing.space : "this app only"}
+              {editing.repo ? ` · repo ${editing.repo}` : ""}
+              {editing.needsApproval ? " · asks for approval" : ""} — delete and re-create to change these.
+            </div>
+          )}
           <div className="form-actions">
-            <button type="button" className="btn" onClick={() => setOpen(false)}>
+            <button type="button" className="btn" onClick={() => { setEditing(undefined); setOpen(false); }}>
               Cancel
             </button>
-            <button className="btn primary">Create job</button>
+            <button className="btn primary">{editing ? "Save changes" : "Create job"}</button>
           </div>
         </form>
       )}
@@ -447,6 +494,17 @@ export function Schedules({ settings, notify }: ViewProps) {
                   <span>Next: {j.enabled ? until(j.nextRunAt) : "paused"}</span>
                 </div>
                 <div className="job-actions">
+                  <button
+                    className="btn"
+                    aria-label={`Edit ${j.name}`}
+                    onClick={() => {
+                      setEditing(j);
+                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, cron: j.cron || PRESETS[1]!.cron }));
+                      setOpen(true);
+                    }}
+                  >
+                    Edit
+                  </button>
                   <button className="btn" onClick={() => setLogId(showingLog ? undefined : j.id)} aria-pressed={showingLog}>
                     {showingLog ? "Hide log" : "Log"}
                   </button>
