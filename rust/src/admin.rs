@@ -21,7 +21,7 @@ use crate::team::{team_delete, team_members, team_send, team_thread, thread_id_o
 use crate::workspace::slug_for;
 
 pub fn admin_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let app = Router::new()
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/health", get(get_health))
         .route("/api/activity", get(get_activity))
@@ -105,7 +105,14 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn(require_local_host))
         .layer(CompressionLayer::new())
         .layer(RequestDecompressionLayer::new())
-        .with_state(state)
+        .with_state(state.clone());
+    // SSE runs outside the compression layer: a compressed event stream is buffered, which hides live progress.
+    app.merge(
+        Router::new()
+            .route("/api/team/events", get(get_team_events))
+            .layer(axum::middleware::from_fn(require_local_host))
+            .with_state(state),
+    )
 }
 
 async fn require_local_host(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -712,6 +719,32 @@ async fn get_team_thread(State(state): State<Arc<AppState>>, Query(q): Query<Thr
         Ok(t) => Json(t).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
+}
+
+/// Live agent progress for a team thread: the pi harness event stream, relayed byte for byte to the browser.
+async fn get_team_events(Query(q): Query<ThreadQuery>) -> Response {
+    let thread = q.thread.unwrap_or_default();
+    if !thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let url = format!("http://127.0.0.1:{}/events", crate::pi_sidecar::port());
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let upstream = match reqwest::Client::new().get(&url).query(&[("thread", key)]).send().await {
+        Ok(res) if res.status().is_success() => res,
+        Ok(res) => {
+            let err = format!("pi harness answered {}", res.status());
+            return (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response();
+        }
+        Err(err) => {
+            let msg = format!("pi harness is not running: {err}");
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+    let mut response = Response::new(axum::body::Body::from_stream(upstream.bytes_stream()));
+    let headers = response.headers_mut();
+    headers.insert(axum::http::header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+    headers.insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-cache, no-transform"));
+    response
 }
 
 #[derive(Deserialize)]

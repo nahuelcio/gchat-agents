@@ -9,7 +9,7 @@ import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from 
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
-import { progressMapper } from "./progress.ts";
+import { progressMapper, type ProgressItem } from "./progress.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -346,6 +346,51 @@ function loadKeys() {
 
 const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>();
 
+type Feed = { items: ProgressItem[]; listeners: Set<(item: ProgressItem) => void> };
+const feeds = new Map<string, Feed>();
+const opening = new Map<string, Promise<Feed>>();
+// Cap the replay buffer so a long-lived conversation cannot grow without bound.
+const FEED_LIMIT = 5000;
+
+/**
+ * Live progress feed for one conversation. Attach it before the turn commits so the feed holds the whole
+ * turn: the stream reports commits after it mounts, and the SSE endpoint replays what it captured.
+ */
+function feedFor(conversationId: string): Promise<Feed> {
+  const known = feeds.get(conversationId);
+  if (known) return Promise.resolve(known);
+  const started = opening.get(conversationId);
+  if (started) return started;
+  // pi-durable addresses conversation documents by the numeric id; the saved map holds it as a string.
+  const id = Number(conversationId);
+  if (!Number.isSafeInteger(id)) return Promise.reject(new Error(`bad conversation id: ${conversationId}`));
+  const feed = (async () => {
+    const stream = await watchEvents(harness, id as never, ctx);
+    const map = progressMapper();
+    const created: Feed = { items: [], listeners: new Set() };
+    feeds.set(conversationId, created);
+    stream.start(async (events) => {
+      for (const item of map(events)) {
+        created.items.push(item);
+        if (created.items.length > FEED_LIMIT) created.items.splice(0, created.items.length - FEED_LIMIT);
+        for (const listener of created.listeners) listener(item);
+      }
+    });
+    const drop = () => {
+      feeds.delete(conversationId);
+      void stream.stop().catch(() => {});
+    };
+    void stream.closed.then(drop, drop);
+    return created;
+  })();
+  opening.set(conversationId, feed);
+  void feed.then(
+    () => opening.delete(conversationId),
+    () => opening.delete(conversationId),
+  );
+  return feed;
+}
+
 async function admit(body: SubmitBody) {
   loadKeys();
   const known = saved.requests[body.requestId];
@@ -354,6 +399,8 @@ async function admit(body: SubmitBody) {
   if (!conv && body.conversationId) conv = await harness.conversation(body.conversationId as never, ctx);
   if (!conv) conv = await harness.createConversation({ ownership: { kind: "ownerless" } }, ctx);
   remember(String(conv.id), body.threadKey, body.requestId);
+  // Progress must attach before this turn's commits reach the conversation.
+  void feedFor(String(conv.id)).catch((err) => console.error("progress feed unavailable:", err instanceof Error ? err.message : err));
   if (!known) {
     await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
   }
@@ -396,25 +443,28 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
-/** SSE of live progress for the thread's newest conversation; ends quietly when none exists. */
+/** SSE of live progress for a thread's newest conversation: replays the feed, then follows it. */
 async function streamEvents(req: IncomingMessage, res: ServerResponse) {
   const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
   // ponytail: last-inserted conversation for the thread; fine while threads map ~1:1 to conversations.
   const conversationId = Object.entries(threads).findLast(([, key]) => key === thread)?.[0];
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   if (!conversationId) return res.end();
-  const stream = await watchEvents(harness, conversationId as never, ctx);
-  const map = progressMapper();
-  stream.start(async (events) => {
-    for (const item of map(events)) res.write(`data: ${JSON.stringify(item)}\n\n`);
-  });
+  let feed: Feed;
+  try {
+    feed = await feedFor(conversationId);
+  } catch (err) {
+    console.error("progress feed unavailable:", err instanceof Error ? err.message : err);
+    return res.end();
+  }
+  const send = (item: ProgressItem) => res.write(`data: ${JSON.stringify(item)}\n\n`);
+  for (const item of feed.items) send(item);
+  feed.listeners.add(send);
   const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
-  const close = () => {
+  res.on("close", () => {
     clearInterval(ping);
-    void stream.stop().catch(() => {});
-  };
-  req.on("close", close);
-  void stream.closed.then(() => res.end(), () => res.end());
+    feed.listeners.delete(send);
+  });
 }
 
 createServer(async (req, res) => {
@@ -444,6 +494,7 @@ createServer(async (req, res) => {
     }
     send(res, 404, { error: "not found" });
   } catch (err) {
+    if (res.headersSent) return void res.end();
     send(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
 }).listen(port, "127.0.0.1", () => console.log(`pi harness on 127.0.0.1:${port} (${dirname(join(dataDir, "harness.sqlite"))})`));

@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { ArtifactPane, ArtifactPreviewProvider, useArtifactPreview } from "../ArtifactPreview";
 import { Icon } from "../App";
+import { applyProgress, emptyProgress, type Progress, type ProgressEvent } from "../live-progress";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
@@ -109,6 +110,34 @@ function AgentQuestions({
   );
 }
 
+/** Live progress of the running turn: thinking collapsed, tool calls listed. Nothing is truncated. */
+function LiveProgress({ progress }: { progress: Progress }) {
+  if (!progress.thinking && progress.tools.length === 0) return null;
+  return (
+    <details className="live-progress" open>
+      <summary>
+        <span className="muted small">Live progress</span>
+        {progress.tools.some((t) => t.running) && <span className="live-dot" aria-hidden />}
+      </summary>
+      {progress.thinking && (
+        <details className="thinking">
+          <summary className="muted small">Thinking · {progress.thinking.length.toLocaleString()} chars</summary>
+          <pre>{progress.thinking}</pre>
+        </details>
+      )}
+      {progress.tools.length > 0 && (
+        <ol className="tool-lines">
+          {progress.tools.map((tool, i) => (
+            <li key={tool.callId ?? i} className={tool.running ? "running" : undefined}>
+              <code>{tool.text}</code>
+            </li>
+          ))}
+        </ol>
+      )}
+    </details>
+  );
+}
+
 /** Splits the bridge's context footer off a reply so it renders as metadata. */
 function splitFooter(text: string): { text: string; footer?: string } {
   const m = text.match(/\n\n— (.+)$/);
@@ -187,6 +216,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
+  const [progress, setProgress] = useState<Progress>(emptyProgress);
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -391,6 +421,22 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     const list = bottom.current?.parentElement;
     if (list) list.scrollTop = list.scrollHeight;
   }, [state?.messages.length, sending]);
+
+  // Live progress: the running turn's thinking and tool calls, streamed over SSE while the thread is busy.
+  useEffect(() => {
+    setProgress(emptyProgress);
+    const busy = sending || state?.busy;
+    if (!busy || !activeId || !transport.events) return;
+    const source = transport.events(activeId);
+    source.onmessage = (msg: MessageEvent<string>) => {
+      try {
+        setProgress((current) => applyProgress(current, JSON.parse(msg.data) as ProgressEvent));
+      } catch {
+        // a malformed frame is not worth breaking the turn over
+      }
+    };
+    return () => source.close();
+  }, [activeId, transport, sending, state?.busy]);
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
@@ -756,6 +802,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               </div>
             );
           })}
+          {working && <LiveProgress progress={progress} />}
           {working && (
             <div className="working" role="status" aria-live="polite">
               {(state?.answering?.length ? state.answering : [BOT_NAME]).map((n) => {

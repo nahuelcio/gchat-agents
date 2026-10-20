@@ -1,48 +1,52 @@
 import type { AgentEvent } from "@earendil-works/pi-durable";
 
-export type ProgressItem = { kind: "thinking" | "tool" | "tool_done" | "idle"; text: string };
+/**
+ * One line of live progress, forwarded verbatim to the web UI. Thinking arrives as deltas so no
+ * character is ever dropped: the client appends them under a collapsed disclosure.
+ */
+export type ProgressItem =
+  | { kind: "turn"; text: "" }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; text: string; callId?: string }
+  | { kind: "tool_done"; text: string; callId?: string }
+  | { kind: "idle"; text: "" };
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
-function preview(args: Record<string, unknown> | undefined): string {
+/** Tool arguments as the model sent them; the UI decides how much of it to show. */
+function describe(args: Record<string, unknown> | undefined): string {
   if (!args || Object.keys(args).length === 0) return "";
-  const main = args.command ?? args.code ?? args.path;
-  return clip(typeof main === "string" ? main.replace(/\s+/g, " ") : JSON.stringify(args), 120);
+  return JSON.stringify(args);
 }
 
-/** Maps pi-durable agent events to compact progress lines; thinking is coalesced to a 200-char tail at most every 300ms. */
+const THROTTLE_MS = 300;
+
+/** Maps pi-durable agent events to progress lines. Thinking is coalesced per batch, never truncated. */
 export function progressMapper(now: () => number = Date.now) {
-  let thinking = "";
-  let pending = false;
+  let pending = "";
   let sentAt = -Infinity;
   return (events: readonly AgentEvent[]): ProgressItem[] => {
     const out: ProgressItem[] = [];
     const flush = () => {
-      if (pending) out.push({ kind: "thinking", text: thinking });
-      pending = false;
+      if (pending) out.push({ kind: "thinking", text: pending });
+      pending = "";
       sentAt = now();
     };
     for (const e of events) {
       if (e.type === "message_update") {
-        for (const c of e.changes) {
-          if (c.type !== "thinking_delta") continue;
-          thinking = (thinking + c.delta).slice(-200);
-          pending = true;
-        }
-        if (pending && now() - sentAt >= 300) flush();
+        for (const c of e.changes) if (c.type === "thinking_delta") pending += c.delta;
+        if (pending && now() - sentAt >= THROTTLE_MS) flush();
       } else if (e.type === "tool_execution_start") {
         flush();
-        const args = preview(e.args);
-        out.push({ kind: "tool", text: `${e.parentToolCallId ? "↳ " : ""}${e.toolName}${args ? `: ${args}` : ""}` });
+        const args = describe(e.args);
+        out.push({ kind: "tool", text: `${e.parentToolCallId ? "↳ " : ""}${e.toolName}${args ? `: ${args}` : ""}`, callId: e.toolCallId });
       } else if (e.type === "tool_execution_end") {
         flush();
-        out.push({ kind: "tool_done", text: e.toolName });
+        out.push({ kind: "tool_done", text: e.toolName, callId: e.toolCallId });
+      } else if (e.type === "turn_start") {
+        flush();
+        out.push({ kind: "turn", text: "" });
       } else if (e.type === "run_end") {
         flush();
-        thinking = "";
         out.push({ kind: "idle", text: "" });
-      } else if (e.type === "turn_start") {
-        thinking = "";
       }
     }
     return out;

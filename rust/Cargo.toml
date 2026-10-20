@@ -18,7 +18,7 @@ jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"]
 mime_guess = "2"
 rand = "0.8"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
 rust_xlsxwriter = "0.89"
 serde = { version = "1", features = ["derive"] }
