@@ -30,7 +30,19 @@ export interface Settings {
 
 export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "context7", "agents", "google-drive"];
 
-export const DEFAULT_HOST_SKILLS = ["artifacts"];
+export const DEFAULT_HOST_SKILLS = [
+  "artifacts",
+  "grill-with-docs",
+  "domain-modeling",
+  "tdd",
+  "diagnosing-bugs",
+  "codebase-design",
+  "code-review",
+  "improve-codebase-architecture",
+  "retro",
+  "teach",
+  "writing-for-agents",
+];
 
 export interface PersonaAvatar {
   color: string;
