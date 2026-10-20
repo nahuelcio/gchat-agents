@@ -61,6 +61,8 @@ fn tools() -> Value {
         {"name":"create_xlsx","description":"Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. Calling it again for the same request returns the same file.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"sheets":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"rows":{"type":"array","items":{"type":"array"}}},"required":["name","rows"]}}},"required":["title","sheets"]}},
         {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}},
         {"name":"create_artifact","description":"Publish a Switchboard-styled HTML artifact teammates view inline. ALWAYS use template+fields (never invent CSS or dark themes). Templates: walkthrough, compare, quiz, cards. After success, put the returned marker in your reply — do not paste HTML.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"Short label above the preview"},"template":{"type":"string","description":"walkthrough | compare | quiz | cards"},"fields":{"type":"object","description":"Placeholder values e.g. TITLE, LEAD, STEP1_TITLE, Q1, Q1_A, Q1_ANSWER (0|1|2), …"}},"required":["title","template","fields"]}},
+        {"name":"skill_search","description":"Search installed skills by name or description (case-insensitive substring). Empty query lists all. Use when unsure which skill fits a task.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},
+        {"name":"skill_load","description":"Load a skill's full instructions plus its bundled file list. Required before acting on a skill from the catalog or skill_search.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
         {"name":"list_agents","description":"List the specialised agents you can ask, with what each one knows.","inputSchema":{"type":"object","properties":{}}},
         {"name":"ask_agent","description":"Ask another specialised agent a question and get its answer. Use it when the question belongs to that agent's field.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"question":{"type":"string"}},"required":["agent","question"]}}
     ])
@@ -70,6 +72,7 @@ pub fn group_of(tool: &str) -> &'static str {
     match tool {
         "create_xlsx" | "list_spreadsheets" => "google-drive",
         "ask_agent" | "list_agents" => "agents",
+        "skill_search" | "skill_load" => "skills",
         _ => "switchboard",
     }
 }
@@ -331,6 +334,41 @@ pub async fn run_tool(
             Ok(format!(
                 "Artifact \"{title}\" published ({template}). In your reply include a short intro and this marker on its own line (do not paste HTML):\n{marker}"
             ))
+        }
+        "skill_search" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+            let skills: Vec<_> = crate::skills::available()
+                .into_iter()
+                .filter(|s| crate::skills::loadable_name(&s.name))
+                .filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q))
+                .map(|s| json!({ "name": s.name, "description": s.description }))
+                .collect();
+            Ok(json!({ "skills": skills, "hint": "load one with skill_load" }).to_string())
+        }
+        "skill_load" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if name.is_empty() {
+                return Err("name is required".into());
+            }
+            let Some(skill) = crate::skills::load(name) else {
+                return Err(format!("unknown skill: {name}. Use skill_search to find installed skills."));
+            };
+            let folder = crate::skills::skill_dir(&skill.name)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let files: Vec<_> = skill
+                .files
+                .iter()
+                .map(|f| json!({ "path": f.path, "kind": f.path.split('/').next().unwrap_or("file") }))
+                .collect();
+            Ok(json!({
+                "name": skill.name,
+                "body": skill.body,
+                "folder": folder,
+                "files": files,
+                "hint": "files are paths only; read their contents with your file tools when needed",
+            })
+            .to_string())
         }
         "list_agents" => {
             let data = call_admin("/api/agents/delegates", "GET", None, true, &env, client).await?;
@@ -703,6 +741,44 @@ mod tests {
         let call = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "fake__shout", "arguments": { "text": "hola" } } });
         let out = handle_rpc_with(&call, &env, &reqwest::Client::new(), &external).await.unwrap();
         assert!(out.contains("HOLA"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn skill_search_filters_all_installed_and_skill_load_returns_body_and_folder() {
+        let _dirs = crate::skills::TEST_DIRS_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("pdf/references")).unwrap();
+        std::fs::write(dir.path().join("pdf/SKILL.md"), "---\nname: pdf\ndescription: Format PDFs\n---\nSplit pages before merging.").unwrap();
+        std::fs::write(dir.path().join("pdf/references/pages.md"), "page rule").unwrap();
+        std::fs::create_dir_all(dir.path().join("ventas")).unwrap();
+        std::fs::write(dir.path().join("ventas/SKILL.md"), "---\nname: ventas\ndescription: Precios y planes\n---\nBody.").unwrap();
+        crate::skills::set_dirs(vec![dir.path().to_path_buf()]);
+        assert_eq!(group_of("skill_search"), "skills");
+        assert_eq!(group_of("skill_load"), "skills");
+
+        async fn run(name: &str, args: Value) -> Result<String, String> {
+            run_tool(name, &args, &HashMap::new(), &reqwest::Client::new()).await
+        }
+        let out = run("skill_search", json!({ "query": "PDF" })).await.unwrap();
+        assert!(out.contains("\"pdf\""), "{out}");
+        assert!(!out.contains("ventas"), "{out}");
+        assert!(out.contains("load one with skill_load"));
+        let all = run("skill_search", json!({})).await.unwrap();
+        assert!(all.contains("\"pdf\"") && all.contains("\"ventas\""), "{all}");
+
+        let out = run("skill_load", json!({ "name": "pdf" })).await.unwrap();
+        assert!(out.contains("Split pages before merging."), "{out}");
+        assert!(out.contains("references/pages.md"), "{out}");
+        assert!(out.contains("\"kind\":\"references\""), "{out}");
+        assert!(out.contains("file tools"), "{out}");
+        assert!(!out.contains("page rule"), "{out}");
+        let folder = dir.path().join("pdf").to_string_lossy().into_owned();
+        assert!(out.contains(&folder), "{out}");
+
+        let err = run("skill_load", json!({ "name": "nope" })).await.unwrap_err();
+        assert!(err.contains("unknown skill: nope"), "{err}");
+        let err = run("skill_load", json!({ "name": "../etc" })).await.unwrap_err();
+        assert!(err.contains("unknown skill"), "{err}");
     }
 
     #[tokio::test]

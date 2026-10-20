@@ -63,8 +63,15 @@ pub fn parse(raw: &str) -> Skill {
     }
 }
 
+/// One naming rule for reading an installed skill: non-empty, no path
+/// separators, no dot caveat. Keep load(), skill_dir() and the skill_search
+/// filter aligned so the catalog never advertises a skill load() rejects.
+pub fn loadable_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\', '.'])
+}
+
 pub fn load(name: &str) -> Option<Skill> {
-    if name.is_empty() || name.contains(['/', '\\', '.']) {
+    if !loadable_name(name) {
         return None;
     }
     dirs().iter().find_map(|d| load_from(d, name))
@@ -208,67 +215,29 @@ pub fn writable_dir() -> PathBuf {
 
 /// Absolute folder for a skill if it exists on disk (for agents to read bundles).
 pub fn skill_dir(name: &str) -> Option<PathBuf> {
-    if !valid_name(name) {
+    if !loadable_name(name) {
         return None;
     }
     dirs().into_iter().map(|d| d.join(name)).find(|p| p.join("SKILL.md").is_file())
 }
 
+/// Tests calling set_dirs mutate process-global state; serialize them.
+#[cfg(test)]
+pub(crate) static TEST_DIRS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Compact catalog for the preamble: name + description per attached and
+/// loadable skill. Attached-but-unresolvable names are dropped, matching the
+/// old filter_map behavior, so a host persona with no loadable skills keeps
+/// rendering nothing. Empty string when nothing resolves.
 pub fn instructions(persona: &Persona) -> String {
-    persona
-        .skills
-        .iter()
-        .filter_map(|n| load(n))
-        .map(|s| render_for_agent(&s))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn render_for_agent(skill: &Skill) -> String {
-    let mut out = format!("## Skill: {}\n{}", skill.name, skill.body);
-    if skill.files.is_empty() {
-        return out;
-    }
-    let dir = skill_dir(&skill.name);
-    let scripts: Vec<_> = skill.files.iter().filter(|f| f.path.starts_with("scripts/")).collect();
-    let docs: Vec<_> = skill.files.iter().filter(|f| !f.path.starts_with("scripts/")).collect();
-
-    if !scripts.is_empty() {
-        out.push_str("\n\n### Custom tools (scripts)\n");
-        out.push_str("Run these instead of reinventing the logic. Prefer the skill folder path below.\n");
-        if let Some(dir) = &dir {
-            out.push_str(&format!("Skill folder: `{}`\n", dir.display()));
+    let mut out = String::new();
+    for s in persona.skills.iter().filter_map(|n| load(n)) {
+        if out.is_empty() {
+            out.push_str(
+                "## Available skills - a task that matches one needs its full instructions: call skill_load before acting; use skill_search when unsure which fits",
+            );
         }
-        for f in &scripts {
-            let abs = dir.as_ref().map(|d| d.join(f.path.replace('/', std::path::MAIN_SEPARATOR_STR)));
-            let run = if f.path.ends_with(".js") || f.path.ends_with(".mjs") || f.path.ends_with(".cjs") {
-                "node"
-            } else if f.path.ends_with(".py") {
-                "python"
-            } else if f.path.ends_with(".ts") {
-                "npx tsx"
-            } else {
-                "run"
-            };
-            match abs {
-                Some(p) => out.push_str(&format!("- `{rel}` → `{run} {p}`\n", rel = f.path, p = p.display())),
-                None => out.push_str(&format!("- `{rel}` → `{run} {rel}`\n", rel = f.path)),
-            }
-        }
-    }
-
-    if !docs.is_empty() {
-        out.push_str("\n\n### Bundled docs & assets\n");
-        out.push_str("Read these with your file tools only when needed — do not invent their contents.\n");
-        if scripts.is_empty() {
-            if let Some(dir) = &dir {
-                out.push_str(&format!("Skill folder: `{}`\n", dir.display()));
-            }
-        }
-        for f in docs {
-            let kind = f.path.split('/').next().unwrap_or("file");
-            out.push_str(&format!("- `{path}` ({kind})\n", path = f.path));
-        }
+        out.push_str(&format!("\n- {}: {}", s.name, s.description.replace('\n', " ")));
     }
     out
 }
@@ -286,15 +255,19 @@ pub fn mcps(persona: &Persona) -> Vec<String> {
             out.push("coding".into());
         }
     }
+    // Skill tools ride along only when the persona already runs under a
+    // whitelist (explicit mcps or skill frontmatter). An empty list stays
+    // empty: to the drivers, an empty group list means ALL tools, already
+    // including the skill pair.
+    if !out.is_empty() && !out.iter().any(|m| m == "skills") {
+        out.push("skills".into());
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Tests calling set_dirs mutate process-global state; serialize them.
-    static DIRS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn saved_skills_read_back_the_same() {
@@ -328,7 +301,7 @@ mod tests {
 
     #[test]
     fn persona_preamble_carries_the_skill_and_its_mcps() {
-        let _dirs = DIRS_LOCK.lock().unwrap();
+        let _dirs = super::TEST_DIRS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("finanzas/references")).unwrap();
         std::fs::write(dir.path().join("finanzas/SKILL.md"), "---\nname: finanzas\nmcps: [google-drive]\n---\nNo inventar cifras.").unwrap();
@@ -348,9 +321,57 @@ mod tests {
             avatar: None,
         };
         let preamble = crate::personas::persona_preamble(&p, std::slice::from_ref(&p));
-        assert!(preamble.contains("## Skill: finanzas\nNo inventar cifras."));
-        assert!(preamble.contains("references/rules.md"));
-        assert_eq!(mcps(&p), vec!["google-drive"]);
+        assert!(preamble.contains("## Available skills"));
+        assert!(preamble.contains("- finanzas:"));
+        assert!(!preamble.contains("No inventar cifras."));
+        assert!(!preamble.contains("references/rules.md"));
+        let got = mcps(&p);
+        assert!(got.contains(&"google-drive".into()));
+        assert!(got.contains(&"skills".into()));
+    }
+
+    #[test]
+    fn unresolved_attached_skill_is_dropped_from_catalog() {
+        let p = Persona {
+            name: "x".into(),
+            prompt: "p".into(),
+            driver: None,
+            model: None,
+            agent: None,
+            listen: None,
+            respond_to: None,
+            skills: vec!["ghost".into()],
+            mcps: vec![],
+            delegates: vec![],
+            avatar: None,
+        };
+        assert!(instructions(&p).is_empty());
+    }
+
+    #[test]
+    fn skills_group_only_rides_a_whitelist() {
+        // Ghost skill + no groups: empty stays empty (all-tools, skill pair
+        // included). Persona mcps: the pair joins the whitelist.
+        let ghost = Persona {
+            name: "x".into(),
+            prompt: "p".into(),
+            driver: None,
+            model: None,
+            agent: None,
+            listen: None,
+            respond_to: None,
+            skills: vec!["ghost".into()],
+            mcps: vec![],
+            delegates: vec![],
+            avatar: None,
+        };
+        assert!(mcps(&ghost).is_empty());
+        let p = Persona {
+            mcps: vec!["google-drive".into()],
+            skills: vec!["ghost".into()],
+            ..ghost.clone()
+        };
+        assert_eq!(mcps(&p), vec!["google-drive".to_string(), "skills".to_string()]);
     }
 
     #[test]
@@ -374,7 +395,7 @@ mod tests {
 
     #[test]
     fn scripts_pull_in_coding_and_show_run_hints() {
-        let _dirs = DIRS_LOCK.lock().unwrap();
+        let _dirs = super::TEST_DIRS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let skill = Skill {
             name: "pdf".into(),
@@ -402,9 +423,10 @@ mod tests {
             avatar: None,
         };
         assert!(mcps(&p).contains(&"coding".into()));
+        assert!(mcps(&p).contains(&"skills".into()));
         let text = instructions(&p);
-        assert!(text.contains("Custom tools (scripts)"));
-        assert!(text.contains("node"));
-        assert!(text.contains("format-pdf.js"));
+        assert!(text.contains("- pdf: Format PDFs"));
+        assert!(!text.contains("Use the script."));
+        assert!(!text.contains("format-pdf.js"));
     }
 }
