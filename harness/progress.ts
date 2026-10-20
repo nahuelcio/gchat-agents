@@ -1,8 +1,8 @@
 import type { AgentEvent } from "@earendil-works/pi-durable";
 
 /**
- * One line of live progress, forwarded verbatim to the web UI. Thinking arrives as deltas so no
- * character is ever dropped: the client appends them under a collapsed disclosure.
+ * One line of live progress, forwarded verbatim to the web UI. Thinking reaches the client whole —
+ * as deltas or as whatever whole-block shape a collapsed batch carries — under a collapsed disclosure.
  */
 export type ProgressItem =
   | { kind: "turn"; text: "" }
@@ -19,10 +19,18 @@ function describe(args: Record<string, unknown> | undefined): string {
 
 const THROTTLE_MS = 300;
 
+const thinkingOf = (block: { type: string; thinking?: string } | undefined): string | undefined =>
+  block?.type === "thinking" ? (block.thinking ?? "") : undefined;
+
 /** Maps pi-durable agent events to progress lines. Thinking is coalesced per batch, never truncated. */
 export function progressMapper(now: () => number = Date.now) {
   let pending = "";
   let sentAt = -Infinity;
+  // Deltas are not the only shape a batch takes: pi-durable collapses writes into a whole block
+  // (thinking_start/block) or a whole message, and a mapper that only reads thinking_delta loses
+  // everything those shapes carry. Track the latest full thinking text per content index instead.
+  const known = new Map<number, string>();
+  const sent = new Map<number, number>();
   return (events: readonly AgentEvent[]): ProgressItem[] => {
     const out: ProgressItem[] = [];
     const flush = () => {
@@ -30,9 +38,32 @@ export function progressMapper(now: () => number = Date.now) {
       pending = "";
       sentAt = now();
     };
+    /** Queue every not-yet-forwarded suffix; a collapsed batch backfills what deltas missed. */
+    const drain = (changes: readonly { type: string; contentIndex?: number; delta?: string; block?: { type: string; thinking?: string }; message?: { content?: { type: string; thinking?: string }[] } }[]) => {
+      for (const c of changes) {
+        if (c.type === "thinking_delta") known.set(c.contentIndex ?? 0, (known.get(c.contentIndex ?? 0) ?? "") + (c.delta ?? ""));
+        else if (c.type === "thinking_start" || c.type === "block") {
+          const text = thinkingOf(c.block as { type: string; thinking?: string } | undefined);
+          if (text !== undefined) known.set(c.contentIndex ?? 0, text);
+        } else if (c.type === "message") {
+          (c.message?.content ?? []).forEach((b: { type: string; thinking?: string }, i: number) => {
+            const text = thinkingOf(b);
+            if (text !== undefined) known.set(i, text);
+          });
+        }
+      }
+      for (const i of [...known.keys()].sort((a, b) => a - b)) {
+        const text = known.get(i) ?? "";
+        const sentLen = sent.get(i) ?? 0;
+        if (text.length > sentLen) {
+          pending += text.slice(sentLen);
+          sent.set(i, text.length);
+        }
+      }
+    };
     for (const e of events) {
       if (e.type === "message_update") {
-        for (const c of e.changes) if (c.type === "thinking_delta") pending += c.delta;
+        drain(e.changes as never);
         if (pending && now() - sentAt >= THROTTLE_MS) flush();
       } else if (e.type === "tool_execution_start") {
         flush();

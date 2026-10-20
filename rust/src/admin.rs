@@ -786,7 +786,15 @@ pub async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
     if !thread_id_ok(&thread) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
     }
-    crate::personas::request_stop(&format!("{TEAM_PREFIX}{thread}"));
+    let key = format!("{TEAM_PREFIX}{thread}");
+    crate::personas::request_stop(&key);
+    // The queue flag only gates the next hand-off; the reply in flight has to be aborted at the harness.
+    let _ = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/abort", crate::pi_sidecar::port()))
+        .json(&json!({ "thread": key }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
     Json(json!({ "ok": true })).into_response()
 }
 

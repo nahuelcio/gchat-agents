@@ -824,7 +824,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 <button
                   className="btn linkish"
                   onClick={() => void transport.stopAgents(activeId).catch(() => {})}
-                  title="Agents stop handing off to each other after the current reply"
+                  title="Stops the running reply and skips the rest of the hand-off"
                 >
                   Stop
                 </button>
