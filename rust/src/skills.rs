@@ -293,6 +293,9 @@ pub fn mcps(persona: &Persona) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Tests calling set_dirs mutate process-global state; serialize them.
+    static DIRS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn saved_skills_read_back_the_same() {
         let dir = tempfile::tempdir().unwrap();
@@ -325,6 +328,7 @@ mod tests {
 
     #[test]
     fn persona_preamble_carries_the_skill_and_its_mcps() {
+        let _dirs = DIRS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("finanzas/references")).unwrap();
         std::fs::write(dir.path().join("finanzas/SKILL.md"), "---\nname: finanzas\nmcps: [google-drive]\n---\nNo inventar cifras.").unwrap();
@@ -370,6 +374,7 @@ mod tests {
 
     #[test]
     fn scripts_pull_in_coding_and_show_run_hints() {
+        let _dirs = DIRS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let skill = Skill {
             name: "pdf".into(),

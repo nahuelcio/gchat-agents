@@ -70,7 +70,12 @@ pub struct Runtime {
 pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> {
     std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&config.workdir).map_err(|e| e.to_string())?;
-    crate::skills::set_dirs(vec![config.data_dir.join("skills"), PathBuf::from("skills")]);
+    // data/skills = propias (writable), .agents/skills = gestionadas por skills.sh (npx skills update -p), skills = vendor manual.
+    crate::skills::set_dirs(vec![
+        config.data_dir.join("skills"),
+        PathBuf::from(".agents/skills"),
+        PathBuf::from("skills"),
+    ]);
 
     let settings = Arc::new(SettingsStore::open(
         config.data_dir.join("config.json"),
