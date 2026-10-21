@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::extract::ws::{Message as ClientMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 
@@ -55,7 +58,6 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/thread", get(get_team_thread))
         .route("/api/team/send", post(post_team_send))
         .route("/api/team/steer", post(post_team_steer))
-        .route("/api/team/inbox", get(get_team_inbox))
         .route("/api/team/stop", post(post_team_stop))
         .route("/api/team/archive", post(post_team_archive))
         .route("/api/team/delete", post(post_team_delete))
@@ -108,10 +110,9 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .layer(CompressionLayer::new())
         .layer(RequestDecompressionLayer::new())
         .with_state(state.clone());
-    // SSE runs outside the compression layer: a compressed event stream is buffered, which hides live progress.
     app.merge(
         Router::new()
-            .route("/api/team/events", get(get_team_events))
+            .route("/api/team/view", get(get_team_view))
             .layer(axum::middleware::from_fn(require_local_host))
             .with_state(state),
     )
@@ -721,30 +722,55 @@ async fn get_team_thread(State(state): State<Arc<AppState>>, Query(q): Query<Thr
     }
 }
 
-/// Live agent progress for a team thread: the pi harness event stream, relayed byte for byte to the browser.
-async fn get_team_events(Query(q): Query<ThreadQuery>) -> Response {
+async fn get_team_view(ws: WebSocketUpgrade, Query(q): Query<ThreadQuery>) -> Response {
     let thread = q.thread.unwrap_or_default();
     if !thread_id_ok(&thread) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
     }
-    let url = format!("http://127.0.0.1:{}/events", crate::pi_sidecar::port());
-    let key = format!("{TEAM_PREFIX}{thread}");
-    let upstream = match reqwest::Client::new().get(&url).query(&[("thread", key)]).send().await {
-        Ok(res) if res.status().is_success() => res,
-        Ok(res) => {
-            let err = format!("pi harness answered {}", res.status());
-            return (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response();
-        }
-        Err(err) => {
-            let msg = format!("pi harness is not running: {err}");
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response();
+    let mut url = reqwest::Url::parse(&format!("ws://127.0.0.1:{}/view", crate::pi_sidecar::port())).expect("pi harness url");
+    url.query_pairs_mut().append_pair("thread", &format!("{TEAM_PREFIX}{thread}"));
+    ws.on_upgrade(move |client| relay_view(client, url))
+}
+
+async fn relay_view(client: WebSocket, url: reqwest::Url) {
+    let Ok((upstream, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
+        return;
+    };
+    let (mut to_client, mut from_client) = client.split();
+    let (mut to_upstream, mut from_upstream) = upstream.split();
+    let up = async {
+        while let Some(Ok(message)) = from_client.next().await {
+            let outgoing = match message {
+                ClientMessage::Text(text) => UpstreamMessage::Text(text.as_str().into()),
+                ClientMessage::Binary(bytes) => UpstreamMessage::Binary(bytes),
+                ClientMessage::Ping(bytes) => UpstreamMessage::Ping(bytes),
+                ClientMessage::Pong(bytes) => UpstreamMessage::Pong(bytes),
+                ClientMessage::Close(_) => break,
+            };
+            if to_upstream.send(outgoing).await.is_err() {
+                break;
+            }
         }
     };
-    let mut response = Response::new(axum::body::Body::from_stream(upstream.bytes_stream()));
-    let headers = response.headers_mut();
-    headers.insert(axum::http::header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
-    headers.insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-cache, no-transform"));
-    response
+    let down = async {
+        while let Some(Ok(message)) = from_upstream.next().await {
+            let outgoing = match message {
+                UpstreamMessage::Text(text) => ClientMessage::Text(text.as_str().into()),
+                UpstreamMessage::Binary(bytes) => ClientMessage::Binary(bytes),
+                UpstreamMessage::Ping(bytes) => ClientMessage::Ping(bytes),
+                UpstreamMessage::Pong(bytes) => ClientMessage::Pong(bytes),
+                UpstreamMessage::Close(_) => break,
+                UpstreamMessage::Frame(_) => continue,
+            };
+            if to_client.send(outgoing).await.is_err() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = up => {}
+        _ = down => {}
+    }
 }
 
 #[derive(Deserialize)]
@@ -797,28 +823,6 @@ async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<Te
     {
         Ok(v) => Json(v).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
-    }
-}
-
-async fn get_team_inbox(State(state): State<Arc<AppState>>, Query(q): Query<ThreadQuery>) -> Response {
-    let thread = q.thread.unwrap_or_default();
-    if !thread_id_ok(&thread) {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
-    }
-    let key = format!("{TEAM_PREFIX}{thread}");
-    let Some(session) = state.handler.store.get(&key).and_then(|r| r.session_ref) else {
-        return Json(json!({ "busy": false, "items": [] })).into_response();
-    };
-    let url = format!("http://127.0.0.1:{}/inbox", crate::pi_sidecar::port());
-    match reqwest::Client::new().get(&url).query(&[("conversation", session)]).send().await {
-        Ok(res) => match res.json::<Value>().await {
-            Ok(out) => Json(out).into_response(),
-            Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err.to_string() }))).into_response(),
-        },
-        Err(err) => {
-            let msg = format!("pi harness is not running: {err}");
-            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response()
-        }
     }
 }
 

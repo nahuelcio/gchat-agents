@@ -1,4 +1,6 @@
 import { encodeJsonBody } from "./http-body";
+import type { ThreadViewState } from "./thread-progress";
+import { watchThreadView } from "./thread-watch";
 
 export interface RepoConfig {
   path: string;
@@ -516,7 +518,6 @@ export interface TeamTransport {
   thread: (id: string) => Promise<TeamThreadState>;
   send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
   steer?: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
-  inbox?: (id: string) => Promise<{ busy: boolean; items: QueuedItem[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
   /** Agents you can @mention in chat (names without @). */
   personas?: () => Promise<{ name: string; avatar?: PersonaAvatar }[]>;
@@ -524,8 +525,7 @@ export interface TeamTransport {
   mediaUrl: (id: string) => string;
   /** Stops agents talking among themselves in this thread after the current turn. */
   stopAgents: (id: string) => Promise<unknown>;
-  /** Live agent progress (thinking, tool calls) as an SSE stream. Absent when the transport has none. */
-  events?: (id: string) => EventSource;
+  watch?: (id: string, onView: (view: ThreadViewState) => void) => () => void;
   /** Owner only: add or remove a room member. */
   members?: (id: string, op: "add" | "remove", member: MemberChange) => Promise<{ members: RoomMember[] }>;
 }
@@ -538,14 +538,13 @@ export const ownerTransport: TeamTransport = {
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
   send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
   steer: (id, text, name) => call("/api/team/steer", { thread: id, text, name }),
-  inbox: (id) => call(`/api/team/inbox?thread=${encodeURIComponent(id)}`),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
   personas: () =>
     call<Settings>("/api/settings").then((s) =>
       (s.personas ?? []).map((p) => ({ name: p.name, ...(p.avatar ? { avatar: p.avatar } : {}) })),
     ),
   mediaUrl: (id) => `/api/media/${id}`,
-  events: (id) => new EventSource(`/api/team/events?thread=${encodeURIComponent(id)}`),
+  watch: watchThreadView,
   stopAgents: (id) => call("/api/team/stop", { thread: id }),
   members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),
 };

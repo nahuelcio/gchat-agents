@@ -4,17 +4,19 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { acceptWebSockets, createHost } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { WebSocketServer } from "ws";
 import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from "@earendil-works/pi-ai";
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
-import { progressMapper, snapshotEvents, type ProgressItem } from "./progress.ts";
+import { ThreadView, type ThreadViewPrincipal } from "./thread-view.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { AssistantEntry, createRegistry, defineDoc, defineExtension, defineTool, Harness, watchEvents, type Conversation } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, defineDoc, defineExtension, defineTool, Harness, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -467,28 +469,6 @@ async function reset(body: { conversationId: string; handoff?: string }) {
   return { status: "done" };
 }
 
-function inputText(content: unknown): string {
-  if (typeof content === "string") return content;
-  return Array.isArray(content) ? content.map((part) => (part as { text?: string }).text ?? "").join("") : "";
-}
-
-async function inbox(conversationId: string) {
-  const conv = await harness.conversation(conversationId as never, ctx);
-  if (!conv) return { busy: false, items: [] };
-  const view = await conv.viewState(ctx);
-  try {
-    const docs = view.value.docs;
-    const queued = (docs["pi.inbox"] as { items: { id: string; mode: string; content: unknown }[] } | undefined)?.items ?? [];
-    return {
-      busy: !!(docs["pi.live"] as { run?: unknown } | undefined)?.run,
-      items: queued.map((item) => ({ id: item.id, mode: item.mode, text: inputText(item.content) })),
-    };
-  } finally {
-    view.dispose();
-  }
-}
-
-
 const read = (req: IncomingMessage) =>
   new Promise<string>((ok) => {
     let raw = "";
@@ -500,45 +480,30 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 };
-async function streamEvents(req: IncomingMessage, res: ServerResponse) {
-  const query = new URL(req.url ?? "", "http://x").searchParams;
-  const thread = query.get("thread") ?? "";
-  const conversationId = query.get("conversation") ?? Object.entries(threads).findLast(([, key]: [string, string]) => key === thread)?.[0];
-  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  const id = Number(conversationId);
-  if (!conversationId || !Number.isSafeInteger(id)) return res.end();
-  const stream = await watchEvents(harness, id as never, ctx).catch((err: unknown) => {
-    console.error("progress feed unavailable:", err instanceof Error ? err.message : err);
-    return undefined;
-  });
-  if (!stream) return res.end();
-  let map = progressMapper();
-  const write = (items: ProgressItem[]) => {
-    for (const item of items) res.write(`data: ${JSON.stringify(item)}\n\n`);
-  };
-  write(map(snapshotEvents(stream.snapshot)));
-  stream.start(async (events) => {
-    for (const event of events) {
-      if (event.type === "snapshot") {
-        map = progressMapper();
-        write([{ kind: "turn", text: "" }, ...map(snapshotEvents(event))]);
-      } else {
-        write(map([event]));
-      }
-    }
-  });
-  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
-  const close = () => {
-    clearInterval(ping);
-    void stream.stop().catch(() => {});
-  };
-  res.on("close", close);
-  void stream.closed.then(() => res.end(), () => res.end());
-}
+const threadConversation = (thread: string) => Object.entries(threads).findLast(([, key]) => key === thread)?.[0];
 
-createServer(async (req, res) => {
+const viewHost = createHost<ThreadViewPrincipal>({ name: "view", self: { thread: "" } });
+viewHost.serve(ThreadView, (_input, principal, self) => {
+  const view = self.resource("view", {
+    version: 1,
+    open: async ({ signal }) => {
+      for (;;) {
+        const id = threadConversation(principal.thread);
+        const conv = id === undefined ? undefined : await harness.conversation(id as never, ctx);
+        if (conv) return conv.viewState(ctx);
+        if (signal.aborted) throw new Error(`no conversation for thread ${principal.thread}`);
+        await new Promise((ok) => setTimeout(ok, 250));
+      }
+    },
+    close: (state) => state.dispose(),
+  });
+  const mirror = self.state("view", Type.Any(), { init: () => view.value.value });
+  self.on("mirror", view, (state) => state, (value, c) => mirror.replace(c, value));
+  return { variant: "viewer", view: mirror };
+});
+
+const server = createServer(async (req, res) => {
   try {
-    if (req.method === "GET" && req.url?.startsWith("/events?")) return await streamEvents(req, res);
     if (req.method === "GET" && req.url === "/health") return send(res, 200, { ok: true, faux: process.env.PI_FAUX === "1" });
     if (req.method === "POST" && req.url === "/submit") return send(res, 200, await admit(JSON.parse(await read(req)) as SubmitBody));
     if (req.method === "POST" && req.url === "/wait") {
@@ -558,9 +523,6 @@ createServer(async (req, res) => {
       });
     }
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
-    if (req.method === "GET" && req.url?.startsWith("/inbox?")) {
-      return send(res, 200, await inbox(new URL(req.url, "http://127.0.0.1").searchParams.get("conversation") ?? ""));
-    }
     if (req.method === "POST" && req.url === "/abort") {
       const { thread, conversationId } = JSON.parse(await read(req)) as { thread?: string; conversationId?: string };
       const ids = thread ? Object.entries(threads).filter(([, key]) => key === thread).map(([id]) => id) : conversationId ? [conversationId] : [];
@@ -583,9 +545,16 @@ createServer(async (req, res) => {
     if (res.headersSent) return void res.end();
     send(res, 500, { error: err instanceof Error ? err.message : String(err) });
   }
-}).listen(port, "127.0.0.1", () => console.log(`pi harness on 127.0.0.1:${port} (${dirname(join(dataDir, "harness.sqlite"))})`));
+});
+acceptWebSockets(new WebSocketServer({ server, path: "/view" }), viewHost, {
+  principal: (request) => {
+    const thread = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("thread") ?? "";
+    return thread ? { thread } : undefined;
+  },
+});
+server.listen(port, "127.0.0.1", () => console.log(`pi harness on 127.0.0.1:${port} (${dirname(join(dataDir, "harness.sqlite"))})`));
 
-const shutdown = () => void harness.close(ctx).finally(() => process.exit(0));
+const shutdown = () => void viewHost.close().then(() => harness.close(ctx)).finally(() => process.exit(0));
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, shutdown);
 if (process.env.PI_PARENT_PIPE === "1") {
   process.stdin.resume();

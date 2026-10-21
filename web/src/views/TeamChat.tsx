@@ -9,7 +9,6 @@ import {
   type MemberChange,
   type Persona,
   type PersonaAvatar,
-  type QueuedItem,
   type TeamAttachmentInput,
   type TeamThreadState,
   type TeamThreadSummary,
@@ -17,7 +16,7 @@ import {
 } from "../api";
 import { ArtifactPane, ArtifactPreviewProvider, useArtifactPreview } from "../ArtifactPreview";
 import { Icon } from "../App";
-import { applyProgress, emptyProgress, type Progress, type ProgressEvent } from "../live-progress";
+import { progressOf, type Progress, type ThreadViewState } from "../thread-progress";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
@@ -227,8 +226,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
-  const [progress, setProgress] = useState<Progress>(emptyProgress);
-  const [queued, setQueued] = useState<QueuedItem[]>([]);
+  const [watched, setWatched] = useState<{ view: ThreadViewState; startedAt: number }>();
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -434,36 +432,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     if (list) list.scrollTop = list.scrollHeight;
   }, [state?.messages.length, sending]);
 
-  // Live progress: the running turn's thinking and tool calls, streamed over SSE while the thread is busy.
+  const busy = Boolean(sending || state?.busy);
   useEffect(() => {
-    setProgress(emptyProgress);
-    const busy = sending || state?.busy;
-    if (!busy || !activeId || !transport.events) return;
-    const source = transport.events(activeId);
-    source.onmessage = (msg: MessageEvent<string>) => {
-      try {
-        setProgress((current) => applyProgress(current, JSON.parse(msg.data) as ProgressEvent));
-      } catch {
-        // a malformed frame is not worth breaking the turn over
-      }
-    };
-    return () => source.close();
-  }, [activeId, transport, sending, state?.busy]);
-
-  useEffect(() => {
-    setQueued([]);
-    const busy = sending || state?.busy;
-    const inbox = transport.inbox;
-    if (!busy || !activeId || !inbox) return;
-    let alive = true;
-    const load = () => inbox(activeId).then((res) => alive && setQueued(res.items), () => {});
-    void load();
-    const id = setInterval(load, 2000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [activeId, transport, sending, state?.busy]);
+    setWatched(undefined);
+    if (!busy || !activeId || !transport.watch) return;
+    const startedAt = Date.now();
+    return transport.watch(activeId, (view) => setWatched({ view, startedAt }));
+  }, [activeId, transport, busy]);
+  const progress = useMemo(() => progressOf(watched?.view, watched?.startedAt), [watched]);
+  const queued = progress.queued;
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
