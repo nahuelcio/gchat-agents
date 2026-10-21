@@ -285,6 +285,68 @@ pub async fn team_send(
     Ok(serde_json::json!({ "ok": true, "replies": [] }))
 }
 
+pub async fn team_steer(
+    deps: Arc<HandlerDeps>,
+    transcripts: Arc<TranscriptStore>,
+    thread: &str,
+    text: &str,
+    name: &str,
+) -> Result<serde_json::Value, String> {
+    if !thread_id_ok(thread) {
+        return Err("bad thread id".into());
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("text is required".into());
+    }
+    let thread_key = format!("{TEAM_PREFIX}{thread}");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let request = TurnRequest {
+        thread_key: thread_key.clone(),
+        space_name: "team-chat".into(),
+        text: text.into(),
+        sender: Some(name.into()),
+        reply_via_chat: false,
+        thread: None,
+        room_n: None,
+        captured_replies: Some(captured.clone()),
+        request_id: None,
+    };
+    if !crate::handler::steered(&request, &deps).await {
+        return team_send(deps, transcripts, thread, text, name, None, &[]).await;
+    }
+    transcripts
+        .append(
+            &thread_key,
+            vec![TranscriptMessage {
+                author: name.to_string(),
+                text: text.to_string(),
+                bot: false,
+                at: None,
+                questions: None,
+                attachments: None,
+            }],
+        )
+        .await?;
+    let replies = captured
+        .lock()
+        .await
+        .iter()
+        .map(|reply| TranscriptMessage {
+            author: BOT_NAME.into(),
+            text: reply.clone(),
+            bot: true,
+            at: None,
+            questions: None,
+            attachments: None,
+        })
+        .collect::<Vec<_>>();
+    if !replies.is_empty() {
+        transcripts.append(&thread_key, replies).await?;
+    }
+    Ok(serde_json::json!({ "ok": true, "replies": [] }))
+}
+
 pub async fn team_members(
     deps: Arc<HandlerDeps>,
     thread: &str,

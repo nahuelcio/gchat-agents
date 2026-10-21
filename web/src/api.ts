@@ -500,6 +500,12 @@ export interface TeamThreadSummary {
   busy?: boolean;
 }
 
+export interface QueuedItem {
+  id: string;
+  mode: "steer" | "followUp";
+  text: string;
+}
+
 export interface TeamTransport {
   guest: boolean;
   /** Active (or archived) team threads on this machine. */
@@ -509,6 +515,8 @@ export interface TeamTransport {
   remove?: (id: string) => Promise<{ branchKept?: string }>;
   thread: (id: string) => Promise<TeamThreadState>;
   send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
+  steer?: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
+  inbox?: (id: string) => Promise<{ busy: boolean; items: QueuedItem[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
   /** Agents you can @mention in chat (names without @). */
   personas?: () => Promise<{ name: string; avatar?: PersonaAvatar }[]>;
@@ -529,6 +537,8 @@ export const ownerTransport: TeamTransport = {
   remove: (id) => call<{ branchKept?: string }>("/api/team/delete", { thread: id }),
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
   send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
+  steer: (id, text, name) => call("/api/team/steer", { thread: id, text, name }),
+  inbox: (id) => call(`/api/team/inbox?thread=${encodeURIComponent(id)}`),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
   personas: () =>
     call<Settings>("/api/settings").then((s) =>

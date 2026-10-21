@@ -285,7 +285,7 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
     }
 }
 
-async fn steered(req: &TurnRequest, deps: &HandlerDeps) -> bool {
+pub(crate) async fn steered(req: &TurnRequest, deps: &HandlerDeps) -> bool {
     if command_of(&req.text).is_some() || !deps.queue.busy(&req.thread_key).await {
         return false;
     }

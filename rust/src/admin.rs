@@ -17,7 +17,7 @@ use crate::schedules::{describe_cron, job_name, JobPatch, NewJob};
 use crate::settings::SettingsPatch;
 use crate::state::AppState;
 use crate::static_files::serve_static;
-use crate::team::{team_delete, team_members, team_send, team_thread, thread_id_ok, TeamMemberInput};
+use crate::team::{team_delete, team_members, team_send, team_steer, team_thread, thread_id_ok, TeamMemberInput};
 use crate::workspace::slug_for;
 
 pub fn admin_router(state: Arc<AppState>) -> Router {
@@ -54,6 +54,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/threads", get(get_team_threads))
         .route("/api/team/thread", get(get_team_thread))
         .route("/api/team/send", post(post_team_send))
+        .route("/api/team/steer", post(post_team_steer))
+        .route("/api/team/inbox", get(get_team_inbox))
         .route("/api/team/stop", post(post_team_stop))
         .route("/api/team/archive", post(post_team_archive))
         .route("/api/team/delete", post(post_team_delete))
@@ -770,6 +772,53 @@ async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<Tea
     {
         Ok(v) => Json(v).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TeamSteerBody {
+    thread: Option<String>,
+    text: Option<String>,
+    name: Option<String>,
+}
+
+async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<TeamSteerBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    let text = body.text.unwrap_or_default();
+    let name = body.name.unwrap_or_else(|| "Owner".into());
+    match team_steer(
+        state.handler.clone(),
+        state.transcripts.clone(),
+        &thread,
+        &text,
+        &name.chars().take(40).collect::<String>(),
+    )
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_team_inbox(State(state): State<Arc<AppState>>, Query(q): Query<ThreadQuery>) -> Response {
+    let thread = q.thread.unwrap_or_default();
+    if !thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let Some(session) = state.handler.store.get(&key).and_then(|r| r.session_ref) else {
+        return Json(json!({ "busy": false, "items": [] })).into_response();
+    };
+    let url = format!("http://127.0.0.1:{}/inbox", crate::pi_sidecar::port());
+    match reqwest::Client::new().get(&url).query(&[("conversation", session)]).send().await {
+        Ok(res) => match res.json::<Value>().await {
+            Ok(out) => Json(out).into_response(),
+            Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err.to_string() }))).into_response(),
+        },
+        Err(err) => {
+            let msg = format!("pi harness is not running: {err}");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response()
+        }
     }
 }
 
