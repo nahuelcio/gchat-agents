@@ -31,12 +31,12 @@ One Chat thread is one session. A new thread starts fresh.
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.ps1 | iex
 
-# Linux / macOS
+# Linux
 curl -fsSL https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.sh | sh
 ```
 
 
-**2. Open the control plane** at `http://127.0.0.1:8081`, pick a model and add a provider API key.
+**2. Run `switchboard`** (new terminal on Windows) and open `http://127.0.0.1:8081`, pick a model and add a provider API key.
 
 **3. Try it without Google Chat.** The playground and control plane work with no credentials. To reply in Chat, follow [Connect Google Chat](#connect-google-chat).
 

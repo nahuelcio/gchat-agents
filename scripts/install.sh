@@ -14,5 +14,11 @@ else
   curl -fsSL "https://github.com/$REPO/releases/latest/download/$ASSET" -o "$DIR/switchboard"
 fi
 chmod +x "$DIR/switchboard"
+# ponytail: data lives in ./data, so the launcher runs from $DIR
+BIN="${SWITCHBOARD_BIN:-$HOME/.local/bin}"
+mkdir -p "$BIN"
+printf '#!/bin/sh\ncd "%s" && exec ./switchboard "$@"\n' "$DIR" > "$BIN/switchboard"
+chmod +x "$BIN/switchboard"
 echo "installed $DIR/switchboard"
-echo "run: cd $DIR && ./switchboard   then open http://127.0.0.1:8081"
+case ":$PATH:" in *":$BIN:"*) ;; *) echo "add to PATH: export PATH=\"$BIN:\$PATH\"" ;; esac
+echo "run: switchboard   then open http://127.0.0.1:8081"
