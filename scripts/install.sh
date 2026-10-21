@@ -14,6 +14,16 @@ else
   curl -fsSL "https://github.com/$REPO/releases/latest/download/$ASSET" -o "$DIR/switchboard"
 fi
 chmod +x "$DIR/switchboard"
+# Pi harness (needs Node): harness/ and node_modules/ next to the binary
+H="$DIR/switchboard-harness.tar.gz"
+if command -v gh >/dev/null 2>&1; then
+  gh release download --repo "$REPO" --pattern switchboard-harness.tar.gz --output "$H" --clobber
+else
+  curl -fsSL "https://github.com/$REPO/releases/latest/download/switchboard-harness.tar.gz" -o "$H"
+fi
+rm -rf "$DIR/harness" "$DIR/node_modules"
+tar xzf "$H" -C "$DIR" && rm "$H"
+command -v node >/dev/null 2>&1 || echo "warning: Node 22.18+ is required for the pi driver" >&2
 # ponytail: data lives in ./data, so the launcher runs from $DIR
 BIN="${SWITCHBOARD_BIN:-$HOME/.local/bin}"
 mkdir -p "$BIN"

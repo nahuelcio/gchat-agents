@@ -9,6 +9,17 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
 } else {
   Invoke-WebRequest "https://github.com/$repo/releases/latest/download/$asset" -OutFile $exe
 }
+# Pi harness (needs Node): harness\ and node_modules\ next to the binary
+$h = Join-Path $dir "switchboard-harness.tar.gz"
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+  gh release download --repo $repo --pattern switchboard-harness.tar.gz --output $h --clobber
+} else {
+  Invoke-WebRequest "https://github.com/$repo/releases/latest/download/switchboard-harness.tar.gz" -OutFile $h
+}
+Remove-Item -Recurse -Force (Join-Path $dir "harness"), (Join-Path $dir "node_modules") -ErrorAction SilentlyContinue
+tar -xzf $h -C $dir
+Remove-Item $h
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Warning "Node 22.18+ is required for the pi driver" }
 # Data lives in .\data, so the launcher runs from $dir
 $bin = Join-Path $dir "bin"
 New-Item -ItemType Directory -Force $bin | Out-Null

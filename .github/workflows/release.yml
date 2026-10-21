@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
     branches: [main]
-    paths: ["rust/**", "web/**", "skills/**", ".agents/skills/**", "package-lock.json", ".github/workflows/release.yml"]
+    paths: ["rust/**", "web/**", "harness/**", "skills/**", ".agents/skills/**", "package-lock.json", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -25,6 +25,14 @@ jobs:
           cache: npm
       - run: npm ci --include=dev
       - run: npm run build:web
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: sh scripts/pack-harness.sh
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: switchboard-harness.tar.gz
+          path: switchboard-harness.tar.gz
+          retention-days: 1
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
