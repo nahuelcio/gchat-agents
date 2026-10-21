@@ -15,7 +15,7 @@ export default defineConfig({
     port: webPort,
     strictPort: true,
     proxy: {
-      "/api": { target: `http://127.0.0.1:${adminPort}`, headers: { host: "127.0.0.1" } },
+      "/api": { target: `http://127.0.0.1:${adminPort}`, ws: true, headers: { host: "127.0.0.1" } },
       "/play/api": { target: `http://127.0.0.1:${bridgePort}`, headers: { host: "127.0.0.1" } },
     },
   },
