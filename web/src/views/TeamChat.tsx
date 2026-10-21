@@ -251,6 +251,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog }>();
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
@@ -469,6 +470,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     });
   }, [activeId, transport]);
   const busy = Boolean(sending || state?.busy || watched?.running);
+  useEffect(() => {
+    if (!busy) setStopping(false);
+  }, [busy, activeId]);
   const progress: Progress = watched?.log ?? { thinking: "", tools: [], queued: [] };
   const queued = progress.queued;
 
@@ -588,6 +592,18 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
   const active = threads.find((t) => t.id === activeId);
   const working = busy;
+
+  function stopAgents(thread: string) {
+    if (stopping) return;
+    setStopping(true);
+    transport
+      .stopAgents(thread)
+      .then(() => notify("Stop sent. The current step finishes, then nobody else answers."))
+      .catch((e) => {
+        setStopping(false);
+        notify(`Couldn't stop: ${e instanceof Error ? e.message : String(e)}`, true);
+      });
+  }
 
   function toggleThreads(open: boolean) {
     setThreadsOpen(open);
@@ -922,10 +938,12 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               {activeId && (
                 <button
                   className="btn linkish"
-                  onClick={() => void transport.stopAgents(activeId).catch(() => {})}
+                  onClick={() => stopAgents(activeId)}
+                  disabled={stopping}
+                  aria-busy={stopping}
                   title="Stops the running reply and skips the rest of the hand-off"
                 >
-                  Stop
+                  {stopping ? "Stopping…" : "Stop"}
                 </button>
               )}
             </div>
