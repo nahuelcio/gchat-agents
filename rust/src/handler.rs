@@ -494,6 +494,7 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
     }
     deps.queue
         .run(&key, || async {
+            take_stop(&req.thread_key);
             if command_of(&req.text).is_some() {
                 let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
                 deliver_reply(&req, &deps, &reply, None, None).await;
@@ -950,6 +951,9 @@ async fn persona_round(
     while idx < queue.len() && hops_done < max_hops + first.len() {
         set_upcoming(&req.thread_key, queue[idx + 1..].iter().map(|q| q.persona.name.clone()).collect());
         if take_stop(&req.thread_key) {
+            if opts.optional {
+                break;
+            }
             let left: Vec<_> = queue[idx..].iter().map(|q| format!("@{}", q.persona.name)).collect();
             deliver_reply(
                 req,
