@@ -5,8 +5,6 @@ DIR="${SWITCHBOARD_DIR:-$HOME/.local/share/switchboard}"
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) ASSET=switchboard-linux-x64 ;;
   Linux-aarch64|Linux-arm64) ASSET=switchboard-linux-arm64 ;;
-  Darwin-arm64) ASSET=switchboard-macos-arm64 ;;
-  Darwin-x86_64) ASSET=switchboard-macos-x64 ;;
   *) echo "unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 mkdir -p "$DIR"

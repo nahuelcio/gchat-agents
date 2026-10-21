@@ -35,7 +35,6 @@ irm https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/instal
 curl -fsSL https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.sh | sh
 ```
 
-While the repo is private, run the installer from a machine where `gh auth login` is done; it downloads through `gh`.
 
 **2. Open the control plane** at `http://127.0.0.1:8081`, pick a model and add a provider API key.
 
