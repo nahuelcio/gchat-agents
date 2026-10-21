@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn persona_usage_tracks_real_and_estimated_tokens() {
-        let real = persona_usage_after(None, Some(&ContextUsage { context_tokens: 225, context_window: Some(200_000), cost_usd: None }), 10, 20);
+        let real = persona_usage_after(None, Some(&ContextUsage { context_tokens: 225, context_window: Some(200_000), cost_usd: None, tokens_in: None, tokens_out: None }), 10, 20);
         assert_eq!(real.context_tokens, Some(225));
         assert_eq!(real.context_window, Some(200_000));
         assert_eq!(real.estimated, Some(false));

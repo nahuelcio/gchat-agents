@@ -14,6 +14,7 @@ import {
   type TeamThreadState,
   type TeamThreadSummary,
   type TeamTransport,
+  type Touch,
 } from "../api";
 import { ModelPicker } from "../ModelPicker";
 import { ArtifactPane, ArtifactPreviewProvider, useArtifactPreview } from "../ArtifactPreview";
@@ -181,7 +182,7 @@ function QuoteBlock({ quote }: { quote: Quote }) {
 function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
   const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
   const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
-  const hidePlaceholder = Boolean(images.length) && text.trim() === "(image)";
+  const hidePlaceholder = Boolean(attachments?.length) && ["(image)", "(attachment)"].includes(text.trim());
   return (
     <>
       {images.length > 0 && (
@@ -339,7 +340,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   function queueImages(files: FileList | File[]) {
-    const images = [...files].filter((f) => f.type.startsWith("image/"));
+    const images = [...files].filter((f) => f.size > 0 && f.size <= 3_500_000);
+    if (images.length < [...files].length) notify("Files must be under 3.5 MB", true);
     if (!images.length) return;
     setPending((prev) => {
       const room = Math.max(0, 5 - prev.length);
@@ -484,7 +486,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
       s
         ? {
             ...s,
-            messages: [...s.messages, { author: name, text: value || "(image)", bot: false, replyTo: quote }],
+            messages: [...s.messages, { author: name, text: value || "(attachment)", bot: false, replyTo: quote }],
             busy: true,
           }
         : s,
@@ -948,7 +950,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               <div className="composer-previews">
                 {pending.map((p, i) => (
                   <div key={p.url} className="composer-preview">
-                    <img src={p.url} alt={p.file.name} />
+                    {p.file.type.startsWith("image/") ? <img src={p.url} alt={p.file.name} /> : <span className="composer-file">{p.file.name}</span>}
                     <button
                       type="button"
                       className="x"
@@ -999,7 +1001,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 void send();
               }}
               onPaste={(e) => {
-                const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+                const files = [...e.clipboardData.files];
                 if (files.length) {
                   e.preventDefault();
                   queueImages(files);
@@ -1012,7 +1014,6 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               <input
                 ref={fileInput}
                 type="file"
-                accept="image/*"
                 multiple
                 hidden
                 onChange={(e) => {
@@ -1020,7 +1021,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   e.target.value = "";
                 }}
               />
-              <button type="button" className="attach" aria-label="Attach image" disabled={sending} onClick={() => fileInput.current?.click()}>
+              <button type="button" className="attach" aria-label="Attach file" disabled={sending} onClick={() => fileInput.current?.click()}>
                 <Icon size={18}>
                   <rect x="4" y="5" width="16" height="14" rx="2" />
                   <circle cx="9" cy="10" r="1.5" />
@@ -1127,6 +1128,7 @@ function TeamChatSide({
           onHide={onHideContext}
           onCommand={onCommand}
           onMember={onMember}
+          threadId={activeId}
         />
       )}
       {!active && activeId && !contextOpen && (
@@ -1425,6 +1427,59 @@ function RunsSection({
   );
 }
 
+function WhereSection({ threadId, pinned, onCommand }: { threadId: string; pinned: boolean; onCommand?: (text: string) => void }) {
+  const [repos, setRepos] = useState<string[]>([]);
+  const [pick, setPick] = useState("");
+  const [touches, setTouches] = useState<Touch[]>([]);
+  useEffect(() => {
+    api.settings().then((s) => setRepos(Object.keys(s.repos ?? {}).sort()), () => {});
+  }, []);
+  useEffect(() => {
+    const load = () => api.touches(`share/${threadId}`).then(setTouches, () => {});
+    load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, [threadId]);
+  const folder = touches[0]?.cwd;
+  return (
+    <>
+      {!pinned && (
+        <div className="where-pin">
+          {folder && (
+            <p className="muted small">
+              Working in <code className="path">{folder}</code>. Writing outside it asks for approval.
+            </p>
+          )}
+          <div className="row">
+            <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Repo for this thread">
+              <option value="">Pin a repo…</option>
+              {repos.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            <button type="button" className="btn small" disabled={!pick || !onCommand} onClick={() => onCommand?.(`/repo ${pick}`)}>
+              Pin
+            </button>
+          </div>
+          <span className="muted small">Or type /repo with a local path.</span>
+        </div>
+      )}
+      <h2>Touched</h2>
+      {touches.length === 0 ? (
+        <p className="muted small">No files or commands yet.</p>
+      ) : (
+        <ul className="touches">
+          {touches.slice(0, 40).map((t, i) => (
+            <li key={`${t.at}-${i}`} title={`${t.at} · ${t.cwd}`}>
+              <span className={`badge touch-${t.tool}`}>{t.tool}</span> <code>{t.detail.split("\n")[0]}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 function ThreadContextPanel({
   state,
   guest,
@@ -1432,6 +1487,7 @@ function ThreadContextPanel({
   onMember,
   onCommand,
   onHide,
+  threadId,
 }: {
   state?: TeamThreadState;
   guest: boolean;
@@ -1439,6 +1495,7 @@ function ThreadContextPanel({
   onMember?: (op: "add" | "remove", member: MemberChange) => Promise<unknown>;
   onCommand?: (text: string) => void;
   onHide?: () => void;
+  threadId?: string;
 }) {
   const wi = state?.workItem;
   const changes = state?.changes;
@@ -1492,6 +1549,7 @@ function ThreadContextPanel({
           </div>
         )}
       </dl>
+      {!guest && threadId && <WhereSection threadId={threadId} pinned={Boolean(state?.worktree)} onCommand={onCommand} />}
       {!!state?.runs?.length && <RunsSection runs={state.runs} catalog={catalog} onCommand={onCommand} />}
 
       {(wi || state?.worktree) && <h2>Work item</h2>}

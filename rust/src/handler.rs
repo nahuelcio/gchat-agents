@@ -149,6 +149,46 @@ fn card_answer(event: &ChatEvent) -> Option<String> {
         .and_then(|p| p.value.clone())
 }
 
+fn param<'a>(event: &'a ChatEvent, key: &str) -> Option<&'a str> {
+    let params = event
+        .action
+        .as_ref()
+        .and_then(|a| a.parameters.as_ref())
+        .or_else(|| event.common.as_ref().and_then(|c| c.parameters.as_ref()))?;
+    params.iter().find(|p| p.key.as_deref() == Some(key)).and_then(|p| p.value.as_deref())
+}
+
+pub fn gate_command(text: &str) -> Option<(String, bool)> {
+    let mut words = text.trim().split_whitespace();
+    let approve = match words.next()? {
+        "/approve" => true,
+        "/deny" => false,
+        _ => return None,
+    };
+    let id = words.next()?;
+    id.starts_with('g').then(|| (id.to_string(), approve))
+}
+
+fn gate_event(event: &ChatEvent) -> Option<HandleResult> {
+    let who = event.user.as_ref().and_then(|u| u.display_name.clone());
+    if let Some(id) = param(event, "gate") {
+        let approve = param(event, "approve") == Some("yes");
+        let text = match crate::gate::decide(id, approve) {
+            Some(info) => crate::gate::decided_text(&info, approve, who.as_deref()),
+            None => "This approval was already decided or expired.".to_string(),
+        };
+        return Some(HandleResult { status: 200, body: json!({ "actionResponse": { "type": "UPDATE_MESSAGE" }, "text": text }) });
+    }
+    let message = event.message.as_ref()?;
+    let text = extract_prompt(message.argument_text.as_deref(), message.text.as_deref());
+    let (id, approve) = gate_command(&text)?;
+    let text = match crate::gate::decide(&id, approve) {
+        Some(info) => crate::gate::decided_text(&info, approve, who.as_deref()),
+        None => format!("No pending approval {id}."),
+    };
+    Some(HandleResult { status: 200, body: json!({ "text": text }) })
+}
+
 pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc<HandlerDeps>) -> HandleResult {
     if let Err(err) = deps.verifier.verify(auth_header).await {
         tracing::error!(%err, "auth rejected");
@@ -166,6 +206,10 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
             body: json!({ "ok": true, "dropped": true }),
         };
     };
+
+    if let Some(res) = gate_event(&event) {
+        return res;
+    }
 
     if event.event_type.as_deref() == Some("ADDED_TO_SPACE") {
         let chat = deps.chat.clone();
@@ -443,6 +487,9 @@ pub struct TurnRequest {
 
 pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Result<bool, String> {
     let key = req.thread_key.clone();
+    if req.reply_via_chat {
+        crate::gate::remember_route(&key, &req.space_name, req.thread.clone());
+    }
     deps.queue
         .run(&key, || async {
             if command_of(&req.text).is_some() {
@@ -450,6 +497,7 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
                 deliver_reply(&req, &deps, &reply, None, None).await;
                 return Ok(true);
             }
+            offer_repo(&req, &deps).await;
             if let Some(scheduler) = deps.scheduler.get() {
                 let mut jobs = scheduler.jobs_for_text(&req.text, &req.space_name);
                 jobs.extend(scheduler.jobs_for_text(&req.text, &req.thread_key));
@@ -723,6 +771,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 return Ok(true);
             }
 
+            crate::usage::note(&req.thread_key, BOT_NAME, out.session_ref.as_deref(), out.usage.as_ref());
             let turns = record.as_ref().and_then(|r| r.turns).unwrap_or(0) + 1;
             let (context_tokens, context_window, estimated) = match &out.usage {
                 Some(u) => (Some(Some(u.context_tokens)), u.context_window.map(Some), Some(Some(false))),
@@ -996,6 +1045,7 @@ async fn persona_round(
                     .as_ref()
                     .and_then(|r| r.persona_sessions.clone())
                     .unwrap_or_default();
+                crate::usage::note(&req.thread_key, &item.persona.name, out.session_ref.as_deref(), out.usage.as_ref());
                 if let Some(s) = out.session_ref {
                     persona_sessions.insert(item.persona.name.clone(), s);
                 }
@@ -1272,6 +1322,11 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             set_title(req, deps, Some(title.clone()).filter(|t| !t.trim().is_empty())).await?;
             Ok(if title.trim().is_empty() { "Topic cleared.".into() } else { format!("Topic set: {title}") })
         }
+        "approve" | "deny" if args.first().is_some_and(|id| id.starts_with('g')) => {
+            let approve = cmd == "approve";
+            let info = crate::gate::decide(args[0], approve).ok_or_else(|| format!("No pending approval {}.", args[0]))?;
+            Ok(crate::gate::decided_text(&info, approve, req.sender.as_deref()))
+        }
         "approve" | "deny" => {
             let scheduler = deps.scheduler.get().ok_or("Schedules are not enabled on this bridge.")?;
             let id = args.first().ok_or_else(|| format!("Usage: /{cmd} <id>"))?;
@@ -1352,6 +1407,7 @@ pub async fn ask_persona(deps: &HandlerDeps, thread_key: &str, agent: &str, ques
         .await?;
     let space = record.as_ref().map(|r| r.space.clone()).unwrap_or_else(|| "team-chat".into());
     let mut sessions = record.as_ref().and_then(|r| r.persona_sessions.clone()).unwrap_or_default();
+    crate::usage::note(thread_key, &target.name, out.session_ref.as_deref(), out.usage.as_ref());
     if let Some(s) = out.session_ref {
         sessions.insert(target.name.clone(), s);
     }
@@ -1606,6 +1662,61 @@ async fn set_repos(req: &TurnRequest, deps: &HandlerDeps, repos: &[String], dir:
         .await
 }
 
+async fn register_repo_path(ws: &Workspaces, raw: &str) -> Result<String, String> {
+    let root = crate::workspace::git_root(raw).ok_or_else(|| format!("{raw} is not inside a git repository"))?;
+    let root_s = root.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    if let Some(name) = ws.repo_for_path(&root_s) {
+        return Ok(name);
+    }
+    let base = root.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| "repo".into());
+    let base: String = base.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    let taken = ws.repo_names();
+    let name = (1..).map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") }).find(|n| !taken.contains(n)).unwrap();
+    let repo = crate::config::RepoConfig { path: root_s, up: None, base: None };
+    if let Some(store) = crate::settings::global() {
+        let mut map = store.get().repos.clone();
+        map.insert(name.clone(), repo.clone());
+        store.update(crate::settings::SettingsPatch { repos: Some(map), ..Default::default() }).await?;
+    }
+    ws.register(&name, repo);
+    Ok(name)
+}
+
+static OFFERED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+
+async fn offer_repo(req: &TurnRequest, deps: &HandlerDeps) {
+    if command_of(&req.text).is_some() || deps.workspaces.is_none() {
+        return;
+    }
+    let record = deps.store.get(&req.thread_key);
+    if record.as_ref().and_then(|r| r.worktree.as_ref()).is_some() {
+        return;
+    }
+    let Some(root) = crate::workspace::paths_in(&req.text).iter().find_map(|p| crate::workspace::git_root(p)) else { return };
+    let root = root.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let key = format!("{}|{root}", req.thread_key);
+    if !OFFERED.lock().unwrap().get_or_insert_with(Default::default).insert(key) {
+        return;
+    }
+    let text = format!("This thread is chat-only, so the agent works on {root} directly, with no branch or worktree. Reply /repo {root} to pin it: the thread gets its own branch and worktree and the folder shows up in the control plane.");
+    if req.reply_via_chat {
+        let card = json!([{
+            "cardId": "repo-offer",
+            "card": {
+                "header": { "title": "Use this repo for the thread?", "subtitle": root },
+                "sections": [{ "widgets": [{ "buttonList": { "buttons": [{
+                    "text": "Pin repo to this thread",
+                    "onClick": { "action": { "function": "answerQuestion", "parameters": [{ "key": "answer", "value": format!("/repo {root}") }] } }
+                }] } }] }]
+            }
+        }]);
+        let body = PostMessageBody { text, thread: req.thread.clone(), cards_v2: Some(card) };
+        let _ = deps.chat.post_message(&req.space_name, &body).await;
+    } else {
+        deliver_reply(req, deps, &text, None, None).await;
+    }
+}
+
 async fn repo_command(cmd: &str, args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> Result<String, String> {
     let ws = deps.workspaces.clone().ok_or("No repos configured on this bridge.")?;
     let slug = slug_for(&req.thread_key);
@@ -1621,7 +1732,14 @@ async fn repo_command(cmd: &str, args: &[&str], req: &TurnRequest, deps: &Handle
             if repos.is_empty() { "none".into() } else { repos.join(", ") }
         )),
         "repo" => {
-            for name in args.iter().map(|a| a.to_string()).filter(|a| !repos.contains(a)).collect::<Vec<_>>() {
+            let mut names = Vec::new();
+            for arg in args {
+                names.push(if crate::workspace::looks_like_path(arg) { register_repo_path(&ws, arg).await? } else { arg.to_string() });
+            }
+            for name in names {
+                if repos.contains(&name) {
+                    continue;
+                }
                 ws.create(&name, &slug).await?;
                 repos.push(name);
             }
@@ -1635,7 +1753,12 @@ Branch: {branch}
 The agent now works there for this thread.", repos.join(", ")))
         }
         "status" => Ok(match worktree {
-            None => "No repos for this thread. Use /repo <name...>.".into(),
+            None => format!(
+                "Chat only. Folder: {}\nWorking now: {}\nAgents can still read any path you give them; writing outside this folder asks for approval.\nPin a repo with /repo <name or path>. Configured: {}",
+                deps.config.lock().unwrap().workdir,
+                Some(speaking(&req.thread_key).join(", ")).filter(|s| !s.is_empty()).unwrap_or_else(|| "nobody".into()),
+                Some(ws.repo_names().join(", ")).filter(|s| !s.is_empty()).unwrap_or_else(|| "none".into())
+            ),
             Some(wt) => format!(
                 "Repos: {}
 Branch: {}

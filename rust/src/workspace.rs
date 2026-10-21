@@ -29,6 +29,33 @@ struct RunningApp {
     child: tokio::process::Child,
 }
 
+pub fn git_root(path: &str) -> Option<std::path::PathBuf> {
+    let mut dir = std::fs::canonicalize(path.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`')).ok()?;
+    if dir.is_file() {
+        dir = dir.parent()?.to_path_buf();
+    }
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+}
+
+pub fn looks_like_path(s: &str) -> bool {
+    let s = s.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    let b = s.as_bytes();
+    (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) || s.starts_with('/') || s.starts_with("~/")
+}
+
+pub fn paths_in(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == ',' || c == ')' || c == '(' || c == '.'))
+        .filter(|w| looks_like_path(w))
+        .map(String::from)
+        .collect()
+}
+
 pub struct Workspaces {
     root: PathBuf,
     repos: Mutex<HashMap<String, RepoConfig>>,
@@ -48,6 +75,20 @@ impl Workspaces {
 
     pub fn set_repos(&self, repos: HashMap<String, RepoConfig>) {
         *self.repos.lock().unwrap() = repos;
+    }
+
+    pub fn repo_for_path(&self, path: &str) -> Option<String> {
+        let want = std::fs::canonicalize(path).ok()?;
+        self.repos
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, r)| std::fs::canonicalize(&r.path).ok().as_ref() == Some(&want))
+            .map(|(name, _)| name.clone())
+    }
+
+    pub fn register(&self, name: &str, repo: RepoConfig) {
+        self.repos.lock().unwrap().insert(name.to_string(), repo);
     }
 
     pub fn repo_names(&self) -> Vec<String> {
@@ -276,6 +317,18 @@ async fn free_port() -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_paths_and_git_roots() {
+        let found = paths_in(r#"mirá "D:\code\app\src" y /home/me/x, no esto"#);
+        assert_eq!(found, vec![r"D:\code\app\src".to_string(), "/home/me/x".to_string()]);
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("repo/.git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("repo/src")).unwrap();
+        let root = git_root(tmp.path().join("repo/src").to_str().unwrap()).unwrap();
+        assert!(root.ends_with("repo"));
+        assert!(git_root(tmp.path().to_str().unwrap()).is_none() || !git_root(tmp.path().to_str().unwrap()).unwrap().starts_with(tmp.path()));
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = std::process::Command::new("git")

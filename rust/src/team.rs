@@ -173,12 +173,9 @@ pub async fn save_attachments(deps: &HandlerDeps, inputs: &[TeamAttachmentInput]
     }
     let (mut stored, mut lines) = (Vec::new(), Vec::new());
     for raw in inputs {
-        if !raw.content_type.trim().starts_with("image/") {
-            return Err("only image attachments are supported".into());
-        }
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw.data.trim()).map_err(|_| "invalid attachment data".to_string())?;
         if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
-            return Err(format!("each image must be between 1 byte and {MAX_ATTACHMENT_BYTES} bytes"));
+            return Err(format!("each attachment must be between 1 byte and {MAX_ATTACHMENT_BYTES} bytes"));
         }
         let name = raw.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         let saved = media.save(&bytes, raw.content_type.trim(), name).await?;
@@ -186,6 +183,18 @@ pub async fn save_attachments(deps: &HandlerDeps, inputs: &[TeamAttachmentInput]
         lines.push(crate::media::attachment_prompt_line(&saved));
     }
     Ok((stored, lines))
+}
+
+pub fn bot_line(text: &str) -> TranscriptMessage {
+    TranscriptMessage {
+        author: crate::handler::BOT_NAME.to_string(),
+        text: text.to_string(),
+        bot: true,
+        at: None,
+        questions: None,
+        attachments: None,
+        reply_to: None,
+    }
 }
 
 pub async fn team_send(
@@ -218,7 +227,7 @@ pub async fn team_send(
             &thread_key,
             vec![TranscriptMessage {
                 author: name.to_string(),
-                text: if text.is_empty() { "(image)".into() } else { text.to_string() },
+                text: if text.is_empty() { "(attachment)".into() } else { text.to_string() },
                 bot: false,
                 at: None,
                 questions: None,
@@ -227,6 +236,14 @@ pub async fn team_send(
             }],
         )
         .await?;
+    if let Some((id, approve)) = crate::handler::gate_command(text) {
+        let reply = match crate::gate::decide(&id, approve) {
+            Some(info) => crate::gate::decided_text(&info, approve, Some(name)),
+            None => format!("No pending approval {id}."),
+        };
+        transcripts.append(&thread_key, vec![bot_line(&reply)]).await?;
+        return Ok(serde_json::json!({ "ok": true, "gate": id }));
+    }
     let record = deps.store.get(&thread_key);
     if record.as_ref().map(|r| r.members.is_some()).unwrap_or(true) {
         let members = with_human(&record.and_then(|r| r.members).unwrap_or_default(), name);

@@ -91,6 +91,21 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
     });
 }
 
+pub async fn call(method: reqwest::Method, path: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let mut req = reqwest::Client::new().request(method, format!("http://127.0.0.1:{}{path}", port())).timeout(Duration::from_secs(600));
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let res = req.send().await.map_err(|_| "the Pi harness is not running".to_string())?;
+    let ok = res.status().is_success();
+    let v: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    if ok {
+        Ok(v)
+    } else {
+        Err(v.get("error").and_then(|e| e.as_str()).unwrap_or("harness error").to_string())
+    }
+}
+
 pub fn reload() {
     tokio::spawn(async {
         let _ = reqwest::Client::new()

@@ -2,8 +2,9 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { acceptWebSockets, createHost } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { WebSocketServer } from "ws";
@@ -11,6 +12,7 @@ import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from 
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
+import { PiPackages, toolContext } from "./pi-packages.ts";
 import { ThreadView, type ThreadViewPrincipal } from "./thread-view.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -213,7 +215,110 @@ class McpClient {
 let mcp: McpClient | undefined;
 const DIRECT_GROUPS = new Set(["skills"]);
 const modelOnly = <T extends object>(tool: T) => ({ ...tool, callers: ["model"] as const });
-const coding = { ...CodingTools, tools: (CodingTools.tools ?? []).map(modelOnly) };
+const RISKY = [
+  /\brm\s+-[a-z]*[rf]/i,
+  /\bRemove-Item\b[^\n]*-(Recurse|Force)/i,
+  /\b(del|erase)\s+\/[sq]/i,
+  /\brd\s+\/s/i,
+  /\bgit\s+push\b/i,
+  /\bgit\s+reset\s+--hard/i,
+  /\bgit\s+clean\s+-[a-z]*f/i,
+  /\bgit\s+branch\s+-D\b/,
+  /\bgit\s+(checkout|restore)\s+(--\s|\.)/i,
+  /\bgit\s+rebase\b/i,
+  /\b(drop|truncate)\s+(table|database|schema)\b/i,
+  /\bdelete\s+from\b/i,
+  /\b(npm|pnpm|yarn|cargo|dotnet\s+nuget)\s+publish\b/i,
+  /\bkubectl\s+(delete|apply|scale|rollout\s+restart|drain)\b/i,
+  /\bhelm\s+(install|upgrade|uninstall|rollback)\b/i,
+  /\bterraform\s+(apply|destroy)\b/i,
+  /\bdocker\s+(rm|rmi|system\s+prune|volume\s+rm)\b/i,
+  /\bgh\s+(pr\s+merge|release\s+create|repo\s+delete|workflow\s+run)\b/i,
+  /\baz\s+[a-z-]+\s+(delete|create|update)\b/i,
+  /\b(shutdown|reboot|mkfs|format\s+[a-z]:)\b/i,
+  /\bdd\s+if=/i,
+  /\b(curl|wget|irm|iwr)\b[^|\n]*\|\s*(sh|bash|iex|pwsh|powershell)\b/i,
+  /\bchmod\s+-R\b/i,
+  /\bStop-Process\b|\btaskkill\b|\bkill\s+-9\b/i,
+];
+const RISKY_TOOL = /(^|__)(delete|remove|drop|merge|deploy|destroy|apply|publish|send)_?/i;
+
+function gateFor(name: string, args: Record<string, unknown>): { kind: string; detail: string } | undefined {
+  if (name === "bash" || name === "powershell") {
+    const command = String(args.command ?? "");
+    return { kind: RISKY.some((r) => r.test(command)) ? "risky" : "shell", detail: command };
+  }
+  if (name === "write" || name === "edit") return { kind: "write", detail: `${name} ${String(args.path ?? "")}` };
+  if (name.includes("__") && RISKY_TOOL.test(name.split("__").pop() ?? "")) return { kind: "risky", detail: `${name} ${JSON.stringify(args).slice(0, 1200)}` };
+  return undefined;
+}
+
+const cwdOf: Record<string, string> = {};
+const WRITES = /(^|[^<>=!])>{1,2}(?!=)|\b(cp|mv|rm|rmdir|mkdir|touch|tee|ln|chmod|chown|install|unzip|tar\s+-?x)\b|\bsed\s+-i|\bgit\b[^|;&\n]*\s(commit|checkout|switch|reset|clean|merge|rebase|pull|push|stash|apply|am|cherry-pick|restore|rm|mv|init|clone)\b|\b(npm|pnpm|yarn|bun)\s+(i|install|add|remove|uninstall|ci|update)\b|\bcargo\s+(add|remove|install|build|update)\b|\bdotnet\s+(add|remove|new|build|restore)\b|\bpip\s+install\b|\b(Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Remove-Item|Rename-Item|Expand-Archive)\b|\b(del|erase|copy|move|ren|md|mkdir|rd|xcopy|robocopy)\s/i;
+const ABS_PATH = /(?:^|[\s"'=(])((?:[A-Za-z]:[\\/]|\/(?:[a-z]\/|home\/|Users\/|mnt\/|srv\/|opt\/|var\/|etc\/))[^\s"'|;&<>()]*)/g;
+
+function inside(root: string, target: string) {
+  const rel = relative(resolve(root), resolve(root, target));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function msysToWin(p: string) {
+  const m = /^\/([a-z])\/(.*)$/i.exec(p);
+  return process.platform === "win32" && m ? `${m[1]}:/${m[2]}` : p;
+}
+
+function outsidePaths(cwd: string, name: string, args: Record<string, unknown>): string[] {
+  const allowed = [cwd, tmpdir(), resolve(dataDir, "media")];
+  const ok = (p: string) => allowed.some((root) => inside(root, msysToWin(p)));
+  if (name === "write" || name === "edit") {
+    const path = String(args.path ?? "");
+    return path && !ok(path) ? [resolve(cwd, path)] : [];
+  }
+  if (name === "bash" || name === "powershell") {
+    const command = String(args.command ?? "");
+    if (!WRITES.test(command)) return [];
+    return [...command.matchAll(ABS_PATH)].map((m) => m[1] ?? "").filter((p) => p && !ok(p));
+  }
+  return [];
+}
+
+function touch(conversationId: string, name: string, args: Record<string, unknown>) {
+  if (!["bash", "powershell", "write", "edit", "read"].includes(name)) return;
+  const detail = name === "bash" || name === "powershell" ? String(args.command ?? "") : String(args.path ?? "");
+  try {
+    appendFileSync(join(dataDir, "touches.jsonl"), JSON.stringify({ at: new Date().toISOString(), thread: threads[conversationId] ?? "", tool: name, detail: detail.slice(0, 500), cwd: cwdOf[conversationId] ?? "" }) + "\n");
+  } catch {}
+}
+
+async function approved(conversationId: string, name: string, args: Record<string, unknown>, destructive = false) {
+  const admin = process.env.SWITCHBOARD_ADMIN_URL;
+  touch(conversationId, name, args);
+  const cwd = cwdOf[conversationId];
+  const outside = cwd ? outsidePaths(cwd, name, args) : [];
+  const need = outside.length
+    ? { kind: "outside", detail: `${gateFor(name, args)?.detail ?? name}\n(outside ${cwd}: ${outside.slice(0, 3).join(", ")})` }
+    : destructive
+      ? { kind: "risky", detail: `${name} ${JSON.stringify(args).slice(0, 1200)}` }
+      : gateFor(name, args);
+  if (!admin || !need || need.kind === "shell") return;
+  const res = await fetch(`${admin}/api/gate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ thread: threads[conversationId] ?? "", tool: name, ...need }),
+  });
+  const out = (await res.json().catch(() => ({}))) as { approve?: boolean };
+  if (!out.approve) throw new Error("The user denied this action or did not answer in time. Do not retry it; say what you wanted to do and why, and ask how to proceed.");
+}
+
+type Gateable = { name: string; execute: (args: never, api: never, context: never) => unknown };
+const gated = <T extends Gateable>(tool: T): T => ({
+  ...tool,
+  execute: async (args: never, api: never, context: never) => {
+    await approved(String((api as { conversationId: string }).conversationId), tool.name, args as Record<string, unknown>);
+    return tool.execute(args, api, context);
+  },
+});
+const coding = { ...CodingTools, tools: (CodingTools.tools ?? []).map((t) => modelOnly(gated(t as never) as typeof t)) };
 let mcpTools: { group: string; tool: ReturnType<typeof defineTool> }[] = [];
 const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ timeoutMs: 120_000 }), models: false });
 
@@ -237,6 +342,7 @@ async function loadMcp() {
       callers: DIRECT_GROUPS.has(t._meta?.group ?? "") ? (["model"] as const) : (["tools"] as const),
       execute: async (args, api) => {
         const thread = threads[api.conversationId] ?? "";
+        await approved(String(api.conversationId), t.name, args as Record<string, unknown>);
         const extra = SAFE.has(t.name) && t.name === "create_xlsx" ? { taskId: `pi:${api.taskId}` } : {};
         const result = (await client.request("tools/call", { name: t.name, arguments: { ...args, ...extra, thread } })) as { content?: { type: string; text?: string }[] };
         return { output: [{ type: "text", text: (result.content ?? []).map((c) => c.text ?? "").join("\n") || "(no output)" }] };
@@ -247,17 +353,53 @@ async function loadMcp() {
   registry.install(defineExtension({ name: "mcp", tools: mcpTools.map((t) => t.tool) }));
 }
 
+const piPackages = new PiPackages(dataDir);
+let piTools: { group: string; tool: ReturnType<typeof defineTool> }[] = [];
+
+async function loadPiPackages() {
+  const loaded = await piPackages.loadAll();
+  piTools = loaded.flatMap((pkg) =>
+    pkg.tools.map((def) => {
+      const tool = defineTool({
+        name: def.name,
+        description: def.description,
+        parameters: def.parameters as never,
+        callers: ["model"] as const,
+        execute: async (args, api, context) => {
+          const conversationId = String(api.conversationId);
+          await approved(conversationId, def.name, args as Record<string, unknown>, Boolean(def.annotations?.destructiveHint));
+          const result = await def.execute(`pi:${api.taskId}`, args, (context as { abortSignal?: AbortSignal } | undefined)?.abortSignal, undefined, toolContext(cwdOf[conversationId] ?? process.cwd()));
+          const output = (result.content ?? []).map((c) =>
+            c.type === "image" && c.data && c.mimeType ? { type: "image" as const, data: c.data, mimeType: c.mimeType } : { type: "text" as const, text: c.text ?? JSON.stringify(c) },
+          );
+          if (result.isError) throw new Error(output.map((o) => ("text" in o ? o.text : "")).join("\n") || "tool failed");
+          return { output: output.length ? output : [{ type: "text" as const, text: "(no output)" }] };
+        },
+      });
+      return { group: pkg.group, tool };
+    }),
+  );
+  registry.install(defineExtension({ name: "pi-packages", tools: piTools.map((t) => t.tool) }));
+  return loaded;
+}
+
+function packageSummary() {
+  return piPackages.loaded.map((p) => ({ name: p.name, spec: p.spec, group: p.group, tools: p.tools.map((t) => t.name), skills: p.skills, ignored: p.ignored, error: p.error }));
+}
+
 function toolsFor(groups?: string[] | null) {
   const all = !groups || groups.length === 0;
   const codingTools = all || groups.includes("coding") ? coding.tools : [];
   const mcp = mcpTools.filter((t) => all || groups.includes(t.group)).map((t) => t.tool);
-  return [...codingTools, ...mcp, ...(codemode.tools ?? [])];
+  const pi = piTools.filter((t) => all || groups.includes(t.group)).map((t) => t.tool);
+  return [...codingTools, ...mcp, ...pi, ...(codemode.tools ?? [])];
 }
 
 const registry = createRegistry();
 registry.install(coding);
 registry.install(codemode);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
+await loadPiPackages().catch((e) => console.error("pi packages unavailable:", e instanceof Error ? e.message : e));
 
 const harness = await Harness.open(
   await openNodeSqliteStorage(join(dataDir, "harness.sqlite")),
@@ -318,19 +460,24 @@ type AssistantModel = {
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 };
 
-type UsageTotals = { cost: { total: number } };
+type UsageTotals = { cost: { total: number }; input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 
-async function conversationCostUsd(conv: Conversation): Promise<number> {
+async function conversationTotals(conv: Conversation): Promise<{ costUsd: number; tokensIn: number; tokensOut: number }> {
   const view = await conv.viewState(ctx);
   try {
     const usage = view.value.docs["pi.usage"] as { models?: Record<string, UsageTotals>; tools?: Record<string, UsageTotals> } | undefined;
-    return [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})].reduce((sum, t) => sum + t.cost.total, 0);
+    const all = [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})];
+    return {
+      costUsd: all.reduce((sum, t) => sum + t.cost.total, 0),
+      tokensIn: all.reduce((sum, t) => sum + (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0), 0),
+      tokensOut: all.reduce((sum, t) => sum + (t.output ?? 0), 0),
+    };
   } finally {
     view.dispose();
   }
 }
 
-async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number; costUsd: number } }> {
+async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number; costUsd: number; tokensIn: number; tokensOut: number } }> {
   const entry = await conv.commit((tx) => tx.entry(AssistantEntry, answer as never), ctx);
   const msg = (entry?.model?.[0] as AssistantModel | undefined) ?? {};
   const content = msg.content ?? [];
@@ -347,7 +494,7 @@ async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ repl
       if (model?.contextWindow) contextWindow = model.contextWindow;
     }
   } catch {}
-  return { reply, usage: { contextTokens, contextWindow, costUsd: await conversationCostUsd(conv) } };
+  return { reply, usage: { contextTokens, contextWindow, ...(await conversationTotals(conv)) } };
 }
 
 type SubmitBody = {
@@ -372,6 +519,21 @@ function loadKeys() {
 
 const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>();
 
+const ATTACHED = /^\[Attached (image\/(?:png|jpe?g|gif|webp)) .*?: (.+)\]$/gm;
+const MAX_IMAGE = 5 * 1024 * 1024;
+
+function inputContent(text: string) {
+  const images = [...text.matchAll(ATTACHED)].flatMap(([, mimeType = "", path = ""]) => {
+    try {
+      const bytes = readFileSync(path.trim());
+      return bytes.length <= MAX_IMAGE ? [{ type: "image" as const, data: bytes.toString("base64"), mimeType: mimeType === "image/jpg" ? "image/jpeg" : mimeType }] : [];
+    } catch {
+      return [];
+    }
+  });
+  return images.length ? [{ type: "text" as const, text }, ...images] : text;
+}
+
 async function admit(body: SubmitBody) {
   loadKeys();
   const known = saved.requests[body.requestId];
@@ -385,10 +547,11 @@ async function admit(body: SubmitBody) {
     conv = await harness.createConversation({ ownership: { kind: "ownerless" }, init: (tx, id) => index(tx, String(id), body.threadKey, body.requestId) }, ctx);
   }
   remember(String(conv.id), body.threadKey, body.requestId);
+  if (body.cwd) cwdOf[String(conv.id)] = body.cwd;
   if (!known) {
     await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
   }
-  const submission = await conv.submit({ type: "input", content: body.text || "(resumed)", requestId: body.requestId }, ctx);
+  const submission = await conv.submit({ type: "input", content: body.text ? inputContent(body.text) : "(resumed)", requestId: body.requestId }, ctx);
   submissions.set(body.requestId, submission);
   return { conversationId: String(conv.id) };
 }
@@ -411,7 +574,7 @@ async function steer(body: { conversationId: string; threadKey: string; requestI
   if (!saved.requests[body.requestId]) await conv.commit((tx) => index(tx, id, body.threadKey, body.requestId), ctx);
   remember(id, body.threadKey, body.requestId);
   joins.set(body.requestId, inputs);
-  const submission = await conv.submit({ type: "input", content: body.text, requestId: body.requestId, whenBusy: "steer" }, ctx);
+  const submission = await conv.submit({ type: "input", content: inputContent(body.text), requestId: body.requestId, whenBusy: "steer" }, ctx);
   submissions.set(body.requestId, submission);
   return { status: "steered", conversationId: id };
 }
@@ -521,6 +684,24 @@ const server = createServer(async (req, res) => {
         tools: mcpTools.map((t) => t.tool.name),
         customProviders: [...customProviderIds],
       });
+    }
+    if (req.method === "GET" && req.url === "/packages") return send(res, 200, packageSummary());
+    if (req.method === "POST" && req.url === "/packages/install") {
+      const { spec } = JSON.parse(await read(req)) as { spec?: string };
+      if (!spec?.trim()) return send(res, 400, { error: "spec is required" });
+      try {
+        await piPackages.install(spec.trim());
+      } catch (e) {
+        return send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+      await loadPiPackages();
+      return send(res, 200, packageSummary());
+    }
+    if (req.method === "POST" && req.url === "/packages/remove") {
+      const { name } = JSON.parse(await read(req)) as { name?: string };
+      if (name) await piPackages.remove(name);
+      await loadPiPackages();
+      return send(res, 200, packageSummary());
     }
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
     if (req.method === "POST" && req.url === "/abort") {

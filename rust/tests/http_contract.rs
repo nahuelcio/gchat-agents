@@ -386,14 +386,13 @@ async fn images_are_stored_shown_and_passed_to_the_agent() {
     )
     .await;
     assert_eq!(status, 200);
-    let (status, err) = post_json(
+    let (status, _) = post_json(
         admin,
         "/api/team/send",
-        json!({ "thread": "img1", "name": "Ana", "text": "x", "attachments": [{ "contentType": "text/plain", "data": "aGk=" }] }),
+        json!({ "thread": "file1", "name": "Ana", "text": "x", "attachments": [{ "contentType": "text/html", "data": "aGk=", "name": "x.html" }] }),
     )
     .await;
-    assert_eq!(status, 400);
-    assert_eq!(err["error"], "only image attachments are supported");
+    assert_eq!(status, 200);
     let mut thread = Value::Null;
     for _ in 0..50 {
         thread = get_json(admin, "/api/team/thread?thread=img1").await.1;
@@ -403,7 +402,7 @@ async fn images_are_stored_shown_and_passed_to_the_agent() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let messages = thread["messages"].as_array().unwrap();
-    assert_eq!(messages[0]["text"], "(image)");
+    assert_eq!(messages[0]["text"], "(attachment)");
     let id = messages[0]["attachments"][0]["id"].as_str().unwrap().to_string();
     assert!(messages[1]["text"].as_str().unwrap().contains("[Attached image/png"), "{}", messages[1]["text"]);
     let res = reqwest::Client::new()
@@ -413,7 +412,18 @@ async fn images_are_stored_shown_and_passed_to_the_agent() {
         .await
         .unwrap();
     assert_eq!(res.headers()["content-type"], "image/png");
+    assert!(res.headers()["content-disposition"].to_str().unwrap().starts_with("inline"));
     assert_eq!(res.bytes().await.unwrap().len(), 70);
+    let file = get_json(admin, "/api/team/thread?thread=file1").await.1;
+    let fid = file["messages"][0]["attachments"][0]["id"].as_str().unwrap().to_string();
+    let res = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{admin}/api/media/{fid}"))
+        .header("host", format!("127.0.0.1:{admin}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.headers()["content-disposition"].to_str().unwrap().starts_with("attachment"));
+    assert!(res.headers()["content-security-policy"].to_str().unwrap().contains("sandbox"));
 }
 
 #[tokio::test]

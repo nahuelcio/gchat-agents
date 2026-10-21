@@ -5,6 +5,7 @@ import {
   api,
   type DraftChatMessage,
   type HostDraft,
+  type McpServer,
   type Persona,
   type PersonaTemplate,
   type SkillFile,
@@ -183,6 +184,10 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
   const [editingSkill, setEditingSkill] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [piGroups, setPiGroups] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    api.piPackages().then((list) => setPiGroups(list.filter((p) => p.tools.length).map((p) => ({ id: p.group, label: `${p.group} — pi package ${p.name}` }))), () => {});
+  }, []);
   const [aiOpen, setAiOpen] = useState(false);
   const [skillSource, setSkillSource] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -500,6 +505,56 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     });
   };
 
+  const exportAgent = (p: Persona) => {
+    const used = new Set(p.skills ?? []);
+    const servers = (settings.mcpServers ?? [])
+      .filter((m) => p.mcps?.includes(m.name))
+      .map((m) => ({ ...m, env: m.env ? Object.fromEntries(Object.keys(m.env).map((k) => [k, ""])) : undefined }));
+    const bundle = {
+      switchboardAgent: 1,
+      persona: cleanPersona(p),
+      skills: skills.filter((s) => used.has(s.name)),
+      mcpServers: servers,
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${p.name.toLowerCase()}.agent.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importAgents = async (files: FileList) => {
+    let list = [...personas];
+    let servers = [...(settings.mcpServers ?? [])];
+    const names: string[] = [];
+    const blanks: string[] = [];
+    try {
+      for (const file of [...files]) {
+        const raw = JSON.parse(await file.text()) as { switchboardAgent?: number; persona?: Persona; skills?: SkillInfo[]; mcpServers?: McpServer[] };
+        const persona = raw.persona ?? (raw as unknown as Persona);
+        if (!persona?.name || !persona.prompt) throw new Error(`${file.name} is not an agent export`);
+        const have = new Set(skills.map((s) => s.name));
+        for (const sk of raw.skills ?? []) {
+          if (!have.has(sk.name)) await api.saveSkill(sk).then(setSkills);
+        }
+        for (const m of raw.mcpServers ?? []) {
+          if (servers.some((s) => s.name === m.name)) continue;
+          servers.push(m);
+          if (Object.values(m.env ?? {}).some((v) => !v)) blanks.push(m.name);
+        }
+        const next = cleanPersona(persona);
+        list = [...list.filter((x) => x.name.toLowerCase() !== next.name.toLowerCase()), next];
+        names.push(`@${next.name}`);
+      }
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Import failed", true);
+      return;
+    }
+    await save({ personas: list, mcpServers: servers }, `Imported ${names.join(", ")}`);
+    if (blanks.length) notify(`Fill the keys for ${blanks.join(", ")} in Settings › Tools.`);
+  };
+
   const saveSkill = () => {
     if (!skillDraft?.name.trim() || !skillDraft.body.trim()) return;
     const files = (skillDraft.files ?? []).filter((f) => f.path.trim() && f.content.trim());
@@ -542,7 +597,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
   const toolNames = [
     ...new Set(["engram", "context7", ...BUILTIN_MCPS.map((m) => m.name), ...(settings.mcpServers ?? []).map((m) => m.name)]),
   ];
-  const toolOpts = toolNames.map((id) => ({ id, label: toolLabels.get(id) ?? id }));
+  const toolOpts = [...toolNames.map((id) => ({ id, label: toolLabels.get(id) ?? id })), ...piGroups];
   // skill-creator steers Create AI; don't attach it to agents/host.
   const attachableSkills = skills.filter((s) => s.name !== "skill-creator");
   const skillOpts = attachableSkills.map((s) => ({
@@ -771,6 +826,21 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                 </button>
               </span>
             </div>
+            <div className="create-ai-import">
+              <label className="btn small">
+                Import agent…
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files?.length) void importAgents(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
             {personas.map((p) => (
               <div key={p.name} className={`create-ai-item${editingAgent === p.name ? " on" : ""}`}>
                 <span className="create-ai-item-face" aria-hidden="true">
@@ -788,6 +858,9 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                   </button>
                   <button className="btn small primary" type="button" onClick={() => startEditAgent(p, true)}>
                     Refine with AI
+                  </button>
+                  <button className="btn small" type="button" aria-label={`Export @${p.name}`} onClick={() => exportAgent(p)}>
+                    Export
                   </button>
                   <button className="btn small danger" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
                     Delete

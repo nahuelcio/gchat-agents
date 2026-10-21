@@ -9,6 +9,7 @@ pub mod cli;
 pub mod bridge;
 pub mod config;
 pub mod driver;
+pub mod gate;
 pub mod google;
 pub mod google_drive;
 pub mod handler;
@@ -37,6 +38,7 @@ pub mod team;
 pub mod text;
 pub mod transcripts;
 pub mod turn_ledger;
+pub mod usage;
 pub mod tunnel;
 pub mod verify;
 pub mod workspace;
@@ -70,6 +72,7 @@ pub struct Runtime {
 
 pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> {
     std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
+    crate::usage::init(&config.data_dir);
     std::fs::create_dir_all(&config.workdir).map_err(|e| e.to_string())?;
     // data/skills = propias (writable), .agents/skills = gestionadas por skills.sh (npx skills update -p), skills = vendor manual.
     let bundled = config.data_dir.join("bundled-skills");
@@ -94,6 +97,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         },
     ));
 
+    crate::settings::set_global(settings.clone());
     let health = Arc::new(Mutex::new(Health::from_env(config.data_dir.join("health.json"))));
     let schedules = Arc::new(ScheduleStore::open(config.data_dir.join("schedules.json")));
     let workspaces = Arc::new(Workspaces::new(

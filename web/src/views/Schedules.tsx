@@ -76,6 +76,68 @@ const RECIPES: {
       "Reply as: Ready to merge / Needs work / Leave it (with one-line why each). Flag anything unsafe to leave over the weekend.",
     ].join("\n"),
   },
+  {
+    id: "sentry-digest",
+    label: "Sentry digest",
+    blurb: "Weekday AM: new and spiking errors from the last 24 h (needs the Sentry MCP).",
+    cron: "0 9 * * 1-5",
+    prompt: [
+      "Use the sentry__ tools. If they are missing, reply only: \"Add Sentry in Settings › Tools › MCP catalog\".",
+      "1) List issues first seen or regressed in the last 24 hours, and the top 5 by event count.",
+      "2) For each: title, project, events and users affected, first/last seen, link.",
+      "3) Flag anything that started right after a release.",
+      "Reply in 3 short sections: New / Spiking / Probably noise. Max ~15 lines. Do not invent issues.",
+    ].join("\n"),
+  },
+  {
+    id: "grafana-digest",
+    label: "Grafana alerts",
+    blurb: "Weekday AM: alerts that fired overnight and dashboards worth a look (needs the Grafana MCP).",
+    cron: "0 8 * * 1-5",
+    prompt: [
+      "Use the grafana__ tools, read-only. If they are missing, reply only: \"Add Grafana in Settings › Tools › MCP catalog\".",
+      "1) List alert rules that are firing or fired in the last 24 hours, with state and since when.",
+      "2) For the worst two, query the related panel or datasource for the last 24 h and describe the shape (spike, step, slow climb).",
+      "3) Note any incidents or annotations in that window.",
+      "Reply: Firing now / Resolved overnight / Worth a look. Max ~15 lines, links to the dashboards.",
+    ].join("\n"),
+  },
+  {
+    id: "pr-summary",
+    label: "PR summary",
+    blurb: "Mondays: open PRs, who is waiting on whom, and what is stale (GitHub MCP or gh).",
+    cron: "0 9 * * 1",
+    preferRepo: true,
+    prompt: [
+      "Summarize open pull requests for this repo. Use the github__ tools if present, otherwise `gh pr list --state open --json number,title,author,reviewDecision,updatedAt,isDraft,url`.",
+      "Group into: Ready to merge / Waiting on review / Waiting on author / Drafts / Stale (no update in 7+ days).",
+      "One line each: #number title — author, age, link. End with the one PR that most needs attention and why.",
+      "Do not invent PRs; if neither GitHub source works, say which one to set up.",
+    ].join("\n"),
+  },
+  {
+    id: "deps-audit",
+    label: "Dependency audit",
+    blurb: "Mondays: known vulnerabilities and major updates in this repo's dependencies.",
+    cron: "0 8 * * 1",
+    preferRepo: true,
+    prompt: [
+      "Audit dependencies in this worktree with the tools available: npm audit --json, cargo audit, pip-audit, dotnet list package --vulnerable, whichever apply.",
+      "List high and critical findings with package, installed and fixed version, and advisory link. Then up to 5 major-version updates worth planning.",
+      "Do not change any files. Reply in two sections: Fix now / Plan. If nothing applies, say so in one line.",
+    ].join("\n"),
+  },
+  {
+    id: "tech-brief",
+    label: "Tech brief",
+    blurb: "Weekday AM: news about the tools and vendors you use, with sources (Exa search).",
+    cron: "0 8 * * 1-5",
+    prompt: [
+      "Search the web (exa__ tools) for news from the last 24 hours about: <edit this list: e.g. Rust, React, Azure, OpenAI, Anthropic>.",
+      "Keep only releases, breaking changes, security advisories, pricing changes and outages.",
+      "Reply with up to 8 bullets: what happened, why it matters to us, link. Skip anything you cannot source.",
+    ].join("\n"),
+  },
 ];
 
 function status(job: Job): { label: string; tone: string } {

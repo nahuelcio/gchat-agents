@@ -1,8 +1,13 @@
 # Switchboard
 
-Talk to a local [Pi Durable](https://earendil.com/posts/pi-durable/) agent from **Google Chat**.
+Talk to a team of local AI agents from **Google Chat**.
 
-A Google Chat App receives messages in DMs and spaces, this service runs Pi headlessly on your machine (via `harness/`), and the agent's answer is posted back into the same Chat thread. Local-first: the agent, its files, and its sessions never leave the machine where this runs.
+Switchboard is a single binary that connects a Google Chat app to [Pi Durable](https://earendil.com/posts/pi-durable/) agents running on your own machine. Message the bot in a DM or mention it in a space; the agent works on your machine — with your repos, tools and memory — and replies in the same thread.
+
+- **Local-first.** The agent, its files and its sessions never leave the machine it runs on.
+- **Durable.** Turns survive restarts and crashes; a repeated message never runs twice.
+- **A team, not a bot.** Several agents share a room, hand work to each other and answer when it is their turn.
+- **Batteries included.** 23 ready-made agents, 27 skills and a 19-server MCP catalog ship inside the binary.
 
 ```
  Google Chat                       your machine
@@ -12,107 +17,173 @@ A Google Chat App receives messages in DMs and spaces, this service runs Pi head
 │                  │           │  2. allowlist check         │
 │ thread = session │◄──────────┤  3. queue turn (per thread) │
 └──────────────────┘  REST API │  4. Pi harness (durable)    │
-                        ▲      │  5. post reply in thread    │
-                        └──────┤ service account + chat.bot  │
+                               │  5. post reply in thread    │
                                └─────────────────────────────┘
 ```
 
-One Chat thread = one Pi session. New thread, fresh session.
+One Chat thread is one session. A new thread starts fresh.
 
-## How it drives agents
+## Quick start
 
-The production runtime is **Pi only**. Switchboard starts `harness/server.ts` (Node 22.19+) by itself; turns survive restarts and crashes, a repeated message never runs twice, and a `bash` cut by a crash is reported to the model instead of run again. Set the model as `provider/model` with that provider's API key in `.env` (for example `ANTHROPIC_API_KEY`). `PI_HARNESS=off` disables the harness; `PI_PORT` moves it. `AGENT_DRIVER=opencode|claude` in env is accepted only as a legacy seed and coerced to Pi.
+**1. Install the prebuilt binary** (the control-plane UI is included):
 
-## Setup
+```sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.ps1 | iex
 
-### 1. Google Cloud
-
-1. Create a project, enable the **Google Chat API**.
-2. Create a service account, download the JSON key, note the project **number**.
-3. Configure the Chat App:
-   - Name, avatar, description.
-   - Connection: **HTTP endpoint URL** = `https://<your-public-host>/google/chat`
-   - Authentication audience: the same **HTTP endpoint URL** (or switch to **Project number** — `GOOGLE_TOKEN_AUDIENCE` below must match whichever you pick).
-   - Enable **Direct messages** and/or **Spaces** as needed.
-
-### 2. Run it
-
-**Without cloning (prebuilt binary, UI included):**
-
-```
-irm https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.ps1 | iex   # Windows
-curl -fsSL https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.sh | sh   # Linux / macOS
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/nahuelcio/gchat-agents/main/scripts/install.sh | sh
 ```
 
-While the repo is private, run the script from a machine with `gh auth login` done (it downloads through `gh`). Releases are built by `.github/workflows/release.yml` on every `v*` tag.
+While the repo is private, run the installer from a machine where `gh auth login` is done; it downloads through `gh`.
 
-The public tunnel is picked in Settings › Public tunnel (`auto` uses cloudflared on Windows, downloaded on first use; opentunnel elsewhere). `TUNNEL` in `.env` overrides it.
+**2. Open the control plane** at `http://127.0.0.1:8081`, pick a model and add a provider API key.
 
-**From the repo:**
+**3. Try it without Google Chat.** The playground and control plane work with no credentials. To reply in Chat, follow [Connect Google Chat](#connect-google-chat).
 
-**Windows (PowerShell or cmd), from the repo root:**
+## What ships in the box
 
-```
-npm install --include=dev
-npm start
-```
+Everything below is embedded in the binary and appears on first start. Nothing is downloaded until an agent uses it.
 
-That builds the control-plane UI and runs the Rust binary. Open `http://127.0.0.1:8081`.
+### Agents
 
-Dev (backend + UI hot reload + tunnel), or `npm run dev:echo` without a live model:
+Apply a template in **Agents** to create the agent; edit it freely afterwards.
 
-```
-npm run dev
-```
+| Area | Agents |
+| --- | --- |
+| Research | **Researcher** (multi-source web research with citations), **Strategist** (vendor and product comparisons), **Tutor** |
+| Web | **Browser** (drives a real browser), **Frontend**, **Designer** (Figma to UI), **Perf** (DevTools and Lighthouse) |
+| Code | **Reviewer**, **Debugger**, **Architect**, **QA**, **APIDesigner**, **DotNet**, **RepoGuide** (explains any repo) |
+| Ops | **SRE** (incidents and postmortems), **DevOps**, **Security**, **DBA** |
+| Product | **PM** (specs and work items), **Analyst** (data), **Scribe** (minutes and release notes), **Writer**, **Prompter** |
 
-Production runtime is the Rust binary (`rust/`). Node builds the control-plane UI and runs the Pi harness. Nothing is required to start: without credentials the playground and control plane work and Chat replies are off. To answer in Google Chat, set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env`.
+Templates you never edited are updated automatically when a new version ships; edited ones are left alone. Delete one and it stays deleted.
 
-Then open `http://127.0.0.1:8081` to pick the model, add repos and allow spaces. Add the bot to a space or DM it.
+### Skills
 
-## Environment
+A skill is a `SKILL.md` with step-by-step instructions that an agent loads when a task matches. Bundled:
+
+`deep-research` · `fact-check` · `browser-automation` · `ui-polish` · `test-plan` · `tdd` · `code-review` · `diagnosing-bugs` · `codebase-design` · `improve-codebase-architecture` · `domain-modeling` · `grill-with-docs` · `security-audit` · `incident-response` · `sql-review` · `api-design` · `data-analysis` · `product-spec` · `competitive-analysis` · `prompt-engineering` · `meeting-notes` · `release-notes` · `writing-for-agents` · `teach` · `retro` · `artifacts` · `skill-creator`
+
+Add your own under `data/skills/<name>/SKILL.md`, or create and improve them with AI in **Agents**.
+
+### MCP servers
+
+Registered automatically when their runtime is available (remove one in **Settings › Tools** to opt out):
+
+| Server | What it gives agents |
+| --- | --- |
+| `engram` | Persistent memory across sessions |
+| `context7` | Up-to-date library and API docs |
+| `playwright` | A real browser (isolated profile, output kept out of your repos) |
+| `exa` | Web search and page fetch, no API key needed |
+
+One click away in **Settings › Tools › MCP catalog** (applying a template adds the keyless ones it needs):
+
+| No key | Sign in on first use | API key or token |
+| --- | --- | --- |
+| DeepWiki, Microsoft Learn, Cloudflare Docs, Sequential Thinking, Chrome DevTools, Kubernetes | Azure DevOps, Linear, Sentry | GitHub, Grafana (read-only), Notion, Brave Search, Tavily, Firecrawl, Figma, Supabase (read-only), MongoDB (read-only), HubSpot |
+
+Any other stdio MCP server can be added by hand or by pasting a Claude or Cursor `mcp.json`. **Check** starts each server and shows its tools, or why it fails (missing runtime, empty key).
+
+### pi.dev packages
+
+Install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**. Their tools become a `pi-<name>` group you can give to agents, and bundled skills are added to your skills. Only tools are adapted; TUI, commands and event hooks are ignored and listed as such.
+
+## Connect Google Chat
+
+1. In Google Cloud, create a project and enable the **Google Chat API**.
+2. Create a service account, download its JSON key and note the project **number**.
+3. Configure the Chat app:
+   - **HTTP endpoint URL**: `https://<your-public-host>/google/chat`. The built-in tunnel gives you one; the control plane shows it.
+   - **Authentication audience**: the same endpoint URL, or **Project number**. `GOOGLE_TOKEN_AUDIENCE` must match what you pick.
+   - Enable **Direct messages** and/or **Spaces**.
+4. Set `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env` (file path or base64 JSON).
+5. In the control plane, allow the spaces the bot may answer in. Then DM the bot or mention it in a space.
+
+The public tunnel is chosen in **Settings › Connections**: `auto` uses cloudflared on Windows (downloaded on first use) and opentunnel elsewhere. `TUNNEL=off` lets you bring your own HTTPS front.
+
+## Using it in Chat
+
+- **Mention an agent** with `@Name`, or just describe the task and the host routes it.
+- **Steer a running reply** by sending another message while the agent works.
+- **Thread commands:** `/help`, `/status`, `/compact`, `/clear`, `/close`. `/repo a b c` gives the thread one worktree per repo; `/up`, `/down` and `/logs` manage their dev servers.
+- **Schedules** run prompts on a cron and post the result into a thread.
+- **Artifacts** turn long answers (reports, tables, plans) into a shareable page.
+- **Attachments**: send images or files. Images reach the model directly; other files are saved and handed to the agent by path.
+- **Approvals**: before a risky action (`git push`, `rm -rf`, `DROP TABLE`, deploys, MCP tools that delete or send, writes outside the thread's folder) the agent pauses and posts **Approve / Deny**. Reply `/approve <id>` or `/deny <id>`, or decide from Overview. Unanswered requests are denied after 10 minutes. Choose the level in **Settings › Chat › Approvals**.
+- **Where it works**: every thread has a folder. Chat-only threads use `AGENT_WORKDIR`; `/repo <name or path>` pins a repo and gives the thread its own branch and worktree. Mention a local repo path and the bot offers to pin it. `/status`, Overview and the team chat side panel show the folder, who is working and every file and command touched.
+- **Playground**: a share link (`/play#<token>`) lets you chat with the agents from a browser without Google Chat.
+
+## Usage and cost
+
+Overview shows cost and tokens for today, 7 or 30 days, per day, per agent and per thread, from `data/usage.jsonl`.
+
+Agents can be exported as a JSON file (prompt, avatar, skills and the MCP servers they use, keys blanked) and imported on another machine from **Agents**.
+
+## Configuration
+
+Most settings live in the control plane: model, repos, allowed spaces, agents, skills, MCP servers, context footer and tunnel. Environment variables cover the rest:
 
 | Key | Meaning |
 | --- | --- |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Needed to answer in Chat (the bridge starts without it). Service account key (file path or base64 JSON), used to post replies (`chat.bot` scope) |
-| `TUNNEL` | `on` (default) exposes the bridge with opentunnel at startup; `off` to bring your own HTTPS front |
-| `GOOGLE_TOKEN_AUDIENCE` | Expected token audience. Default with the tunnel on: `<tunnel URL>/google/chat`. Required with `TUNNEL=off` (endpoint URL or project number, matching the Chat app setting) |
-| `PORT` / `ADMIN_PORT` | Bridge port (default 8080) / control plane port, loopback only (default 8081) |
-| `AGENT_WORKDIR` | Where chat-only threads run the agent (default `data/workspace`). `/repo a b c` gives a thread one worktree per repo under one folder; `/status`, `/up [repo]`, `/down`, `/logs`, `/close [repo]` manage them |
-| `DATA_DIR` | Settings, sessions, schedules, worktrees, clones (default `./data`) |
-| `AGENT_TURN_TIMEOUT_MS` | Max turn duration (default 600000) |
-| `PI_HARNESS` / `PI_PORT` | `off` disables the Pi sidecar; port override for the harness |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Service account key (file path or base64 JSON) used to post replies with the `chat.bot` scope. Without it, Chat replies are off. |
+| `GOOGLE_TOKEN_AUDIENCE` | Expected token audience. Defaults to `<tunnel URL>/google/chat`; required with `TUNNEL=off`. |
+| `TUNNEL` | `auto` (default), `cloudflared`, `opentunnel` or `off`. Overrides the setting. |
+| `PORT` / `ADMIN_PORT` | Bridge port (default 8080) / control plane port, loopback only (default 8081). |
+| `DATA_DIR` | Settings, sessions, schedules, skills, worktrees and clones (default `./data`). |
+| `AGENT_WORKDIR` | Where chat-only threads run (default `data/workspace`). |
+| `AGENT_TURN_TIMEOUT_MS` | Max turn duration (default 600000). |
+| `PI_HARNESS` / `PI_PORT` | `off` disables the Pi sidecar / moves its port. |
+| Provider keys | For example `ANTHROPIC_API_KEY`, or add keys in **Settings › Runtime**. |
 
-Everything else — model, repos, spaces, personas, skills, MCP (Engram defaults on), context footer — lives in the control plane. `CHAT_ALLOWED_SPACES` and `AGENT_REPOS_FILE` still work as first-run seeds.
+`CHAT_ALLOWED_SPACES` and `AGENT_REPOS_FILE` still work as first-run seeds.
 
 ## Security
 
-This endpoint **triggers an agent that executes code on this machine**. Take it seriously:
+This endpoint **triggers an agent that runs code on this machine**. Treat it that way.
 
-- Every event must carry a Google-signed bearer token; it is verified against your audience and `chat@system.gserviceaccount.com` before anything runs. Verified tokens from any other source fail with 401.
-- The space allowlist drops events from unlisted spaces with no agent run. Keep it tight.
-- `AGENT_WORKDIR` (default `data/workspace`) is the blast radius for chat-only threads; it is never the bridge's own checkout.
-- In spaces, only @mentions reach the app. In DMs, every message does — DM the bot only to people you trust with the machine.
-- Replies are posted with a service account restricted to the `chat.bot` scope; no user credentials, no domain-wide delegation.
+- Every event must carry a Google-signed bearer token, verified against your audience and `chat@system.gserviceaccount.com` before anything runs. Anything else gets a 401.
+- The space allowlist drops events from unlisted spaces without running the agent. Keep it tight.
+- In spaces only @mentions reach the app; in DMs every message does. Only let people you trust with the machine DM the bot.
+- `AGENT_WORKDIR` is the blast radius for chat-only threads; it is never Switchboard's own checkout.
+- Replies use a service account limited to `chat.bot`: no user credentials, no domain-wide delegation.
+- Approvals stop risky commands and writes outside the thread's folder until someone in the thread says yes. Reads are not gated.
+- Uploaded files other than raster images are served as downloads with a sandbox CSP, never rendered inline.
+- The control plane has no login and listens on loopback only. Do not expose port 8081 beyond machines you trust.
+- MCP catalog entries for databases and Grafana are read-only by default. Agent prompts require confirmation before destructive actions, but the real limit is the credentials you give each server.
 
 ## Development
 
-```
-npm install
+Requires Rust stable and Node 22.19+.
+
+```sh
+npm install --include=dev
+npm run dev            # backend + UI hot reload + tunnel
+npm run dev:echo       # same, with an echo agent instead of a live model
+npm start              # build the UI and run the release binary
 npm test               # cargo test
-npm run e2e            # build debug binary + healthz /api contract
-npm run dev            # rust + vite hot reload
-npm run build:web      # control plane UI (vite)
-npm run dev:web        # UI only (needs bridge already on :8081)
-npm run test:browser   # browser e2e (tester-army/e2e) against the real binary, echo driver
-npx e2e run e2e/pi.e2e.ts --workers 1   # Pi harness rooms (needs API keys)
+npm run test:web       # UI unit tests
+npm run e2e            # debug binary + /api contract
+npm run test:browser   # browser e2e against the real binary (echo driver)
 ```
 
-Agents are a persona plus skills plus tools. A skill is `data/skills/<name>/SKILL.md` (or `skills/<name>/SKILL.md` in this repo) with `name`, `description` and `mcps` in the frontmatter; its text goes into the agent's instructions and its `mcps` turn on by themselves. Settings can **Generar / Mejorar** personas and skills with AI. If `engram` is installed it is registered automatically (opt out by removing it under Skills & tools). The Finance example: create a persona with the `finanzas` skill, set the Drive folder id in Settings › Google Drive, and share that folder with the service account email as Editor.
+Releases are built by `.github/workflows/release.yml` on every `v*` tag, for Windows x64, macOS x64/arm64 and Linux x64/arm64.
 
-Agent-first CLI over the local control plane (JSON in, JSON out, errors as `{"error": ...}` with exit 1):
+To add bundled content:
 
-```
-switchboard json                                   # lists verbs
+- **Agent template**: `templates/<id>.json` (`id`, `name`, `prompt`, `skills`, `mcps`). Start `prompt` with a one-line summary; the host routes on the first 120 characters.
+- **Skill**: `skills/<name>/SKILL.md` with `name`, `description` and optional `mcps` in the frontmatter.
+- **Catalog MCP**: an entry in `catalog/mcps.json`. `{KEY}` placeholders in `args` and `env` are filled from its `inputs`.
+
+`cargo test` checks that every template only uses bundled skills and known MCP servers, and that every catalog entry fills its inputs.
+
+### Agent-first CLI
+
+JSON in, JSON out over the local control plane; errors come back as `{"error": ...}` with exit code 1.
+
+```sh
+switchboard json                                   # list verbs
 switchboard json activity --limit 20 --kind turn_fail
 switchboard json search --q "token de meta"
 echo '{"text":"hola","name":"bot"}' | switchboard json thread send --thread T --stdin
@@ -122,23 +193,31 @@ switchboard json approvals decide --id ab12 --approve
 ## Layout
 
 ```
-rust/              production backend (axum + tokio)
+rust/              backend (axum + tokio)
   src/
-    main.rs        binary entry (loads .env, serves bridge + admin)
-    bridge.rs      /healthz, /google/chat
+    main.rs        entry: CLI, MCP stdio server, or bridge + control plane
+    bridge.rs      /healthz, /google/chat, /play
     admin.rs       /api/* control plane (loopback)
     handler.rs     auth → allowlist → per-thread queue → driver
-    driver/        echo, pi, spawn+timeout
-    session.rs     sessions.json atomic store
-    settings.rs    config.json (Pi-only, templates, Engram defaults)
-    schedules.rs   cron + job store + scheduler
-    workspace.rs   git worktrees / app up
-    share.rs       share-token
-harness/           Pi Durable sidecar (started by Rust)
+    driver/        Pi and echo drivers
+    personas.rs    team chat: routing, hand-offs, PASS
+    settings.rs    config.json, bundled templates
+    skills.rs      bundled and user skills
+    mcp.rs         MCP proxy for agents
+    mcp_client.rs  MCP servers, defaults and catalog
+    schedules.rs   cron jobs
+    workspace.rs   git worktrees and dev servers
+harness/           Pi Durable sidecar (started by the binary)
 web/               control-plane UI (React + Vite)
-src/               legacy TypeScript backend (retired; npm start → Rust)
+templates/         bundled agent templates
+skills/            bundled skills (plus .agents/skills, synced from skills-lock.json)
+catalog/           optional MCP catalog
 ```
 
 ## Status
 
-MVP. Works: DM + space mentions, thread-per-session, async replies, chunked output, timeouts, allowlist, Pi Durable driver, personas + skill packs + Engram, AI draft in Settings. Thread commands with per-thread worktrees and dev servers. Not yet: ADO work items, cards, attachments, approval gate before the agent writes.
+Works: DMs and space mentions, thread-per-session, durable turns, team chat with several agents, bundled agents, skills and MCP catalog, schedules, artifacts, per-thread worktrees and dev servers, playground share links.
+
+Works too: approvals with Chat cards, attachments, usage and cost, MCP health checks, pi.dev packages, agent export/import.
+
+Not yet: multi-select question cards, pi package commands and UI hooks.

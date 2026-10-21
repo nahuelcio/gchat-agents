@@ -157,6 +157,69 @@ struct Io {
     next: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Probe {
+    pub name: String,
+    pub ok: bool,
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub ms: u64,
+}
+
+pub async fn probe(server: McpServer) -> Probe {
+    let started = std::time::Instant::now();
+    let name = server.name.clone();
+    let done = |ok: bool, tools: Vec<String>, error: Option<String>| Probe { name: name.clone(), ok, tools, error, ms: started.elapsed().as_millis() as u64 };
+    if let Some(missing) = server.env.iter().find(|(_, v)| v.trim().is_empty()).map(|(k, _)| k.clone()) {
+        return done(false, vec![], Some(format!("{missing} is empty")));
+    }
+    let bin = crate::driver::spawn::resolve_bin(&server.command);
+    let spawned = Command::new(&bin)
+        .args(&server.args)
+        .envs(&server.env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return done(false, vec![], Some(format!("{} is not installed or not on PATH", server.command))),
+        Err(e) => return done(false, vec![], Some(e.to_string())),
+    };
+    let mut stderr = child.stderr.take();
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return done(false, vec![], Some("could not open pipes".into()));
+    };
+    let me = McpChild { server, _child: child, io: Mutex::new(Io { stdin, lines: BufReader::new(stdout).lines(), next: 1 }) };
+    let run = async {
+        me.request("initialize", json!({ "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": { "name": "switchboard", "version": "0.1.0" } })).await?;
+        me.notify("notifications/initialized").await?;
+        me.tools().await
+    };
+    match tokio::time::timeout(Duration::from_secs(90), run).await {
+        Ok(Ok(tools)) => done(true, tools.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from)).collect(), None),
+        outcome => {
+            let reason = match outcome {
+                Ok(Err(e)) => e,
+                _ => "did not answer within 90 s".into(),
+            };
+            drop(me);
+            let mut tail = String::new();
+            if let Some(err) = stderr.as_mut() {
+                let mut buf = vec![0u8; 4096];
+                if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(2), tokio::io::AsyncReadExt::read(err, &mut buf)).await {
+                    tail = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                }
+            }
+            let detail = tail.lines().rev().find(|l| !l.trim().is_empty()).map(|l| format!(": {}", l.trim())).unwrap_or_default();
+            done(false, vec![], Some(format!("{reason}{detail}")))
+        }
+    }
+}
+
 pub struct McpChild {
     pub server: McpServer,
     _child: Child,

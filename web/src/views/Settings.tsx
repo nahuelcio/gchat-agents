@@ -9,9 +9,12 @@ import {
   type DriveMcpStatus,
   type RepoConfig,
   type Settings,
+  type McpProbe,
+  type PiPackage,
   type McpServer,
   type PiCustomProvider,
   type PiKey,
+  type ApprovalMode,
   type TunnelMode,
 } from "../api";
 import { ModelPicker } from "../ModelPicker";
@@ -37,6 +40,12 @@ const TUNNEL_OPTIONS: { value: TunnelMode; label: string; hint: string }[] = [
   { value: "opentunnel", label: "opentunnel", hint: "Stable URL across restarts. Linux and macOS only (npm i -g opentunnel)." },
   { value: "cloudflared", label: "cloudflared", hint: "Works everywhere and downloads itself. The URL changes on every restart." },
   { value: "off", label: "Off", hint: "No public URL: team chat works, Google Chat needs GOOGLE_TOKEN_AUDIENCE." },
+];
+
+const APPROVAL_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] = [
+  { value: "risky", label: "Risky actions", hint: "Ask before git push, rm -rf, DROP TABLE, kubectl apply, deploys and MCP tools that delete, merge or send." },
+  { value: "writes", label: "Risky + file writes", hint: "Also ask before every file write or edit." },
+  { value: "off", label: "Off", hint: "Agents act without asking. Only for machines and people you fully trust." },
 ];
 
 const TABS = [
@@ -82,8 +91,10 @@ export function SettingsView(props: ViewProps) {
       {tab === "runtime" && <AgentCard {...props} />}
       {tab === "tools" && <McpServersCard {...props} />}
       {tab === "tools" && <McpCatalogCard {...props} />}
+      {tab === "tools" && <PiPackagesCard {...props} />}
       {tab === "chat" && (
         <>
+          <ApprovalsCard {...props} />
           <BatchingCard {...props} />
           <ContextCard {...props} />
           <GoogleChatCard {...props} />
@@ -206,6 +217,14 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
   const [blob, setBlob] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const commit = (list: McpServer[], ok: string) => save({ mcpServers: list }, ok);
+  const [health, setHealth] = useState<Record<string, McpProbe | "checking">>({});
+  const check = (name: string) => {
+    setHealth((h) => ({ ...h, [name]: "checking" }));
+    void api.checkMcp(name).then(
+      (p) => setHealth((h) => ({ ...h, [name]: p })),
+      (e: Error) => setHealth((h) => ({ ...h, [name]: { name, ok: false, tools: [], error: e.message, ms: 0 } })),
+    );
+  };
   return (
     <details className="card" open aria-label="MCP servers">
       <summary className="card-title">
@@ -255,17 +274,39 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
           Paste mcp.json
         </button>
       )}
-      {servers.map((m) => (
+      {servers.length > 0 && (
+        <div className="row">
+          <button type="button" className="btn small" onClick={() => servers.forEach((m) => check(m.name))}>
+            Check all
+          </button>
+          <span className="muted small">Starts each server and lists its tools. The first run of npx/uvx servers can take a minute.</span>
+        </div>
+      )}
+      {servers.map((m) => {
+        const h = health[m.name];
+        return (
         <div key={m.name} className="persona-row">
           <div className="grow">
-            <span className="strong">{m.name}</span> <code className="muted small">{[m.command, ...m.args].join(" ")}</code>
+            <span className="strong">{m.name}</span>{" "}
+            {h === "checking" && <span className="pill">checking…</span>}
+            {h && h !== "checking" && (
+              <span className={`pill ${h.ok ? "ok" : "bad"}`} title={h.ok ? h.tools.join(", ") : h.error}>
+                {h.ok ? `ok · ${h.tools.length} tools · ${(h.ms / 1000).toFixed(1)} s` : "failing"}
+              </span>
+            )}{" "}
+            <code className="muted small">{[m.command, ...m.args].join(" ")}</code>
             {m.env && Object.keys(m.env).length > 0 && <div className="muted small">env: {Object.keys(m.env).join(", ")}</div>}
+            {h && h !== "checking" && !h.ok && <div className="small mcp-error">{h.error}</div>}
           </div>
+          <button type="button" className="btn small" disabled={h === "checking"} onClick={() => check(m.name)}>
+            Check
+          </button>
           <button className="x" aria-label={`Remove MCP ${m.name}`} onClick={() => void commit(servers.filter((x) => x.name !== m.name), `${m.name} removed`)}>
             ×
           </button>
         </div>
-      ))}
+        );
+      })}
       {draft ? (
         <form
           className="persona-form"
@@ -311,6 +352,65 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
           + Add MCP server
         </button>
       )}
+    </details>
+  );
+}
+
+function PiPackagesCard({ notify }: ViewProps) {
+  const [list, setList] = useState<PiPackage[]>();
+  const [spec, setSpec] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => {
+    api.piPackages().then(setList, () => setList([]));
+  }, []);
+  const run = (label: string, p: Promise<PiPackage[]>, ok: string) => {
+    setBusy(label);
+    void p
+      .then(
+        (next) => {
+          setList(next);
+          notify(ok);
+        },
+        (e: Error) => notify(e.message, true),
+      )
+      .finally(() => setBusy(null));
+  };
+  return (
+    <details className="card" open aria-label="pi.dev packages">
+      <summary className="card-title">
+        <h2>pi.dev packages</h2>
+        <p className="muted small">
+          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a>. Their tools become a tool group (pi-…) you can give to agents, and bundled skills land in your skills. Only tools are supported: UI, commands and event hooks are ignored.
+        </p>
+      </summary>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (spec.trim()) run("install", api.installPiPackage(spec.trim()), `${spec.trim()} installed`);
+        }}
+      >
+        <input className="mono grow" value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="npm package, e.g. pi-web-search" aria-label="Package" />
+        <button className="btn primary" disabled={!spec.trim() || busy !== null}>
+          {busy === "install" ? "Installing…" : "Install"}
+        </button>
+      </form>
+      {list?.length === 0 && <p className="muted small">No packages yet.</p>}
+      {list?.map((p) => (
+        <div key={p.name} className="persona-row">
+          <div className="grow">
+            <span className="strong">{p.name}</span> <code className="muted small">{p.group}</code>{" "}
+            {p.error ? <span className="pill bad">failing</span> : <span className="pill ok">{p.tools.length} tools</span>}
+            {p.tools.length > 0 && <div className="muted small">tools: {p.tools.join(", ")}</div>}
+            {p.skills.length > 0 && <div className="muted small">skills: {p.skills.join(", ")}</div>}
+            {p.ignored.length > 0 && <div className="muted small">ignored: {p.ignored.join(", ")}</div>}
+            {p.error && <div className="small mcp-error">{p.error}</div>}
+          </div>
+          <button type="button" className="x" aria-label={`Remove ${p.name}`} disabled={busy !== null} onClick={() => run(p.name, api.removePiPackage(p.name), `${p.name} removed`)}>
+            ×
+          </button>
+        </div>
+      ))}
     </details>
   );
 }
@@ -816,6 +916,31 @@ function BatchingCard({ settings, save }: ViewProps) {
             ? `Messages sent within ${seconds} s of each other reach the agent together, in one turn. Commands like /status still run right away.`
             : "Every message reaches the agent on its own."}
         </span>
+      </div>
+    </details>
+  );
+}
+
+function ApprovalsCard({ settings, save }: ViewProps) {
+  const current = APPROVAL_OPTIONS.find((o) => o.value === settings.approvals) ?? APPROVAL_OPTIONS[0];
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Approvals</h2>
+        <p className="muted small">Before a risky action the agent pauses and posts Approve / Deny buttons in the thread. Unanswered requests are denied after 10 minutes.</p>
+      </summary>
+      <div className="field">
+        <span>Ask before</span>
+        <fieldset className="chips">
+          <legend className="sr-only">Approval mode</legend>
+          {APPROVAL_OPTIONS.map((o) => (
+            <label key={o.value} className={`chip ${current.value === o.value ? "on" : ""}`} title={o.hint}>
+              <input type="radio" name="approvals" checked={current.value === o.value} onChange={() => void save({ approvals: o.value }, `Approvals: ${o.label}`)} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">{current.hint}</span>
       </div>
     </details>
   );

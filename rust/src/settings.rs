@@ -103,6 +103,15 @@ impl PersonaTemplate {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalMode {
+    Off,
+    #[default]
+    Risky,
+    Writes,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -125,6 +134,8 @@ pub struct Settings {
     pub host_skills: Vec<String>,
     #[serde(default)]
     pub tunnel: TunnelMode,
+    #[serde(default)]
+    pub approvals: ApprovalMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google_drive_folder_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -149,6 +160,16 @@ pub struct SettingsDefaults {
 }
 type Listener = Arc<dyn Fn(&Settings) + Send + Sync>;
 
+
+static GLOBAL_STORE: std::sync::OnceLock<std::sync::Arc<SettingsStore>> = std::sync::OnceLock::new();
+
+pub fn set_global(store: std::sync::Arc<SettingsStore>) {
+    let _ = GLOBAL_STORE.set(store);
+}
+
+pub fn global() -> Option<&'static std::sync::Arc<SettingsStore>> {
+    GLOBAL_STORE.get()
+}
 
 pub struct SettingsStore {
     file_path: PathBuf,
@@ -190,6 +211,7 @@ impl SettingsStore {
             host_mcps: saved.host_mcps,
             host_skills: saved.host_skills.unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
+            approvals: saved.approvals.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
             mcp_servers: saved.mcp_servers.unwrap_or_default(),
         };
@@ -261,6 +283,9 @@ impl SettingsStore {
             }
             if let Some(v) = patch.tunnel {
                 current.tunnel = v;
+            }
+            if let Some(v) = patch.approvals {
+                current.approvals = v;
             }
             if let Some(v) = patch.mcp_servers {
                 current.mcp_servers = v;
@@ -482,6 +507,7 @@ struct PartialSettings {
     host_mcps: Option<Vec<String>>,
     host_skills: Option<Vec<String>>,
     tunnel: Option<TunnelMode>,
+    approvals: Option<ApprovalMode>,
     google_drive_folder_id: Option<String>,
     mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
@@ -502,6 +528,7 @@ pub struct SettingsPatch {
     pub host_mcps: Option<Vec<String>>,
     pub host_skills: Option<Vec<String>>,
     pub tunnel: Option<TunnelMode>,
+    pub approvals: Option<ApprovalMode>,
     pub google_drive_folder_id: Option<String>,
     pub mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }

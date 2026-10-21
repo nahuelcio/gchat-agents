@@ -11,6 +11,7 @@ export interface RepoConfig {
 export type ContextFooter = "every" | "every5" | "above60" | "never";
 
 export type TunnelMode = "auto" | "opentunnel" | "cloudflared" | "off";
+export type ApprovalMode = "off" | "risky" | "writes";
 
 export interface Settings {
   agentDriver: "pi";
@@ -21,6 +22,7 @@ export interface Settings {
   autoCompactAt: number;
   debounceMs?: number;
   tunnel: TunnelMode;
+  approvals?: ApprovalMode;
   googleDriveFolderId?: string | null;
   mcpServers?: McpServer[];
   personas: Persona[];
@@ -48,7 +50,7 @@ export const DEFAULT_HOST_SKILLS = [
 
 export interface PersonaAvatar {
   color: string;
-  shape: "round" | "soft" | "tall" | "bean";
+  shape: "round" | "soft" | "tall" | "bean" | "cloud" | "ghost" | "squircle" | "flower" | "heart" | "drop" | "hex" | "star" | "pebble";
   expression: "idle" | "wink" | "happy" | "sleepy" | "curious";
 }
 
@@ -209,6 +211,8 @@ export interface Thread {
   slug: string;
   repo?: string;
   branch?: string;
+  folder?: string;
+  speaking?: string[];
   updatedAt: string;
   context?: string;
   app: { running: boolean; port?: number };
@@ -253,6 +257,45 @@ export interface Job {
 }
 
 export type JobTrigger = "cron" | "command" | "mention";
+
+export interface UsageRow {
+  key: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  turns: number;
+}
+
+export interface UsageReport {
+  days: number;
+  report: { total: UsageRow; byDay: UsageRow[]; byAgent: UsageRow[]; byThread: UsageRow[] };
+}
+
+export interface PiPackage {
+  name: string;
+  spec: string;
+  group: string;
+  tools: string[];
+  skills: string[];
+  ignored: string[];
+  error?: string;
+}
+
+export interface Touch {
+  at: string;
+  thread: string;
+  tool: string;
+  detail: string;
+  cwd: string;
+}
+
+export interface McpProbe {
+  name: string;
+  ok: boolean;
+  tools: string[];
+  error?: string;
+  ms: number;
+}
 
 export interface Approval {
   id: string;
@@ -359,6 +402,12 @@ export const api = {
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
     call<Job[]>("/api/schedules", job),
   approvals: () => call<Approval[]>("/api/approvals"),
+  piPackages: () => call<PiPackage[]>("/api/pi/packages"),
+  installPiPackage: (spec: string) => call<PiPackage[]>("/api/pi/packages/install", { spec }),
+  removePiPackage: (name: string) => call<PiPackage[]>("/api/pi/packages/remove", { name }),
+  touches: (threadKey: string) => call<Touch[]>(`/api/threads/touches?threadKey=${encodeURIComponent(threadKey)}`),
+  checkMcp: (name: string) => call<McpProbe>("/api/mcp/check", { name }),
+  usage: (days = 30) => call<UsageReport>(`/api/usage?days=${days}`),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
   updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string; space?: string; webhook?: string; notifyFailures?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),

@@ -1790,3 +1790,26 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 @media (pointer: coarse) {
   input, textarea, select { font-size: max(16px, 1em); }
 }
+.composer-file { display: flex; align-items: center; justify-content: center; height: 100%; padding: 4px; font-size: 11px; text-align: center; word-break: break-all; overflow: hidden; }
+.usage-total { margin: 4px 0 12px; }
+.usage-total strong { font-size: 1.4em; }
+.usage-bars { display: flex; align-items: flex-end; gap: 3px; height: 56px; margin-bottom: 12px; }
+.usage-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.usage-bar span { display: block; width: 100%; background: var(--primary); border-radius: 2px 2px 0 0; }
+.usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.usage-table h3 { font-size: 0.9em; margin: 0 0 6px; }
+.usage-table table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.usage-table td { padding: 4px 6px 4px 0; border-top: 1px solid var(--border, rgba(127,127,127,.2)); }
+.usage-table .num { text-align: right; white-space: nowrap; }
+.usage-key { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .usage-table td:nth-child(3) { display: none; } }
+.create-ai-import { display: flex; justify-content: flex-end; padding: 4px 0 8px; }
+.mcp-error { color: var(--bad); word-break: break-word; }
+.folder { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.pill.working { margin-bottom: 4px; display: inline-block; }
+.where-pin { display: grid; gap: 6px; margin: 8px 0 12px; }
+.where-pin select { flex: 1; min-width: 0; }
+.touches { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 12px; }
+.touches li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.touch-write, .touch-edit { background: var(--info-soft); color: var(--info); }
+.touch-bash, .touch-powershell { background: var(--ok-soft); color: var(--ok); }

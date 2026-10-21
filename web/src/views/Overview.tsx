@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, until, type ActivityEvent, type Approval, type Job, type Thread } from "../api";
+import { ago, api, until, type ActivityEvent, type Approval, type Job, type Thread, type UsageReport, type UsageRow } from "../api";
 import type { ViewProps } from "../App";
 
 const ACTIVITY_FILTERS = {
@@ -37,7 +37,7 @@ export function Overview({ settings, notify }: ViewProps) {
   }, []);
 
   // Google Chat threads only: team chat and schedules have their own views.
-  const real = threads?.filter((t) => t.key.startsWith("spaces/") || (t.key.startsWith("share/") && t.repo)) ?? [];
+  const real = threads?.filter((t) => !t.key.startsWith("schedule/")) ?? [];
   const chats = threads?.filter((t) => !t.key.startsWith("schedule/")) ?? [];
   const team = chats.filter((t) => t.key.startsWith("share/")).length;
   const google = chats.length - team;
@@ -237,6 +237,8 @@ export function Overview({ settings, notify }: ViewProps) {
         </div>
       </div>
 
+      <UsageCard />
+
       <section className="card flush" aria-label="Activity">
         <div className="card-head">
           <h2>Activity</h2>
@@ -268,7 +270,7 @@ export function Overview({ settings, notify }: ViewProps) {
           <h2>Threads</h2>
           <span className="muted">Refreshes every 3 s</span>
         </div>
-        {threads && real.length === 0 && <p className="empty">No Google Chat threads or rooms with a repo yet. Mention the bot in the team space, or use /repo in a team chat room.</p>}
+        {threads && real.length === 0 && <p className="empty">No threads yet. Mention the bot in Google Chat or open the team chat.</p>}
         {real.length > 0 && (
           <div className="table-wrap">
             <table>
@@ -276,7 +278,7 @@ export function Overview({ settings, notify }: ViewProps) {
                 <tr>
                   <th>Thread</th>
                   <th>In the room</th>
-                  <th>Repo and branch</th>
+                  <th>Where it works</th>
                   <th>App</th>
                   <th>Last activity</th>
                   <th>
@@ -296,6 +298,7 @@ export function Overview({ settings, notify }: ViewProps) {
                       {t.context && <div className="mono muted">{t.context}</div>}
                     </td>
                     <td>
+                      {t.speaking?.length ? <div className="pill ok working">working: {t.speaking.map((s) => `@${s}`).join(", ")}</div> : null}
                       {t.members?.length ? (
                         <div className="room-chips">
                           {t.members.map((m) => (
@@ -307,13 +310,12 @@ export function Overview({ settings, notify }: ViewProps) {
                       )}
                     </td>
                     <td>
-                      {t.repo ? (
-                        <>
-                          <div>{t.repo}</div>
-                          <div className="mono muted">{t.branch}</div>
-                        </>
-                      ) : (
-                        <span className="muted">Chat only</span>
+                      {t.repo ? <div>{t.repo}</div> : <div className="muted">Chat only</div>}
+                      {t.branch && <div className="mono muted small">{t.branch}</div>}
+                      {t.folder && (
+                        <div className="mono muted small folder" title={t.folder}>
+                          {t.folder}
+                        </div>
                       )}
                     </td>
                     <td>
@@ -361,5 +363,85 @@ export function Overview({ settings, notify }: ViewProps) {
         </section>
       )}
     </>
+  );
+}
+
+const USAGE_RANGES = [1, 7, 30] as const;
+
+function usd(n: number) {
+  return n >= 1 ? `$${n.toFixed(2)}` : n > 0 ? `$${n.toFixed(4)}` : "$0";
+}
+
+function tokens(n: number) {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+function UsageTable({ title, rows, label }: { title: string; rows: UsageRow[]; label: (key: string) => string }) {
+  return (
+    <div className="usage-table">
+      <h3>{title}</h3>
+      {rows.length === 0 && <p className="muted small">Nothing yet.</p>}
+      <table>
+        <tbody>
+          {rows.slice(0, 8).map((r) => (
+            <tr key={r.key}>
+              <td className="usage-key" title={label(r.key)}>{label(r.key)}</td>
+              <td className="num">{usd(r.costUsd)}</td>
+              <td className="num muted">{tokens(r.tokensIn)} in · {tokens(r.tokensOut)} out</td>
+              <td className="num muted">{r.turns} turns</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UsageCard() {
+  const [days, setDays] = useState<(typeof USAGE_RANGES)[number]>(7);
+  const [data, setData] = useState<UsageReport>();
+  useEffect(() => {
+    const load = () => api.usage(days).then(setData, () => {});
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, [days]);
+  const r = data?.report;
+  const max = Math.max(0.000001, ...(r?.byDay ?? []).map((d) => d.costUsd));
+  return (
+    <section className="card" aria-label="Usage">
+      <div className="card-head">
+        <h2>Usage</h2>
+        <fieldset className="chips">
+          <legend className="sr-only">Range</legend>
+          {USAGE_RANGES.map((d) => (
+            <label key={d} className={`chip ${days === d ? "on" : ""}`}>
+              <input type="radio" name="usage-range" checked={days === d} onChange={() => setDays(d)} />
+              {d === 1 ? "Today" : `${d} days`}
+            </label>
+          ))}
+        </fieldset>
+      </div>
+      {r && (
+        <>
+          <p className="usage-total">
+            <strong>{usd(r.total.costUsd)}</strong> <span className="muted">· {tokens(r.total.tokensIn)} tokens in · {tokens(r.total.tokensOut)} out · {r.total.turns} turns</span>
+          </p>
+          {r.byDay.length > 1 && (
+            <div className="usage-bars" aria-label="Cost per day">
+              {r.byDay.map((d) => (
+                <div key={d.key} className="usage-bar" title={`${d.key}: ${usd(d.costUsd)}`}>
+                  <span style={{ height: `${Math.max(4, (d.costUsd / max) * 100)}%` }} />
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="usage-grid">
+            <UsageTable title="By agent" rows={r.byAgent} label={(k) => k} />
+            <UsageTable title="By thread" rows={r.byThread} label={(k) => k.split("	")[1] ?? k} />
+          </div>
+        </>
+      )}
+    </section>
   );
 }

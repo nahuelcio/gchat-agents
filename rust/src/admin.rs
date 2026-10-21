@@ -41,6 +41,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/schedules/log", get(get_schedules_log))
         .route("/api/approvals", get(get_approvals))
         .route("/api/approvals/decide", post(post_approvals_decide))
+        .route("/api/gate", post(post_gate))
+        .route("/api/usage", get(get_usage))
+        .route("/api/pi/packages", get(get_pi_packages))
+        .route("/api/pi/packages/install", post(post_pi_install))
+        .route("/api/pi/packages/remove", post(post_pi_remove))
+        .route("/api/threads/touches", get(get_touches))
         .route("/api/schedules/suggest", post(post_schedules_suggest))
         .route("/api/share", get(get_share))
         .route("/api/share/rotate", post(post_share_rotate))
@@ -94,6 +100,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/skills/search", get(get_skills_search))
         .route("/api/mcp/import", post(post_mcp_import))
         .route("/api/mcp/servers", get(get_mcp_servers))
+        .route("/api/mcp/check", post(post_mcp_check))
         .route("/api/mcp/catalog", get(get_mcp_catalog).post(post_mcp_catalog))
         .route("/api/agents/delegates", get(get_delegates))
         .route("/api/agents/ask", post(post_ask_agent))
@@ -178,6 +185,7 @@ async fn get_pi_models(State(state): State<Arc<AppState>>) -> Response {
 
 async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
     let personas = state.settings.get().personas;
+    let workdir = state.handler.config.lock().unwrap().workdir.clone();
     let mut threads: Vec<Value> = state
         .handler
         .store
@@ -192,6 +200,8 @@ async fn get_threads(State(state): State<Arc<AppState>>) -> Response {
                 "repo": r.repo,
                 "branch": r.branch,
                 "title": r.title,
+                "folder": r.worktree.clone().unwrap_or_else(|| workdir.clone()),
+                "speaking": crate::handler::speaking(&key),
                 "worktree": r.worktree,
                 "updatedAt": r.updated_at,
                 "hasSession": r.session_ref.is_some(),
@@ -375,8 +385,109 @@ async fn get_approvals(State(state): State<Arc<AppState>>) -> Response {
             let p = j.pending.clone()?;
             Some(json!({ "id": p.id, "at": p.at, "reason": p.reason, "jobId": j.id, "name": j.name, "prompt": j.prompt }))
         })
+        .chain(crate::gate::pending().into_iter().map(|g| {
+            json!({ "id": g.id, "at": g.at, "reason": g.kind, "name": format!("Agent wants to run {}", g.tool), "prompt": g.detail, "thread": g.thread_key, "gate": true })
+        }))
         .collect();
     Json(list).into_response()
+}
+
+async fn get_touches(State(state): State<Arc<AppState>>, Query(q): Query<ThreadKeyQuery>) -> Response {
+    let Some(key) = thread_key_of(q.thread_key) else {
+        return missing_thread_key();
+    };
+    let raw = tail(&state.data_dir.join("touches.jsonl"), 2 * 1024 * 1024);
+    let mut list: Vec<Value> = raw
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("thread").and_then(|t| t.as_str()) == Some(key.as_str()))
+        .collect();
+    let start = list.len().saturating_sub(300);
+    list.drain(..start);
+    list.reverse();
+    Json(list).into_response()
+}
+
+fn tail(path: &std::path::Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(max)));
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if len > max { text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default() } else { text }
+}
+
+fn harness_reply(r: Result<Value, String>) -> Response {
+    match r {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_pi_packages() -> Response {
+    harness_reply(crate::pi_sidecar::call(reqwest::Method::GET, "/packages", None).await)
+}
+
+async fn post_pi_install(Json(body): Json<Value>) -> Response {
+    harness_reply(crate::pi_sidecar::call(reqwest::Method::POST, "/packages/install", Some(body)).await)
+}
+
+async fn post_pi_remove(Json(body): Json<Value>) -> Response {
+    harness_reply(crate::pi_sidecar::call(reqwest::Method::POST, "/packages/remove", Some(body)).await)
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    days: Option<i64>,
+}
+
+async fn get_usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> Response {
+    let days = q.days.unwrap_or(30).clamp(1, 366);
+    let since = (chrono::Local::now() - chrono::Duration::days(days - 1)).format("%Y-%m-%d").to_string();
+    let mut report = crate::usage::global().map(|l| l.report(&since)).unwrap_or_default();
+    for row in &mut report.by_thread {
+        if let Some(title) = state.handler.store.get(&row.key).and_then(|r| r.title) {
+            row.key = format!("{}	{title}", row.key);
+        }
+    }
+    Json(json!({ "days": days, "report": report })).into_response()
+}
+
+#[derive(Deserialize)]
+struct GateBody {
+    thread: Option<String>,
+    tool: String,
+    detail: String,
+    kind: String,
+}
+
+async fn post_gate(State(state): State<Arc<AppState>>, Json(body): Json<GateBody>) -> Response {
+    if !crate::gate::needs_gate(state.settings.get().approvals, &body.kind) {
+        return Json(json!({ "approve": true })).into_response();
+    }
+    let thread = body.thread.unwrap_or_default();
+    let (info, rx) = crate::gate::open(&thread, &body.tool, &body.detail, &body.kind);
+    let summary = crate::gate::summary(&info);
+    crate::handler::note(&state.handler, "approval_pending", &thread, format!("{} needs approval ({})", info.tool, info.id), info.detail.clone()).await;
+    if let Some((space, chat_thread)) = crate::gate::route(&thread) {
+        let msg = crate::google::PostMessageBody { text: summary, thread: chat_thread, cards_v2: Some(crate::gate::card(&info)) };
+        if let Err(err) = state.handler.chat.post_message(&space, &msg).await {
+            tracing::error!(%err, "approval card failed");
+        }
+    } else if thread.starts_with(TEAM_PREFIX) {
+        let _ = state.transcripts.append(&thread, vec![crate::team::bot_line(&summary)]).await;
+    }
+    let approve = match tokio::time::timeout(crate::gate::WAIT, rx).await {
+        Ok(Ok(v)) => v,
+        _ => {
+            crate::gate::forget(&info.id);
+            false
+        }
+    };
+    crate::handler::note(&state.handler, "approval_decided", &thread, format!("{} {}", info.tool, if approve { "approved" } else { "denied" }), info.detail.clone()).await;
+    Json(json!({ "approve": approve, "id": info.id })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -389,6 +500,12 @@ async fn post_approvals_decide(State(state): State<Arc<AppState>>, Json(body): J
     let (Some(id), Some(approve)) = (body.id, body.approve) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "id and approve are required" }))).into_response();
     };
+    if id.starts_with('g') {
+        return match crate::gate::decide(&id, approve) {
+            Some(info) => Json(json!({ "id": info.id, "name": info.tool, "approved": approve })).into_response(),
+            None => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("no pending approval {id}") }))).into_response(),
+        };
+    }
     match state.scheduler.decide(&id, approve, chrono::Local::now()).await {
         Ok(job) => Json(job).into_response(),
         Err(err) => (StatusCode::NOT_FOUND, Json(json!({ "error": err }))).into_response(),
@@ -954,12 +1071,14 @@ pub async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),
     );
-    if let Some(name) = name {
-        let safe = name.replace('"', "");
-        if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{safe}\"")) {
-            headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
-        }
+    let raster = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"].contains(&content_type.to_ascii_lowercase().as_str());
+    let disposition = if raster { "inline" } else { "attachment" };
+    let safe: String = name.unwrap_or_else(|| id.clone()).chars().filter(|c| !c.is_control() && *c != '"').collect();
+    if let Ok(v) = HeaderValue::from_str(&format!("{disposition}; filename=\"{safe}\"")) {
+        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
     }
+    headers.insert(axum::http::header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(axum::http::header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'"));
     (StatusCode::OK, headers, bytes).into_response()
 }
 
@@ -1317,6 +1436,18 @@ async fn post_mcp_catalog(State(state): State<Arc<AppState>>, Json(b): Json<McpC
         Ok(settings) => Json(settings).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct McpCheckBody {
+    name: String,
+}
+
+async fn post_mcp_check(State(state): State<Arc<AppState>>, Json(body): Json<McpCheckBody>) -> Response {
+    let Some(server) = state.settings.get().mcp_servers.into_iter().find(|s| s.name == body.name) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": format!("no MCP server {}", body.name) }))).into_response();
+    };
+    Json(crate::mcp_client::probe(server).await).into_response()
 }
 
 async fn get_mcp_servers(State(state): State<Arc<AppState>>) -> Response {
