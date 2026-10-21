@@ -123,6 +123,8 @@ pub struct Settings {
     pub auto_compact_at: u32,
     #[serde(default)]
     pub debounce_ms: u32,
+    #[serde(default = "parallel_room_default")]
+    pub parallel_room: bool,
     pub personas: Vec<Persona>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<PersonaTemplate>,
@@ -202,6 +204,7 @@ impl SettingsStore {
                 .unwrap_or(ContextFooter::Every5),
             auto_compact_at: saved.auto_compact_at.or(defaults.auto_compact_at).unwrap_or(85),
             debounce_ms: saved.debounce_ms.unwrap_or(3_000),
+            parallel_room: saved.parallel_room.unwrap_or(true),
             personas,
             templates: saved.templates.unwrap_or_default(),
             host_prompt: saved
@@ -258,6 +261,9 @@ impl SettingsStore {
             }
             if let Some(v) = patch.auto_compact_at {
                 current.auto_compact_at = v;
+            }
+            if let Some(v) = patch.parallel_room {
+                current.parallel_room = v;
             }
             if let Some(v) = patch.debounce_ms {
                 current.debounce_ms = v.min(30_000);
@@ -501,6 +507,7 @@ struct PartialSettings {
     context_footer: Option<ContextFooter>,
     auto_compact_at: Option<u32>,
     debounce_ms: Option<u32>,
+    parallel_room: Option<bool>,
     personas: Option<Vec<Persona>>,
     templates: Option<Vec<PersonaTemplate>>,
     host_prompt: Option<String>,
@@ -522,6 +529,7 @@ pub struct SettingsPatch {
     pub context_footer: Option<ContextFooter>,
     pub auto_compact_at: Option<u32>,
     pub debounce_ms: Option<u32>,
+    pub parallel_room: Option<bool>,
     pub personas: Option<Vec<Persona>>,
     pub templates: Option<Vec<PersonaTemplate>>,
     pub host_prompt: Option<String>,
@@ -860,4 +868,8 @@ mod tests {
             .await;
         assert!(bad.unwrap_err().contains("id must be"));
     }
+}
+
+fn parallel_room_default() -> bool {
+    true
 }

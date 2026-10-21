@@ -98,6 +98,7 @@ export function SettingsView(props: ViewProps) {
         <>
           <ApprovalsCard {...props} />
           <BatchingCard {...props} />
+          <RoomRepliesCard {...props} />
           <ContextCard {...props} />
           <GoogleChatCard {...props} />
           <SpacesCard {...props} />
@@ -1029,6 +1030,39 @@ function BatchingCard({ settings, save }: ViewProps) {
           {current
             ? `Messages sent within ${seconds} s of each other reach the agent together, in one turn. Commands like /status still run right away.`
             : "Every message reaches the agent on its own."}
+        </span>
+      </div>
+    </details>
+  );
+}
+
+function RoomRepliesCard({ settings, save }: ViewProps) {
+  const parallel = settings.parallelRoom ?? true;
+  const options = [
+    { value: true, label: "Parallel" },
+    { value: false, label: "After the host" },
+  ];
+  return (
+    <details className="card" open aria-label="Room replies">
+      <summary className="card-title">
+        <h2>Room replies</h2>
+        <p className="muted small">When a message isn't addressed to anyone, the other agents in the room may chime in.</p>
+      </summary>
+      <div className="field">
+        <span>Other agents answer</span>
+        <fieldset className="chips">
+          <legend className="sr-only">When the other agents answer</legend>
+          {options.map((o) => (
+            <label key={o.label} className={`chip ${parallel === o.value ? "on" : ""}`}>
+              <input type="radio" name="room-replies" checked={parallel === o.value} onChange={() => void save({ parallelRoom: o.value }, `Room replies: ${o.label.toLowerCase()}`)} />
+              {o.label}
+            </label>
+          ))}
+        </fieldset>
+        <span className="muted small">
+          {parallel
+            ? "Everyone starts at once and each reply shows up as soon as it's ready. Faster, but agents don't see the host's answer first."
+            : "Agents wait for the host to finish and read its answer before deciding to chime in."}
         </span>
       </div>
     </details>

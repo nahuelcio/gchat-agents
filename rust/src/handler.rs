@@ -109,6 +109,7 @@ pub struct TurnOptions {
     pub context_footer: ContextFooter,
     pub auto_compact_at: u32,
     pub debounce_ms: u32,
+    pub parallel_room: bool,
     pub default_model: Option<String>,
     pub default_driver: crate::config::AgentDriverKind,
     pub default_models: crate::settings::Models,
@@ -526,65 +527,68 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
                 .await;
                 req.room_n = Some(room_n);
             }
-            let result = agent_turn(&req, &deps).await;
+            let parallel = (deps.options)().parallel_room;
+            let result = if parallel {
+                let jump = optional_jump(&req, &deps, false);
+                let (result, _) = tokio::join!(agent_turn(&req, &deps), optional_round(&req, &deps, jump));
+                result
+            } else {
+                agent_turn(&req, &deps).await
+            };
             let (kind, detail) = match &result {
                 Ok(_) => ("turn_ok", req.sender.clone().unwrap_or_default()),
                 Err(e) => ("turn_fail", e.clone()),
             };
             note(&deps, kind, &req.thread_key, req.text.chars().take(80).collect::<String>(), detail).await;
-            let room_now = active_personas(
-                &(deps.options)().personas,
-                deps.store.get(&req.thread_key).as_ref().and_then(|r| r.members.as_deref()),
-            );
-            let mut spoken: std::collections::HashSet<String> = addressed_personas(&req.text, &room_now)
-                .into_iter()
-                .chain(consult_topics(&req.text, &room_now))
-                .map(|p| p.name.to_lowercase())
-                .collect();
-            if let Some(since) = req.room_n {
-                if let Some(room) = deps.store.get(&req.thread_key).and_then(|r| r.room) {
-                    spoken.extend(room.into_iter().filter(|e| e.n > since).filter_map(|e| e.author.strip_prefix('@').map(|n| n.to_lowercase())));
-                }
-            }
-            let members_present = deps
-                .store
-                .get(&req.thread_key)
-                .as_ref()
-                .and_then(|r| r.members.as_ref())
-                .is_some();
-            let jump: Vec<Persona> = room_now
-                .iter()
-                .filter(|p| {
-                    if spoken.contains(&p.name.to_lowercase()) {
-                        return false;
-                    }
-                    if members_present {
-                        true
-                    } else {
-                        p.listen.as_deref() == Some("all")
-                    }
-                })
-                .cloned()
-                .collect();
-            if !jump.is_empty() {
-                let _ = persona_round(
-                    &req,
-                    &deps,
-                    &jump,
-                    &active_personas(
-                        &(deps.options)().personas,
-                        deps.store.get(&req.thread_key).as_ref().and_then(|r| r.members.as_deref()),
-                    ),
-                    PersonaOpts {
-                        optional: true,
-                        ..Default::default()
-                    },
-                )
-                .await;
+            if !parallel {
+                let jump = optional_jump(&req, &deps, true);
+                optional_round(&req, &deps, jump).await;
             }
             result
         })
         .await
+}
+
+fn optional_jump(req: &TurnRequest, deps: &HandlerDeps, after_turn: bool) -> Vec<Persona> {
+    let record = deps.store.get(&req.thread_key);
+    let room_now = active_personas(&(deps.options)().personas, record.as_ref().and_then(|r| r.members.as_deref()));
+    let mut spoken: std::collections::HashSet<String> = addressed_personas(&req.text, &room_now)
+        .into_iter()
+        .chain(consult_topics(&req.text, &room_now))
+        .map(|p| p.name.to_lowercase())
+        .collect();
+    if after_turn {
+        if let (Some(since), Some(room)) = (req.room_n, record.as_ref().and_then(|r| r.room.clone())) {
+            spoken.extend(room.into_iter().filter(|e| e.n > since).filter_map(|e| e.author.strip_prefix('@').map(|n| n.to_lowercase())));
+        }
+    }
+    let members_present = record.as_ref().and_then(|r| r.members.as_ref()).is_some();
+    room_now
+        .iter()
+        .filter(|p| !spoken.contains(&p.name.to_lowercase()) && (members_present || p.listen.as_deref() == Some("all")))
+        .cloned()
+        .collect()
+}
+
+async fn optional_round(req: &TurnRequest, deps: &HandlerDeps, jump: Vec<Persona>) {
+    if jump.is_empty() {
+        return;
+    }
+    let all = active_personas(
+        &(deps.options)().personas,
+        deps.store.get(&req.thread_key).as_ref().and_then(|r| r.members.as_deref()),
+    );
+    let _ = persona_round(
+        req,
+        deps,
+        &jump,
+        &all,
+        PersonaOpts {
+            optional: true,
+            ..Default::default()
+        },
+    )
+    .await;
 }
 
 async fn deliver_reply(
@@ -947,13 +951,13 @@ async fn persona_round(
     let mut idx = 0;
     let mut hops_done = 0;
     let mut interjections = 0;
-    let _upcoming = Upcoming(req.thread_key.clone());
+    let upcoming_round = Upcoming::new(&req.thread_key);
     while idx < queue.len() && hops_done < max_hops + first.len() {
-        set_upcoming(&req.thread_key, queue[idx + 1..].iter().map(|q| q.persona.name.clone()).collect());
+        upcoming_round.set(queue[idx + 1..].iter().map(|q| q.persona.name.clone()).collect());
+        if opts.optional && crate::personas::stop_requested(&req.thread_key) {
+            break;
+        }
         if take_stop(&req.thread_key) {
-            if opts.optional {
-                break;
-            }
             let left: Vec<_> = queue[idx..].iter().map(|q| format!("@{}", q.persona.name)).collect();
             deliver_reply(
                 req,
@@ -1016,6 +1020,7 @@ async fn persona_round(
         if let (Some(ledger), Some(id)) = (&deps.ledger, &persona_request) {
             ledger.begin_persona(id, &req.thread_key, &item.persona.name, &req.space_name, req.thread.clone(), &item.text).await;
         }
+        let _turn = persona_lock(&req.thread_key, &item.persona.name).lock_owned().await;
         let talking = Speaking::start(&req.thread_key, &format!("@{}", item.persona.name));
         let result = deps
             .driver
@@ -1637,27 +1642,46 @@ impl Drop for Speaking {
     }
 }
 
-static UPCOMING: std::sync::Mutex<Vec<(String, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
+static UPCOMING: std::sync::Mutex<Vec<(String, u64, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
+static ROUND_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-struct Upcoming(String);
+struct Upcoming(String, u64);
 
-impl Drop for Upcoming {
-    fn drop(&mut self) {
-        UPCOMING.lock().unwrap().retain(|(k, _)| k != &self.0);
+impl Upcoming {
+    fn new(thread_key: &str) -> Self {
+        Upcoming(thread_key.to_string(), ROUND_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn set(&self, names: Vec<String>) {
+        let mut list = UPCOMING.lock().unwrap();
+        list.retain(|(k, id, _)| !(k == &self.0 && *id == self.1));
+        if !names.is_empty() {
+            list.push((self.0.clone(), self.1, names));
+        }
     }
 }
 
-fn set_upcoming(thread_key: &str, names: Vec<String>) {
-    let mut list = UPCOMING.lock().unwrap();
-    list.retain(|(k, _)| k != thread_key);
-    if !names.is_empty() {
-        list.push((thread_key.to_string(), names));
+impl Drop for Upcoming {
+    fn drop(&mut self) {
+        UPCOMING.lock().unwrap().retain(|(k, id, _)| !(k == &self.0 && *id == self.1));
     }
+}
+
+type PersonaLocks = std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>;
+static PERSONA_LOCKS: std::sync::Mutex<Option<PersonaLocks>> = std::sync::Mutex::new(None);
+
+fn persona_lock(thread_key: &str, persona: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut guard = PERSONA_LOCKS.lock().unwrap();
+    guard
+        .get_or_insert_with(Default::default)
+        .entry(format!("{thread_key}#{}", persona.to_lowercase()))
+        .or_default()
+        .clone()
 }
 
 pub fn upcoming(thread_key: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for name in UPCOMING.lock().unwrap().iter().filter(|(k, _)| k == thread_key).flat_map(|(_, n)| n) {
+    for name in UPCOMING.lock().unwrap().iter().filter(|(k, _, _)| k == thread_key).flat_map(|(_, _, n)| n) {
         if !out.iter().any(|o| o.eq_ignore_ascii_case(name)) {
             out.push(name.clone());
         }
@@ -1889,6 +1913,7 @@ pub fn settings_to_options(s: &Settings) -> TurnOptions {
         context_footer: s.context_footer,
         auto_compact_at: s.auto_compact_at,
         debounce_ms: s.debounce_ms,
+        parallel_room: s.parallel_room,
         default_model: s.models.pi.clone(),
         default_driver: crate::config::AgentDriverKind::Pi,
         default_models: s.models.clone(),
@@ -1997,6 +2022,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2055,6 +2081,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2104,6 +2131,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2158,6 +2186,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2588,6 +2617,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2617,6 +2647,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 300,
+                parallel_room: false,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),

@@ -36,6 +36,10 @@ pub fn request_stop(thread_key: &str) {
     stopped().as_mut().unwrap().insert(thread_key.to_string());
 }
 
+pub fn stop_requested(thread_key: &str) -> bool {
+    stopped().as_ref().unwrap().contains(thread_key)
+}
+
 pub fn take_stop(thread_key: &str) -> bool {
     stopped().as_mut().unwrap().remove(thread_key)
 }

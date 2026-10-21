@@ -636,6 +636,7 @@ mod presence_tests {
             context_footer: crate::settings::ContextFooter::Never,
             auto_compact_at: 0,
             debounce_ms: 0,
+            parallel_room: false,
             default_model: Some("zai/glm-5.3-flash".into()),
             default_driver: AgentDriverKind::Pi,
             default_models: Models { pi: Some("zai/glm-5.3-flash".into()), ..Default::default() },

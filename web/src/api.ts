@@ -21,6 +21,7 @@ export interface Settings {
   contextFooter: ContextFooter;
   autoCompactAt: number;
   debounceMs?: number;
+  parallelRoom?: boolean;
   tunnel: TunnelMode;
   approvals?: ApprovalMode;
   googleDriveFolderId?: string | null;
