@@ -21,15 +21,91 @@ type ToolStat = { name: string; calls: number; errors: number; ms: number; argsC
 type ModelStat = { model: string; calls: number; input: number; output: number; cacheRead: number; reasoning: number; cost: number };
 type ConvStat = { conversationId: string; thread: string; agent: string; turns: number; toolCalls: number; toolErrors: number; cost: number; input: number; maxInput: number; passes: number };
 type Prompt = { chars: number; uses: number; agents: string[]; text: string };
-type Exchange = { thread: string; agent: string; at: string; user: string; tools: string[]; reply: string; input: number; cost: number; error?: string };
+type Exchange = {
+  id: string;
+  thread: string;
+  agent: string;
+  model: string;
+  prompt: string;
+  version: string;
+  harness: string;
+  at: string;
+  user: string;
+  tools: string[];
+  reply: string;
+  input: number;
+  cost: number;
+  calls: number;
+  toolErrors: number;
+  ms: number;
+  error?: string;
+};
+type Score = {
+  key: string;
+  exchanges: number;
+  ok: number;
+  empty: number;
+  errors: number;
+  loops: number;
+  toolCalls: number;
+  toolErrors: number;
+  cost: number;
+  input: number;
+  ms: number[];
+};
+
+export const LOOP_CALLS = 8;
+
+const hash = (s: string) => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, "0").slice(0, 6);
+};
+
+const quantile = (xs: number[], q: number) => {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(q * s.length))];
+};
+
+function scorecard(exchanges: Exchange[], by: (e: Exchange) => string) {
+  const out = new Map<string, Score>();
+  for (const e of exchanges) {
+    const k = by(e);
+    const s = out.get(k) ?? { key: k, exchanges: 0, ok: 0, empty: 0, errors: 0, loops: 0, toolCalls: 0, toolErrors: 0, cost: 0, input: 0, ms: [] };
+    s.exchanges++;
+    if (e.error) s.errors++;
+    else if (!e.reply) s.empty++;
+    else s.ok++;
+    if (e.calls >= LOOP_CALLS) s.loops++;
+    s.toolCalls += e.tools.length;
+    s.toolErrors += e.toolErrors;
+    s.cost += e.cost;
+    s.input += e.input;
+    if (e.ms > 0) s.ms.push(e.ms);
+    out.set(k, s);
+  }
+  return [...out.values()]
+    .map(({ ms, ...s }) => ({ ...s, p50ms: quantile(ms, 0.5), p95ms: quantile(ms, 0.95) }))
+    .sort((a, b) => b.exchanges - a.exchanges);
+}
 
 const text = (c: Msg["content"]) => (typeof c === "string" ? c : (c ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join(""));
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 export type Label = { thread?: string; agent?: string; repos?: string[] };
 export type Filter = { agent?: string; repo?: string; thread?: string };
+export type VersionMark = { agent: string; id: string; at: string; harness: string };
 
-export function insights(dbPath: string, threads: Record<string, string>, labels: Record<string, Label>, days: number, filter: Filter = {}) {
+function versionAt(marks: VersionMark[], agent: string, at: string) {
+  const who = agent === "schedule" ? "host" : agent;
+  const t = Date.parse(at);
+  let found: VersionMark | undefined;
+  for (const m of marks) if (m.agent.toLowerCase() === who.toLowerCase() && Date.parse(m.at) <= t) found = m;
+  return found;
+}
+
+export function insights(dbPath: string, threads: Record<string, string>, labels: Record<string, Label>, days: number, filter: Filter = {}, versions: VersionMark[] = []) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const since = Date.now() - days * 86_400_000;
   const rows = db.prepare("select conversation_id as c, record from entries order by id").all() as { c: number; record: string }[];
@@ -38,7 +114,8 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
   const tools = new Map<string, ToolStat>();
   const models = new Map<string, ModelStat>();
   const convs = new Map<string, ConvStat>();
-  const prompts = new Map<string, Prompt>();
+  const prompts = new Map<string, Prompt & { id: string }>();
+  const convPrompt = new Map<string, string>();
   const codemode = { max: 0, last: 0 };
   const exchanges: Exchange[] = [];
   const pending = new Map<string, Exchange>();
@@ -52,7 +129,7 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
     const thread = labels[id]?.thread ?? threads[id] ?? "";
     const agent = labels[id]?.agent ?? "deleted thread";
     const repos = labels[id]?.repos?.length ? labels[id].repos! : ["chat-only"];
-    if (thread.startsWith("ai-draft/") || agent === "ai-draft") continue;
+    if (thread.startsWith("ai-draft/") || thread.startsWith("eval/") || agent === "ai-draft") continue;
     options.agents.add(agent);
     for (const r of repos) options.repos.add(r);
     if (thread) options.threads.add(thread);
@@ -67,7 +144,8 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
         const instr = m.sections?.instructions;
         if (instr) {
           const key = instr.slice(0, 4000);
-          const p = prompts.get(key) ?? { chars: instr.length, uses: 0, agents: [], text: instr };
+          const p = prompts.get(key) ?? { id: hash(instr), chars: instr.length, uses: 0, agents: [], text: instr };
+          convPrompt.set(id, p.id);
           p.uses++;
           if (!p.agents.includes(agent)) p.agents.push(agent);
           prompts.set(key, p);
@@ -78,7 +156,24 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
           codemode.last = cm.length;
         }
       } else if (m.role === "user") {
-        const ex: Exchange = { thread, agent, at: m.timestamp ? new Date(m.timestamp).toISOString() : "", user: cut(text(m.content), 900), tools: [], reply: "", input: 0, cost: 0 };
+        const ex: Exchange = {
+          id: `${id}:${m.timestamp ?? 0}`,
+          thread,
+          agent,
+          model: "",
+          prompt: convPrompt.get(id) ?? "",
+          version: "",
+          harness: "",
+          at: m.timestamp ? new Date(m.timestamp).toISOString() : "",
+          user: cut(text(m.content), 900),
+          tools: [],
+          reply: "",
+          input: 0,
+          cost: 0,
+          calls: 0,
+          toolErrors: 0,
+          ms: 0,
+        };
         pending.set(id, ex);
       } else if (m.role === "assistant") {
         const u = m.usage ?? {};
@@ -124,6 +219,10 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
         const ex = pending.get(id);
         if (ex) {
           ex.tools.push(...calls.map((c) => c.name ?? "?"));
+          ex.calls++;
+          ex.model = key;
+          const start = Date.parse(ex.at);
+          if (m.timestamp && start) ex.ms = m.timestamp - start;
           ex.input = Math.max(ex.input, u.input ?? 0);
           ex.cost += cost;
           if (reply) ex.reply = cut(reply, 700);
@@ -143,12 +242,22 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
           totals.toolErrors++;
           conv.toolErrors++;
           if (t.sampleErrors.length < 3) t.sampleErrors.push(cut(out, 300));
+          const ex = pending.get(id);
+          if (ex) ex.toolErrors++;
         }
         tools.set(t.name, t);
       }
     }
   }
 
+  for (const ex of pending.values()) if (ex.calls > 0) exchanges.push({ ...ex, error: ex.error ?? "no final reply" });
+  exchanges.sort((a, b) => a.at.localeCompare(b.at));
+  for (const e of exchanges) {
+    const v = versionAt(versions, e.agent, e.at);
+    e.version = v?.id ?? "before tracking";
+    e.harness = v?.harness ?? "before tracking";
+  }
+  const answered = exchanges.filter((e) => e.reply !== "PASS");
   const promptList = [...prompts.values()].sort((a, b) => b.uses - a.uses);
   return {
     days,
@@ -156,7 +265,7 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
     models: [...models.values()].sort((a, b) => b.cost - a.cost),
     tools: [...tools.values()].sort((a, b) => b.calls - a.calls),
     conversations: [...convs.values()].filter((c) => c.turns > 0).sort((a, b) => b.cost - a.cost).slice(0, 15),
-    prompts: promptList.slice(0, 8).map((p) => ({ chars: p.chars, uses: p.uses, agents: p.agents.slice(0, 8), text: cut(p.text, 6000) })),
+    prompts: promptList.slice(0, 8).map((p) => ({ id: p.id, chars: p.chars, uses: p.uses, agents: p.agents.slice(0, 8), text: cut(p.text, 6000) })),
     agents: [...[...convs.values()].reduce((m, c) => {
       const a = m.get(c.agent) ?? { agent: c.agent, conversations: 0, turns: 0, toolCalls: 0, toolErrors: 0, cost: 0, input: 0, passes: 0 };
       a.conversations++;
@@ -171,6 +280,12 @@ export function insights(dbPath: string, threads: Record<string, string>, labels
     codemodeChars: codemode,
     errorSamples,
     exchanges: exchanges.filter((e) => e.reply !== "PASS").slice(-80).reverse(),
+    scorecard: {
+      agent: scorecard(answered, (e) => e.agent),
+      model: scorecard(answered, (e) => e.model || "?"),
+      version: scorecard(answered, (e) => `${e.agent} · ${e.version}`),
+      harness: scorecard(answered, (e) => e.harness),
+    },
     options: { agents: [...options.agents].sort(), repos: [...options.repos].sort(), threads: [...options.threads].sort() },
   };
 }

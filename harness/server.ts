@@ -13,7 +13,7 @@ import { createModels, createProvider, type MutableModels } from "@earendil-work
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
 import { PiPackages, toolContext } from "./pi-packages.ts";
-import { insights } from "./insights.ts";
+import { insights, type VersionMark } from "./insights.ts";
 import { engramDigest } from "./engram.ts";
 import { ThreadView, type ThreadViewPrincipal } from "./thread-view.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -689,8 +689,8 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url?.startsWith("/insights/engram")) return send(res, 200, engramDigest(60_000, new URL(req.url, "http://x").searchParams.get("project") || undefined));
     if (req.method === "POST" && req.url === "/insights") {
-      const { days, labels, filter } = JSON.parse(await read(req)) as { days?: number; labels?: Record<string, { thread?: string; agent?: string; repos?: string[] }>; filter?: { agent?: string; repo?: string; thread?: string } };
-      return send(res, 200, insights(join(dataDir, "harness.sqlite"), threads, labels ?? {}, days || 7, filter ?? {}));
+      const { days, labels, filter, versions } = JSON.parse(await read(req)) as { days?: number; labels?: Record<string, { thread?: string; agent?: string; repos?: string[] }>; filter?: { agent?: string; repo?: string; thread?: string }; versions?: VersionMark[] };
+      return send(res, 200, insights(join(dataDir, "harness.sqlite"), threads, labels ?? {}, days || 7, filter ?? {}, versions ?? []));
     }
     if (req.method === "GET" && req.url === "/packages") return send(res, 200, packageSummary());
     if (req.method === "POST" && req.url === "/packages/install") {
