@@ -359,7 +359,8 @@ fn drain<R: tokio::io::AsyncRead + Unpin + Send + 'static>(reader: Option<R>) {
 fn kill_tree(child: &mut Child) {
     if let Some(pid) = child.id() {
         #[cfg(unix)]
-        let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).status();
+        // `--` is required: without it procps kill misparses `-PID` and signals -1 (every user process).
+        let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).status();
         #[cfg(windows)]
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
