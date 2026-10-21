@@ -40,7 +40,7 @@ pub const DEFAULT_HOST_SKILLS: &[&str] = &[
     "writing-for-agents",
 ];
 
-fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Persona {
+pub(crate) fn host_persona(settings: &crate::settings::Settings) -> crate::settings::Persona {
     let skills = if settings.host_skills.is_empty() {
         DEFAULT_HOST_SKILLS.iter().map(|s| (*s).to_string()).collect()
     } else {

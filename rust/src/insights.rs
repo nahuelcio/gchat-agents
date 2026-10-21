@@ -22,8 +22,9 @@ pub fn labels(store: &SessionStore) -> Value {
     Value::Object(out)
 }
 
-pub async fn collect(store: &SessionStore, days: u32, filter: Value) -> Result<Value, String> {
-    crate::pi_sidecar::call(reqwest::Method::POST, "/insights", Some(json!({ "days": days, "labels": labels(store), "filter": filter }))).await
+pub async fn collect(store: &SessionStore, days: u32, filter: Value, versions: &[crate::versions::Version]) -> Result<Value, String> {
+    let versions: Vec<Value> = versions.iter().map(|v| json!({ "agent": v.agent, "id": v.id, "at": v.at, "harness": v.harness })).collect();
+    crate::pi_sidecar::call(reqwest::Method::POST, "/insights", Some(json!({ "days": days, "labels": labels(store), "filter": filter, "versions": versions }))).await
 }
 
 const TALK_INSTRUCTIONS: &str = r#"You are reading what people actually talk about with the agents of Switchboard, a team chat-ops harness. You get condensed recent exchanges (user message, tools the agent called, the agent's reply, cost) plus per-agent stats.

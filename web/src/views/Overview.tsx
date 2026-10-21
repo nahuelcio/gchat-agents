@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { poll, whenChanged } from "../poll";
 import { ago, api, until, type ActivityEvent, type Approval, type Job, type Thread, type UsageReport, type UsageRow } from "../api";
 import type { ViewProps } from "../App";
 
@@ -25,15 +26,16 @@ export function Overview({ settings, notify }: ViewProps) {
   }, []);
 
   useEffect(() => {
-    const load = () => {
-      api.threads().then(setThreads, () => {});
-      api.schedules().then(setJobs, () => {});
-      api.activity().then(setActivity, () => {});
-      api.approvals().then(setApprovals, () => {});
-    };
-    load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
+    const threads = whenChanged(setThreads);
+    const jobs = whenChanged(setJobs);
+    const activity = whenChanged(setActivity);
+    const approvals = whenChanged(setApprovals);
+    return poll(() => {
+      api.threads().then(threads, () => {});
+      api.schedules().then(jobs, () => {});
+      api.activity().then(activity, () => {});
+      api.approvals().then(approvals, () => {});
+    }, 3000);
   }, []);
 
   // Google Chat threads only: team chat and schedules have their own views.
@@ -401,10 +403,8 @@ function UsageCard() {
   const [days, setDays] = useState<(typeof USAGE_RANGES)[number]>(7);
   const [data, setData] = useState<UsageReport>();
   useEffect(() => {
-    const load = () => api.usage(days).then(setData, () => {});
-    load();
-    const id = setInterval(load, 15000);
-    return () => clearInterval(id);
+    const data = whenChanged(setData);
+    return poll(() => void api.usage(days).then(data, () => {}), 15000);
   }, [days]);
   const r = data?.report;
   const max = Math.max(0.000001, ...(r?.byDay ?? []).map((d) => d.costUsd));

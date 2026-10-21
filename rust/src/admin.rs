@@ -46,6 +46,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/insights", get(get_insights))
         .route("/api/insights/analyze", post(post_insights_analyze))
         .route("/api/insights/engram", get(get_insights_engram))
+        .route("/api/evals", get(get_evals))
+        .route("/api/versions", get(get_versions))
+        .route("/api/evals/cases", post(post_evals_cases))
+        .route("/api/evals/run", post(post_evals_run))
+        .route("/api/evals/runs/delete", post(post_evals_run_delete))
+        .route("/api/evals/judge", post(post_evals_judge))
         .route("/api/pi/packages", get(get_pi_packages))
         .route("/api/pi/search", get(get_pi_search))
         .route("/api/pi/packages/install", post(post_pi_install))
@@ -162,7 +168,10 @@ async fn get_settings(State(state): State<Arc<AppState>>) -> Response {
 
 async fn put_settings(State(state): State<Arc<AppState>>, Json(patch): Json<SettingsPatch>) -> Response {
     match state.settings.update(patch).await {
-        Ok(s) => Json(s).into_response(),
+        Ok(s) => {
+            snapshot(&state).await;
+            Json(s).into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
 }
@@ -505,7 +514,7 @@ impl InsightsQuery {
 }
 
 async fn get_insights(State(state): State<Arc<AppState>>, Query(q): Query<InsightsQuery>) -> Response {
-    harness_reply(crate::insights::collect(&state.handler.store, q.days.unwrap_or(7).clamp(1, 90), q.filter()).await)
+    harness_reply(crate::insights::collect(&state.handler.store, q.days.unwrap_or(7).clamp(1, 90), q.filter(), &snapshot(&state).await).await)
 }
 
 async fn get_insights_engram(Query(q): Query<InsightsQuery>) -> Response {
@@ -532,7 +541,7 @@ async fn post_insights_analyze(State(state): State<Arc<AppState>>, Json(b): Json
             Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
         };
     }
-    let digest = match crate::insights::collect(&state.handler.store, b.q.days.unwrap_or(7).clamp(1, 90), b.q.filter()).await {
+    let digest = match crate::insights::collect(&state.handler.store, b.q.days.unwrap_or(7).clamp(1, 90), b.q.filter(), &snapshot(&state).await).await {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
     };
@@ -545,6 +554,96 @@ async fn post_insights_analyze(State(state): State<Arc<AppState>>, Json(b): Json
     match result {
         Ok(report) => Json(json!({ "report": report })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+fn evals(state: &AppState) -> Arc<crate::evals::EvalStore> {
+    static STORE: std::sync::OnceLock<Arc<crate::evals::EvalStore>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Arc::new(crate::evals::EvalStore::open(state.data_dir.join("evals.json")))).clone()
+}
+
+fn versions(state: &AppState) -> Arc<crate::versions::VersionStore> {
+    static STORE: std::sync::OnceLock<Arc<crate::versions::VersionStore>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Arc::new(crate::versions::VersionStore::open(state.data_dir.join("versions.json")))).clone()
+}
+
+async fn snapshot(state: &AppState) -> Vec<crate::versions::Version> {
+    let store = versions(state);
+    let settings = state.settings.get();
+    let now = tokio::task::spawn_blocking(move || crate::versions::current(&settings)).await.unwrap_or_default();
+    let _ = store.record(now).await;
+    store.all()
+}
+
+async fn get_versions(State(state): State<Arc<AppState>>) -> Response {
+    Json(json!({ "versions": snapshot(&state).await })).into_response()
+}
+
+fn bad(e: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response()
+}
+
+async fn get_evals(State(state): State<Arc<AppState>>) -> Response {
+    let store = evals(&state);
+    Json(json!({ "cases": store.cases(), "runs": store.runs(), "judgments": store.judgments() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct EvalCasesBody {
+    cases: Vec<crate::evals::Case>,
+}
+
+async fn post_evals_cases(State(state): State<Arc<AppState>>, Json(b): Json<EvalCasesBody>) -> Response {
+    match evals(&state).set_cases(b.cases).await {
+        Ok(cases) => Json(json!({ "cases": cases })).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct EvalRunBody {
+    model: Option<String>,
+    label: Option<String>,
+    #[serde(default)]
+    cases: Vec<String>,
+}
+
+async fn post_evals_run(State(state): State<Arc<AppState>>, Json(b): Json<EvalRunBody>) -> Response {
+    let options = (state.handler.options)();
+    let all = snapshot(&state).await;
+    match crate::evals::start_run(evals(&state), state.handler.driver.clone(), options, draft_ctx(&state), b.model, b.label, b.cases, &all).await {
+        Ok(run) => Json(json!({ "run": run })).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct IdBody {
+    id: String,
+}
+
+async fn post_evals_run_delete(State(state): State<Arc<AppState>>, Json(b): Json<IdBody>) -> Response {
+    match evals(&state).delete_run(&b.id).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct EvalJudgeBody {
+    n: Option<usize>,
+    #[serde(flatten)]
+    q: InsightsQuery,
+}
+
+async fn post_evals_judge(State(state): State<Arc<AppState>>, Json(b): Json<EvalJudgeBody>) -> Response {
+    let digest = match crate::insights::collect(&state.handler.store, b.q.days.unwrap_or(7).clamp(1, 90), b.q.filter(), &snapshot(&state).await).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
+    };
+    match crate::evals::judge_sample(&evals(&state), &state.handler.driver, &digest, b.n.unwrap_or(15).clamp(1, 40), &draft_ctx(&state)).await {
+        Ok(js) => Json(json!({ "judged": js.len() })).into_response(),
+        Err(e) => bad(e),
     }
 }
 

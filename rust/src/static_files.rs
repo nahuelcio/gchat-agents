@@ -52,8 +52,20 @@ fn file_response(name: &str, bytes: Vec<u8>) -> Response<Body> {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.essence_str())
         .header(header::CONTENT_SECURITY_POLICY, CSP)
+        .header(header::CACHE_CONTROL, cache_control(name))
         .body(Body::from(bytes))
         .unwrap()
+}
+
+fn cache_control(name: &str) -> &'static str {
+    let name = name.replace('\\', "/");
+    if name.contains("assets/") {
+        "public, max-age=31536000, immutable"
+    } else if name.contains("brand/") {
+        "public, max-age=86400"
+    } else {
+        "no-cache"
+    }
 }
 
 fn resolve_under(root: &Path, candidate: &Path) -> Option<PathBuf> {
@@ -69,6 +81,13 @@ fn resolve_under(root: &Path, candidate: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn caches_hashed_assets_forever_and_revalidates_index() {
+        assert_eq!(cache_control("assets/index-abc.js"), "public, max-age=31536000, immutable");
+        assert_eq!(cache_control("C:\\web\\dist\\assets\\x.css"), "public, max-age=31536000, immutable");
+        assert_eq!(cache_control("index.html"), "no-cache");
+    }
 
     #[tokio::test]
     async fn serves_index() {

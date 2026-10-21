@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, guestTransport, ownerTransport, type Settings } from "./api";
 import { SearchBox } from "./SearchBox";
-import { Overview } from "./views/Overview";
-import { SharePanel, TeamChat } from "./views/TeamChat";
-import { Schedules } from "./views/Schedules";
-import { CreateView } from "./views/CreateWithAi";
 import { useJobAlerts } from "./jobAlerts";
-import { SettingsView } from "./views/Settings";
-import { InsightsView } from "./views/Insights";
+
+const Overview = lazy(() => import("./views/Overview").then((m) => ({ default: m.Overview })));
+const TeamChat = lazy(() => import("./views/TeamChat").then((m) => ({ default: m.TeamChat })));
+const SharePanel = lazy(() => import("./views/TeamChat").then((m) => ({ default: m.SharePanel })));
+const Schedules = lazy(() => import("./views/Schedules").then((m) => ({ default: m.Schedules })));
+const CreateView = lazy(() => import("./views/CreateWithAi").then((m) => ({ default: m.CreateView })));
+const SettingsView = lazy(() => import("./views/Settings").then((m) => ({ default: m.SettingsView })));
+const InsightsView = lazy(() => import("./views/Insights").then((m) => ({ default: m.InsightsView })));
+const viewFallback = <div className="skeleton" aria-busy="true" />;
 
 const VIEWS = [
   { id: "overview", label: "Overview", icon: <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" /> },
@@ -66,7 +69,9 @@ function GuestApp() {
   const scoped = token.includes(".");
   return (
     <>
-      <TeamChat transport={transport} initialThread={thread} linkFor={(id) => (scoped && id !== thread ? undefined : `${base}&thread=${id}`)} notify={notify} singleThread={scoped} />
+      <Suspense fallback={viewFallback}>
+        <TeamChat transport={transport} initialThread={thread} linkFor={(id) => (scoped && id !== thread ? undefined : `${base}&thread=${id}`)} notify={notify} singleThread={scoped} />
+      </Suspense>
       {toast && <div className={`toast ${toast.error ? "error" : ""}`} role="status">{toast.text}</div>}
     </>
   );
@@ -204,7 +209,8 @@ function OwnerApp() {
         )}
       </nav>
       <main className={`content${view === "team" ? " content-fill" : " content-narrow"}`}>
-        {!props && <div className="skeleton" aria-busy="true" />}
+        {!props && viewFallback}
+        <Suspense fallback={viewFallback}>
         {props && view === "overview" && <Overview {...props} />}
         {props && view === "team" && (
           <TeamChat
@@ -222,6 +228,7 @@ function OwnerApp() {
         {props && view === "schedules" && <Schedules {...props} />}
         {props && view === "insights" && <InsightsView {...props} />}
         {props && view === "settings" && <SettingsView {...props} />}
+        </Suspense>
       </main>
       {toast && (
         <div className={`toast ${toast.error ? "error" : ""}`} role="status">

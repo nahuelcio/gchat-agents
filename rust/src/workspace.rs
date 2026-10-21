@@ -60,7 +60,10 @@ pub struct Workspaces {
     root: PathBuf,
     repos: Mutex<HashMap<String, RepoConfig>>,
     apps: Mutex<HashMap<String, RunningApp>>,
+    changes_cache: Mutex<HashMap<String, (std::time::Instant, Option<GitChangeSummary>)>>,
 }
+
+const CHANGES_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Workspaces {
     pub fn new(root: impl AsRef<Path>, repos: HashMap<String, RepoConfig>) -> Self {
@@ -70,6 +73,7 @@ impl Workspaces {
             root,
             repos: Mutex::new(repos),
             apps: Mutex::new(HashMap::new()),
+            changes_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -165,6 +169,20 @@ impl Workspaces {
     }
 
     pub async fn changes_in(&self, dir: &str) -> Option<GitChangeSummary> {
+        if let Some((at, cached)) = self.changes_cache.lock().unwrap().get(dir) {
+            if at.elapsed() < CHANGES_TTL {
+                return cached.clone();
+            }
+        }
+        let fresh = self.scan_changes(dir).await;
+        self.changes_cache
+            .lock()
+            .unwrap()
+            .insert(dir.to_string(), (std::time::Instant::now(), fresh.clone()));
+        fresh
+    }
+
+    async fn scan_changes(&self, dir: &str) -> Option<GitChangeSummary> {
         if Path::new(dir).join(".git").exists() {
             return self.changes(dir).await;
         }

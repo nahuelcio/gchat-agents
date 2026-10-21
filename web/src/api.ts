@@ -302,11 +302,86 @@ export interface InsightsDigest {
   models: { model: string; calls: number; input: number; output: number; cacheRead: number; cost: number }[];
   agents: { agent: string; conversations: number; turns: number; toolCalls: number; toolErrors: number; cost: number; input: number; passes: number }[];
   tools: InsightsTool[];
-  prompts: { chars: number; uses: number; agents: string[]; text: string }[];
+  prompts: { id: string; chars: number; uses: number; agents: string[]; text: string }[];
   codemodeChars: { max: number; last: number };
   errorSamples: string[];
-  exchanges: { thread: string; agent: string; at: string; user: string; tools: string[]; reply: string; input: number; cost: number; error?: string }[];
+  exchanges: { id: string; thread: string; agent: string; model: string; prompt: string; version: string; harness: string; at: string; user: string; tools: string[]; reply: string; input: number; cost: number; calls: number; toolErrors: number; ms: number; error?: string }[];
+  scorecard: Record<"agent" | "model" | "version" | "harness", ScoreRow[]>;
   options: { agents: string[]; repos: string[]; threads: string[] };
+}
+
+export interface ScoreRow {
+  key: string;
+  exchanges: number;
+  ok: number;
+  empty: number;
+  errors: number;
+  loops: number;
+  toolCalls: number;
+  toolErrors: number;
+  cost: number;
+  input: number;
+  p50ms: number;
+  p95ms: number;
+}
+
+export interface EvalCase {
+  id: string;
+  name: string;
+  agent: string;
+  prompt: string;
+  expect: { contains?: string[]; notContains?: string[]; rubric?: string; maxCost?: number; maxSeconds?: number };
+}
+
+export interface EvalCaseResult {
+  id: string;
+  name: string;
+  agent: string;
+  pass: boolean;
+  checks: { name: string; pass: boolean; detail?: string }[];
+  reply: string;
+  seconds: number;
+  cost: number;
+  tokensIn: number;
+  score?: number;
+  error?: string;
+}
+
+export interface AgentVersion {
+  id: string;
+  agent: string;
+  at: string;
+  harness: string;
+  model: string;
+  prompt: string;
+  skills: { name: string; hash: string }[];
+  mcps: string[];
+}
+
+export interface EvalRun {
+  id: string;
+  at: string;
+  harness?: string;
+  versions?: Record<string, string>;
+  model?: string;
+  label?: string;
+  status: "running" | "done";
+  total: number;
+  results: EvalCaseResult[];
+}
+
+export interface Judgment {
+  id: string;
+  at: string;
+  judgedAt: string;
+  agent: string;
+  model: string;
+  prompt: string;
+  resolved: number;
+  instructions: number;
+  tools: number;
+  concise: number;
+  note: string;
 }
 
 export interface InsightsFilter {
@@ -459,6 +534,12 @@ export const api = {
     return call<InsightsDigest>(`/api/insights?${q}`);
   },
   analyzeInsights: (body: { days: number; focus: string; source: "harness" | "talk" | "engram"; project?: string } & InsightsFilter) => call<{ report: string }>("/api/insights/analyze", body),
+  versions: () => call<{ versions: AgentVersion[] }>("/api/versions"),
+  evals: () => call<{ cases: EvalCase[]; runs: EvalRun[]; judgments: Judgment[] }>("/api/evals"),
+  saveEvalCases: (cases: EvalCase[]) => call<{ cases: EvalCase[] }>("/api/evals/cases", { cases }),
+  runEvals: (body: { model?: string; label?: string; cases?: string[] }) => call<{ run: EvalRun }>("/api/evals/run", body),
+  deleteEvalRun: (id: string) => call<{ ok: true }>("/api/evals/runs/delete", { id }),
+  judgeEvals: (body: { days: number; n: number } & InsightsFilter) => call<{ judged: number }>("/api/evals/judge", body),
   engramInsights: (project = "") => call<EngramDigest>(`/api/insights/engram${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   usage: (days = 30) => call<UsageReport>(`/api/usage?days=${days}`),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),

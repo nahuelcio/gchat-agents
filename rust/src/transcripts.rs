@@ -100,16 +100,18 @@ impl TranscriptStore {
     }
 
     pub fn get(&self, thread_key: &str) -> Vec<TranscriptMessage> {
+        self.with(thread_key, |m| m.to_vec())
+    }
+
+    fn with<R>(&self, thread_key: &str, f: impl FnOnce(&[TranscriptMessage]) -> R) -> R {
         let mut cache = self.cache.lock().unwrap();
-        if let Some(m) = cache.get(thread_key) {
-            return m.clone();
-        }
-        let messages: Vec<TranscriptMessage> = std::fs::read_to_string(self.file_for(thread_key))
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
-        cache.insert(thread_key.to_string(), messages.clone());
-        messages
+        let messages = cache.entry(thread_key.to_string()).or_insert_with(|| {
+            std::fs::read_to_string(self.file_for(thread_key))
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default()
+        });
+        f(messages)
     }
 
     pub fn list(&self, prefix: &str, archived: bool) -> Vec<TranscriptSummary> {
@@ -131,18 +133,18 @@ impl TranscriptStore {
             if archived_set.contains(&key) != archived {
                 continue;
             }
-            let messages = self.get(&key);
-            let title = messages
-                .iter()
-                .find(|m| !m.bot)
-                .map(|m| m.text.chars().take(60).collect())
-                .unwrap_or_else(|| "New thread".into());
-            out.push(TranscriptSummary {
-                key,
-                title,
-                updated_at: messages.last().and_then(|m| m.at.clone()),
-                count: messages.len(),
+            let (title, updated_at, count) = self.with(&key, |messages| {
+                (
+                    messages
+                        .iter()
+                        .find(|m| !m.bot)
+                        .map(|m| m.text.chars().take(60).collect())
+                        .unwrap_or_else(|| "New thread".into()),
+                    messages.last().and_then(|m| m.at.clone()),
+                    messages.len(),
+                )
             });
+            out.push(TranscriptSummary { key, title, updated_at, count });
         }
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         out

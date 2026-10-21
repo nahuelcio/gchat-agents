@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AgentBlob } from "../AgentBlob";
 import { agentTint, BOT_NAME } from "../agent-color";
 import {
@@ -179,7 +179,7 @@ function QuoteBlock({ quote }: { quote: Quote }) {
   );
 }
 
-function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
+const MessageContent = memo(function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
   const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
   const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
   const hidePlaceholder = Boolean(attachments?.length) && ["(image)", "(attachment)"].includes(text.trim());
@@ -202,7 +202,7 @@ function MessageContent({ text, attachments, mediaUrl }: { text: string; attachm
       ))}
     </>
   );
-}
+});
 
 async function fileToAttachment(file: File): Promise<TeamAttachmentInput> {
   const buf = await file.arrayBuffer();
@@ -431,11 +431,16 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   useEffect(() => {
     if (!activeId) return;
     let alive = true;
-    const load = () =>
+    let last = "";
+    const load = () => {
+      if (document.hidden) return;
       transport.thread(activeId).then(
         (s) => {
           if (!alive) return;
           setLoadError(undefined);
+          const json = JSON.stringify(s);
+          if (json === last) return;
+          last = json;
           setState(s);
           if (transport.guest) {
             const title = s.messages.find((m) => !m.bot)?.text.slice(0, 60);
@@ -444,11 +449,14 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         },
         (err: Error) => alive && setLoadError(err.message),
       );
-    void load();
+    };
+    load();
     const id = setInterval(load, 3000);
+    document.addEventListener("visibilitychange", load);
     return () => {
       alive = false;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", load);
     };
   }, [activeId, transport]);
 
@@ -1459,10 +1467,23 @@ function WhereSection({ threadId, pinned, onCommand }: { threadId: string; pinne
     api.settings().then((s) => setRepos(Object.keys(s.repos ?? {}).sort()), () => {});
   }, []);
   useEffect(() => {
-    const load = () => api.touches(`share/${threadId}`).then(setTouches, () => {});
+    let last = "";
+    const load = () => {
+      if (document.hidden) return;
+      api.touches(`share/${threadId}`).then((t) => {
+        const json = JSON.stringify(t);
+        if (json === last) return;
+        last = json;
+        setTouches(t);
+      }, () => {});
+    };
     load();
     const id = setInterval(load, 5000);
-    return () => clearInterval(id);
+    document.addEventListener("visibilitychange", load);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", load);
+    };
   }, [threadId]);
   const folder = touches[0]?.cwd;
   return (

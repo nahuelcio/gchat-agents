@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { poll, whenChanged } from "../poll";
 import { agentTint, BOT_NAME } from "../agent-color";
 import { ago, api, duration, until, type Health, type Job, type JobTrigger, type ScheduleLogMessage } from "../api";
 import { hashQuery, type ViewProps } from "../App";
-import { CodeEditor } from "../CodeEditor";
+import { CodeEditor } from "../LazyCodeEditor";
 import { jobAlertsOn, setJobAlerts } from "../jobAlerts";
 
 const TRIGGERS: { value: JobTrigger; label: string }[] = [
@@ -204,13 +205,12 @@ export function Schedules({ settings, notify }: ViewProps) {
   const deepLinkHandled = useRef(false);
 
   useEffect(() => {
-    const load = () => {
-      api.schedules().then(setJobs, () => setJobs([]));
-      api.health().then(setHealth, () => {});
-    };
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
+    const jobs = whenChanged(setJobs);
+    const health = whenChanged(setHealth);
+    return poll(() => {
+      api.schedules().then(jobs, () => jobs([]));
+      api.health().then(health, () => {});
+    }, 5000);
   }, []);
 
   const applyRecipe = (id: string) => {
@@ -248,10 +248,8 @@ export function Schedules({ settings, notify }: ViewProps) {
       setLogMessages(undefined);
       return;
     }
-    const load = () => api.scheduleLog(logId).then((r) => setLogMessages(r.messages), (err: Error) => notify(err.message, true));
-    load();
-    const id = setInterval(load, 2000);
-    return () => clearInterval(id);
+    const messages = whenChanged(setLogMessages);
+    return poll(() => void api.scheduleLog(logId).then((r) => messages(r.messages), (err: Error) => notify(err.message, true)), 2000);
   }, [logId, notify]);
 
   const exportJobs = (only?: Job) => {

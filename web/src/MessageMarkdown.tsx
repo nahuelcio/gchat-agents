@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArtifactCard } from "./ArtifactPreview";
-import { MermaidDiagram } from "./MermaidDiagram";
+
+const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
 
 const BARE_IMAGE =
   /(^|[\s(])(https?:\/\/[^\s<>)"']+\.(?:png|jpe?g|gif|webp|svg)(?:\?[^\s<>)"']*)?)/gi;
@@ -38,7 +39,12 @@ const components: Components = {
   code({ className, children }) {
     const text = String(children).replace(/\n$/, "");
     const lang = /language-(\w+)/.exec(className || "")?.[1];
-    if (lang === "mermaid") return <MermaidDiagram source={text} />;
+    if (lang === "mermaid")
+      return (
+        <Suspense fallback={<pre className="mermaid-loading">{text}</pre>}>
+          <MermaidDiagram source={text} />
+        </Suspense>
+      );
     if (lang || text.includes("\n")) {
       return (
         <pre className="message-pre">

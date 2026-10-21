@@ -17,7 +17,7 @@ import {
   DEFAULT_PERSONA_MCPS,
 } from "../api";
 import { hashQuery, type ViewProps } from "../App";
-import { CodeEditor } from "../CodeEditor";
+import { CodeEditor } from "../LazyCodeEditor";
 
 type Kind = "agent" | "skill";
 

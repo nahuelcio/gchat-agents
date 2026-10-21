@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type EngramDigest, type InsightsDigest, type InsightsFilter } from "../api";
 import type { ViewProps } from "../App";
 import { MessageMarkdown } from "../MessageMarkdown";
+import { EvalsPanel } from "./Evals";
 
-type Tab = "agents" | "talk" | "engram";
+type Tab = "agents" | "evals" | "talk" | "engram";
 
 const TABS: { id: Tab; label: string; blurb: string }[] = [
   { id: "agents", label: "Agents & tools", blurb: "System prompts, tools, models and cost, from the harness history." },
+  { id: "evals", label: "Evals", blurb: "How well the harness answers: success, loops, latency and cost per agent, model or prompt, AI-judged quality and a fixed test suite." },
   { id: "talk", label: "Conversations", blurb: "What people ask the agents about, where they get stuck, and what could become a skill or schedule." },
   { id: "engram", label: "Memory", blurb: "Everything your agents saved in Engram: health of the memory and the lessons it holds." },
 ];
@@ -14,6 +16,7 @@ const TABS: { id: Tab; label: string; blurb: string }[] = [
 const RANGES = [1, 7, 30, 90] as const;
 
 const PRESETS: Record<Tab, string[]> = {
+  evals: ["Why answers fail", "Slowest agents", "Model to switch", "Cases to add to the suite"],
   agents: ["System prompts", "Tools that fail", "Cost and context size", "Model choice"],
   talk: ["Recurring questions", "Frustration", "Ideas for skills", "Ideas for schedules"],
   engram: ["Duplicates and noise", "Rules for AGENTS.md", "Recurring bugs", "Saving policy"],
@@ -81,7 +84,7 @@ function Select({ label, value, options, onChange }: { label: string; value: str
   );
 }
 
-export function InsightsView({ notify }: ViewProps) {
+export function InsightsView({ notify, settings }: ViewProps) {
   const [tab, setTabState] = useState<Tab>(readHash);
   const [days, setDays] = useState<number>(30);
   const [filter, setFilter] = useState<InsightsFilter>({});
@@ -109,7 +112,7 @@ export function InsightsView({ notify }: ViewProps) {
   const analyze = () => {
     setBusy(tab);
     setError(undefined);
-    const source = tab === "agents" ? "harness" : tab;
+    const source = tab === "agents" || tab === "evals" ? "harness" : tab;
     api
       .analyzeInsights({ days, focus, source, project, ...filter })
       .then((r) => setReports((prev) => ({ ...prev, [tab]: r.report })), (e: Error) => setError(e.message))
@@ -243,6 +246,8 @@ export function InsightsView({ notify }: ViewProps) {
           )}
         </>
       )}
+
+      {tab === "evals" && <EvalsPanel data={data} days={days} filter={filter} agents={settings.personas.map((p) => p.name)} notify={notify} />}
 
       {tab === "talk" && data && (
         <section className="ins-panel">
