@@ -298,10 +298,11 @@ pub struct McpImport {
 }
 
 pub fn parse_mcp_config(raw: &str) -> Result<McpImport, String> {
-    let value: Value = serde_json::from_str(raw.trim()).map_err(|e| format!("that is not JSON ({e})"))?;
+    let value = lenient_json(raw)?;
     let mut servers = Vec::new();
     let mut skipped = Vec::new();
-    if let Some(map) = value.get("mcpServers").and_then(|v| v.as_object()) {
+    // Claude/Cursor use mcpServers, VS Code servers, opencode mcp.
+    if let Some(map) = ["mcpServers", "servers", "mcp"].iter().find_map(|k| value.get(*k).and_then(|v| v.as_object())) {
         read_server_map(map, &mut servers, &mut skipped)?;
     } else if let Some(obj) = value.as_object() {
         if obj.contains_key("command") || obj.contains_key("url") || obj.contains_key("args") {
@@ -323,6 +324,34 @@ pub fn parse_mcp_config(raw: &str) -> Result<McpImport, String> {
     Ok(McpImport { servers, skipped })
 }
 
+/// Accepts pasted fragments (`"name": {...}` without outer braces) and trailing commas.
+fn lenient_json(raw: &str) -> Result<Value, String> {
+    let raw = raw.trim().trim_end_matches(',');
+    let first = serde_json::from_str(raw).map_err(|e| e.to_string());
+    let fixed = |s: &str| -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        let mut in_str = false;
+        while let Some(c) = chars.next() {
+            if c == '"' && !out.ends_with('\\') {
+                in_str = !in_str;
+            }
+            if c == ',' && !in_str {
+                let rest: String = chars.clone().collect();
+                if rest.trim_start().starts_with(['}', ']']) {
+                    continue;
+                }
+            }
+            out.push(c);
+        }
+        out
+    };
+    first
+        .or_else(|_| serde_json::from_str(&fixed(raw)))
+        .or_else(|_| serde_json::from_str(&format!("{{{}}}", fixed(raw))))
+        .map_err(|e| format!("that is not JSON ({e})"))
+}
+
 fn read_server_map(map: &serde_json::Map<String, Value>, servers: &mut Vec<McpServer>, skipped: &mut Vec<String>) -> Result<(), String> {
     for (name, spec) in map {
         if name == "mcpServers" || !spec.is_object() {
@@ -333,13 +362,16 @@ fn read_server_map(map: &serde_json::Map<String, Value>, servers: &mut Vec<McpSe
     Ok(())
 }
 
-fn push_server(name: &str, spec: &Value, servers: &mut Vec<McpServer>, skipped: &mut Vec<String>) -> Result<(), String> {
-    let command = spec.get("command").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+fn push_server(name: &str, spec: &Value, servers: &mut Vec<McpServer>, _skipped: &mut Vec<String>) -> Result<(), String> {
+    // opencode puts the whole argv in command as an array.
+    let argv: Vec<String> = spec.get("command").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let mut command = argv.first().cloned().unwrap_or_else(|| spec.get("command").and_then(|v| v.as_str()).unwrap_or("").trim().to_string());
+    // ponytail: remote servers run through the mcp-remote stdio bridge; headers/OAuth are its job.
+    let remote = spec.get("url").and_then(|v| v.as_str()).filter(|_| command.is_empty()).map(str::to_string);
+    if remote.is_some() {
+        command = "npx".into();
+    }
     if command.is_empty() {
-        if spec.get("url").is_some() {
-            skipped.push(slug_name(name));
-            return Ok(());
-        }
         return Err(format!("MCP server \"{name}\" has no command"));
     }
     let name = slug_name(name);
@@ -349,13 +381,13 @@ fn push_server(name: &str, spec: &Value, servers: &mut Vec<McpServer>, skipped: 
     if servers.iter().any(|s| s.name == name) {
         return Err(format!("MCP server {name} is listed twice"));
     }
-    let args = match spec.get("args") {
+    let args = if let Some(url) = remote { vec!["-y".into(), "mcp-remote".into(), url] } else if argv.len() > 1 { argv[1..].to_vec() } else { match spec.get("args") {
         Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
         Some(Value::String(s)) => s.split_whitespace().map(str::to_string).collect(),
         _ => Vec::new(),
-    };
+    } };
     let mut env = BTreeMap::new();
-    if let Some(obj) = spec.get("env").and_then(|v| v.as_object()) {
+    if let Some(obj) = spec.get("env").or_else(|| spec.get("environment")).and_then(|v| v.as_object()) {
         for (k, v) in obj {
             let value = match v {
                 Value::String(s) => s.clone(),
@@ -408,16 +440,25 @@ rl.on('line', (l) => {
           }
         }"#;
         let got = parse_mcp_config(raw).unwrap();
-        assert_eq!(got.servers.len(), 1);
+        assert_eq!(got.servers.len(), 2);
+        let docs = got.servers.iter().find(|s| s.name == "docs").unwrap();
+        assert_eq!(docs.args, vec!["-y", "mcp-remote", "https://example.com/mcp"]);
+        let got = McpImport { servers: got.servers.into_iter().filter(|s| s.name == "github").collect(), skipped: got.skipped };
         assert_eq!(got.servers[0].name, "github");
         assert_eq!(got.servers[0].command, "npx");
         assert_eq!(got.servers[0].args, vec!["-y", "@modelcontextprotocol/server-github"]);
         assert_eq!(got.servers[0].env.get("GITHUB_PERSONAL_ACCESS_TOKEN").map(String::as_str), Some("ghp_x"));
-        assert_eq!(got.skipped, vec!["docs"]);
+        assert!(got.skipped.is_empty());
         let bare = parse_mcp_config(r#"{ "memory": { "command": "npx", "args": "-y @modelcontextprotocol/server-memory" } }"#).unwrap();
         assert_eq!(bare.servers[0].args, vec!["-y", "@modelcontextprotocol/server-memory"]);
-        assert!(parse_mcp_config(r#"{ "mcpServers": { "remote": { "url": "https://x" } } }"#).unwrap_err().contains("stdio"));
+        assert_eq!(parse_mcp_config(r#"{ "grafana": { "type": "remote", "url": "https://x/mcp" } }"#).unwrap().servers[0].command, "npx");
         assert!(parse_mcp_config("not json").unwrap_err().contains("not JSON"));
+        let fragment = parse_mcp_config("\"grafana\": {\n \"enabled\": true,\n \"type\": \"remote\",\n \"url\": \"https://g/mcp\",\n},").unwrap();
+        assert_eq!(fragment.servers[0].name, "grafana");
+        assert_eq!(fragment.servers[0].args, vec!["-y", "mcp-remote", "https://g/mcp"]);
+        let oc = parse_mcp_config(r#"{ "mcp": { "mem": { "type": "local", "command": ["npx", "-y", "srv"], "environment": { "K": "v" } } } }"#).unwrap();
+        assert_eq!((oc.servers[0].command.as_str(), oc.servers[0].args.clone()), ("npx", vec!["-y".to_string(), "srv".to_string()]));
+        assert_eq!(oc.servers[0].env.get("K").map(String::as_str), Some("v"));
     }
 
     #[test]

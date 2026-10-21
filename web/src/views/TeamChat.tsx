@@ -894,7 +894,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
                   {m.bot && (() => {
                     const id = body.text.match(/\/approve (\w+) or \/deny \1/)?.[1];
-                    return id && (
+                    return id && state?.pendingApprovals?.includes(id) && (
                       <div className="row">
                         <button type="button" className="btn small" onClick={() => void send(`/approve ${id}`)}>Approve</button>{" "}
                         <button type="button" className="btn small" onClick={() => void send(`/deny ${id}`)}>Deny</button>

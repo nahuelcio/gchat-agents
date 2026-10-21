@@ -678,6 +678,7 @@ export interface TeamThreadState {
   workItem?: TeamThreadWorkItem | null;
   changes?: TeamThreadChanges | null;
   busy: boolean;
+  pendingApprovals?: string[];
   /** null = legacy room: every catalog agent is available. */
   members?: RoomMember[] | null;
   kicked?: string[];
