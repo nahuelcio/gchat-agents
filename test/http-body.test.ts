@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { gunzipSync } from "node:zlib";
 import { encodeJsonBody } from "../web/src/http-body";
 

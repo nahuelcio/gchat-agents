@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 
 const adminPort = Number(process.env.ADMIN_PORT) || 8081;
 const bridgePort = Number(process.env.PORT) || 8080;

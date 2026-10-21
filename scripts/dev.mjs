@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const vite = join(root, "node_modules/vite/bin/vite.js");
+const vp = join(root, "node_modules/vite-plus/bin/vp");
 const adminPort = process.env.ADMIN_PORT ?? "8081";
 const webPort = process.env.DEV_WEB_PORT ?? "5173";
 const bridgePort = process.env.PORT ?? "8080";
@@ -72,5 +72,5 @@ try {
 }
 
 // Public /play (tunnel) is served from web/dist by the bridge — keep it in sync with source.
-run("web-dist", process.execPath, [vite, "build", "--watch", "--config", "web/vite.config.ts", "--clearScreen", "false"]);
-run("web", process.execPath, [vite, "--config", "web/vite.config.ts", "--clearScreen", "false"]);
+run("web-dist", process.execPath, [vp, "build", "--watch", "--config", "web/vite.config.ts", "--clearScreen", "false"]);
+run("web", process.execPath, [vp, "dev", "--config", "web/vite.config.ts", "--clearScreen", "false"]);

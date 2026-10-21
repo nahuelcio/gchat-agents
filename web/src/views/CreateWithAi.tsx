@@ -169,7 +169,7 @@ export function CreateView(props: ViewProps) {
   );
 }
 
-export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
+export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewProps) {
   const personas = settings.personas ?? [];
   const [kind, setKind] = useState<Kind>("agent");
   const [messages, setMessages] = useState<DraftChatMessage[]>([]);
@@ -576,9 +576,18 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
     const idx = list.findIndex((p) => p.name.toLowerCase() === next.name.toLowerCase());
     if (idx >= 0) list[idx] = next;
     else list.push(next);
-    void save({ personas: list }, `@${next.name} from template`).then(() => {
+    void save({ personas: list }, `@${next.name} from template`).then(async () => {
       notify(idx >= 0 ? `@${next.name} updated from template` : `@${next.name} created from template`);
       startEditAgent(next);
+      const installed = new Set((settings.mcpServers ?? []).map((m) => m.name));
+      const catalog = await api.mcpCatalog().catch(() => []);
+      const missing = catalog.filter((c) => next.mcps?.includes(c.name) && !installed.has(c.name));
+      const needKeys: string[] = [];
+      for (const entry of missing) {
+        if (entry.inputs?.length) needKeys.push(entry.title);
+        else await api.addCatalogMcp(entry.name).then(setSettings, () => needKeys.push(entry.title));
+      }
+      if (needKeys.length) notify(`@${next.name} also uses ${needKeys.join(", ")}: add them in Settings › Tools › MCP catalog.`);
     });
   };
 

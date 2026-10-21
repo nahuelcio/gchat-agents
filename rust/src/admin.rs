@@ -94,6 +94,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/skills/search", get(get_skills_search))
         .route("/api/mcp/import", post(post_mcp_import))
         .route("/api/mcp/servers", get(get_mcp_servers))
+        .route("/api/mcp/catalog", get(get_mcp_catalog).post(post_mcp_catalog))
         .route("/api/agents/delegates", get(get_delegates))
         .route("/api/agents/ask", post(post_ask_agent))
         .route("/api/ai/draft-agent", post(post_draft_agent))
@@ -269,6 +270,8 @@ struct ScheduleBody {
     pattern: Option<String>,
     needs_approval: Option<bool>,
     precheck: Option<String>,
+    webhook: Option<String>,
+    notify_failures: Option<bool>,
 }
 
 async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<ScheduleBody>) -> Response {
@@ -297,6 +300,8 @@ async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<Sch
                 pattern: body.pattern,
                 needs_approval: body.needs_approval.unwrap_or(false),
                 precheck: body.precheck,
+                webhook: body.webhook,
+                notify_failures: body.notify_failures,
             },
             chrono::Local::now(),
         )
@@ -321,6 +326,9 @@ async fn post_schedules_update(State(state): State<Arc<AppState>>, Json(body): J
                 prompt: body.prompt,
                 name: body.name,
                 precheck: body.precheck,
+                space: body.space,
+                webhook: body.webhook,
+                notify_failures: body.notify_failures,
                 ..Default::default()
             },
             chrono::Local::now(),
@@ -1282,6 +1290,31 @@ struct NameQuery {
 async fn delete_skill(Query(q): Query<NameQuery>) -> Response {
     match crate::skills::delete(&crate::skills::writable_dir(), q.name.as_deref().unwrap_or("")) {
         Ok(()) => get_skills().await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_mcp_catalog() -> Response {
+    Json(crate::mcp_client::catalog()).into_response()
+}
+
+#[derive(Deserialize)]
+struct McpCatalogBody {
+    name: String,
+    #[serde(default)]
+    values: std::collections::BTreeMap<String, String>,
+}
+
+async fn post_mcp_catalog(State(state): State<Arc<AppState>>, Json(b): Json<McpCatalogBody>) -> Response {
+    let server = match crate::mcp_client::from_catalog(&b.name, &b.values) {
+        Ok(server) => server,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    };
+    let mut servers = state.settings.get().mcp_servers;
+    servers.retain(|s| s.name != server.name);
+    servers.push(server);
+    match state.settings.update(SettingsPatch { mcp_servers: Some(servers), ..Default::default() }).await {
+        Ok(settings) => Json(settings).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
 }

@@ -39,6 +39,10 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precheck: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
+    #[serde(default = "yes")]
+    pub notify_failures: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<PendingRun>,
 }
 
@@ -47,6 +51,10 @@ pub struct PendingRun {
     pub id: String,
     pub at: String,
     pub reason: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn cron_trigger() -> String {
@@ -66,6 +74,8 @@ pub struct NewJob {
     pub pattern: Option<String>,
     pub needs_approval: bool,
     pub precheck: Option<String>,
+    pub webhook: Option<String>,
+    pub notify_failures: Option<bool>,
 }
 
 impl Job {
@@ -270,6 +280,8 @@ impl ScheduleStore {
             pattern,
             needs_approval: input.needs_approval,
             precheck: input.precheck.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
+            webhook: input.webhook.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
+            notify_failures: input.notify_failures.unwrap_or(true),
             pending: None,
         };
         job.next_run_at = job.next_after(now)?;
@@ -296,6 +308,15 @@ impl ScheduleStore {
             }
             if let Some(v) = patch.name {
                 next.name = v;
+            }
+            if let Some(v) = patch.space.filter(|v| !v.trim().is_empty()) {
+                next.space = v;
+            }
+            if let Some(v) = patch.webhook {
+                next.webhook = Some(v.trim().to_string()).filter(|c| !c.is_empty());
+            }
+            if let Some(v) = patch.notify_failures {
+                next.notify_failures = v;
             }
             if let Some(v) = patch.precheck {
                 next.precheck = Some(v.trim().to_string()).filter(|c| !c.is_empty());
@@ -349,6 +370,9 @@ pub struct JobPatch {
     pub next_run_at: Option<Option<String>>,
     pub pending: Option<Option<PendingRun>>,
     pub precheck: Option<String>,
+    pub space: Option<String>,
+    pub webhook: Option<String>,
+    pub notify_failures: Option<bool>,
 }
 
 const PRECHECK_TIMEOUT_SECS: u64 = 300;
@@ -394,6 +418,7 @@ pub struct Scheduler {
     store: std::sync::Arc<ScheduleStore>,
     run: RunJob,
     activity: Option<std::sync::Arc<crate::activity::ActivityLog>>,
+    notifier: Option<std::sync::Arc<crate::job_notify::JobNotifier>>,
 }
 
 impl Scheduler {
@@ -405,7 +430,13 @@ impl Scheduler {
             store,
             run: Box::new(run),
             activity: None,
+            notifier: None,
         }
+    }
+
+    pub fn with_notifier(mut self, notifier: std::sync::Arc<crate::job_notify::JobNotifier>) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 
     pub fn with_activity(mut self, activity: std::sync::Arc<crate::activity::ActivityLog>) -> Self {
@@ -558,6 +589,9 @@ Precheck output:
                 }
                 Precheck::Failed(err) => {
                     self.note("precheck_failed", &job, &err).await;
+                    if let Some(n) = &self.notifier {
+                        n.send(&job, false, &err).await;
+                    }
                     false
                 }
             },
@@ -683,6 +717,8 @@ mod tests {
                     pattern: None,
                     needs_approval: false,
                     precheck: None,
+                    webhook: None,
+                    notify_failures: None,
                     name: "n".into(),
                     prompt: "p".into(),
                     cron: "0 9 * * *".into(),

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { agentTint, BOT_NAME } from "../agent-color";
 import { ago, api, duration, until, type Health, type Job, type JobTrigger, type ScheduleLogMessage } from "../api";
 import { hashQuery, type ViewProps } from "../App";
+import { CodeEditor } from "../CodeEditor";
+import { jobAlertsOn, setJobAlerts } from "../jobAlerts";
 
 const TRIGGERS: { value: JobTrigger; label: string }[] = [
   { value: "cron", label: "On a schedule" },
@@ -92,13 +94,14 @@ function promptSummary(prompt: string): string {
   return first.length > 140 ? `${first.slice(0, 140)}…` : first;
 }
 
-function JobFlow(props: { when: string; precheck?: string; needsApproval: boolean; prompt: string; space: string; repo?: string }) {
+function JobFlow(props: { when: string; precheck?: string; needsApproval: boolean; prompt: string; space: string; repo?: string; webhook?: string }) {
   const steps = [
     props.when,
     ...(props.precheck ? [`Runs its precheck script (${props.precheck.split("\n").length} lines) — stops here if it prints nothing`] : []),
     ...(props.needsApproval ? ["Waits for your approval"] : []),
     `Agent${props.repo ? ` in ${props.repo}` : ""}: ${promptSummary(props.prompt) || "—"}`,
-    props.space.startsWith("spaces/") ? `Posts the reply to ${props.space}` : "Keeps the reply in the job log",
+    `Notifies the Notifications chat${props.space.startsWith("spaces/") ? ` and ${props.space}` : ""}`,
+    ...(props.webhook ? [`Sends it to the webhook ${props.webhook.replace(/^https?:\/\//, "").split("/")[0]}`] : []),
   ];
   return (
     <ol className="job-flow small">
@@ -130,7 +133,10 @@ export function Schedules({ settings, notify }: ViewProps) {
     pattern: "",
     needsApproval: false,
     precheck: "",
+    webhook: "",
+    notifyFailures: true,
   });
+  const [alerts, setAlerts] = useState(jobAlertsOn);
   const [logId, setLogId] = useState<string>();
   const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
   const deepLinkHandled = useRef(false);
@@ -197,6 +203,8 @@ export function Schedules({ settings, notify }: ViewProps) {
       ...(j.command && { command: j.command }),
       ...(j.pattern && { pattern: j.pattern }),
       ...(j.precheck && { precheck: j.precheck }),
+      ...(j.webhook && { webhook: j.webhook }),
+      notifyFailures: j.notifyFailures ?? true,
       needsApproval: j.needsApproval,
     }));
     const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, jobs: portable }, null, 2)], { type: "application/json" }));
@@ -234,6 +242,8 @@ export function Schedules({ settings, notify }: ViewProps) {
           ...(j.command && { command: j.command }),
           ...(j.pattern && { pattern: j.pattern }),
           ...(j.precheck && { precheck: j.precheck }),
+          ...(j.webhook && { webhook: j.webhook }),
+          notifyFailures: j.notifyFailures ?? true,
         }));
         added++;
       } catch (err) {
@@ -277,6 +287,16 @@ export function Schedules({ settings, notify }: ViewProps) {
           <p className="sub">Recurring prompts the agent runs on its own — describe one in plain language, or use /schedule in a thread.</p>
         </div>
         <div className="head-actions">
+        <button
+          className="btn"
+          aria-pressed={alerts}
+          onClick={() => void setJobAlerts(!alerts).then((on) => {
+            setAlerts(on);
+            if (!alerts && !on) notify("The browser blocked notifications for this site", true);
+          })}
+        >
+          {alerts ? "Desktop alerts on" : "Desktop alerts"}
+        </button>
         <button className="btn" onClick={() => exportJobs()} disabled={!jobs?.length}>
           Export
         </button>
@@ -347,12 +367,19 @@ export function Schedules({ settings, notify }: ViewProps) {
           className="card form"
           onSubmit={(e) => {
             e.preventDefault();
+            if (!form.prompt.trim()) {
+              notify("Describe what the agent should do", true);
+              return;
+            }
             if (editing) {
               const cronChanged = editing.trigger === "cron" && form.cron !== editing.cron;
               void act(api.updateSchedule(editing.id, {
                 ...(form.name.trim() && { name: form.name.trim() }),
                 prompt: form.prompt,
                 precheck: form.precheck,
+                webhook: form.webhook,
+                notifyFailures: form.notifyFailures,
+                ...(form.space !== editing.space && { space: form.space }),
                 ...(cronChanged && { cron: form.cron }),
               }), "Job updated").then(() => {
                 setOpen(false);
@@ -367,6 +394,8 @@ export function Schedules({ settings, notify }: ViewProps) {
               trigger: form.trigger,
               needsApproval: form.needsApproval,
               ...(form.precheck.trim() && { precheck: form.precheck.trim() }),
+              ...(form.webhook.trim() && { webhook: form.webhook.trim() }),
+              notifyFailures: form.notifyFailures,
               ...(form.repo && { repo: form.repo }),
               ...(form.trigger === "command" && { command: form.command }),
               ...(form.trigger === "mention" && { pattern: form.pattern }),
@@ -426,10 +455,17 @@ export function Schedules({ settings, notify }: ViewProps) {
               <input className="mono" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={editing.name} />
             </label>
           )}
-          <label className="field">
+          <div className="field">
             <span>What should the agent do?</span>
-            <textarea rows={Math.min(18, Math.max(4, form.prompt.split("\n").length + 1))} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />
-          </label>
+            <CodeEditor
+              value={form.prompt}
+              onChange={(prompt) => setForm((f) => ({ ...f, prompt }))}
+              language="markdown"
+              minHeight={120}
+              ariaLabel="What should the agent do?"
+              placeholder="Summarize yesterday's commits on dev and list open questions."
+            />
+          </div>
           {!editing && (
           <fieldset className="field">
             <legend>Runs</legend>
@@ -480,17 +516,36 @@ export function Schedules({ settings, notify }: ViewProps) {
             </label>
           </fieldset>
           )}
-          <label className="field">
+          <div className="field">
             <span>Precheck script (Node.js, optional)</span>
-            <textarea
-              className="mono"
-              rows={form.precheck ? Math.min(14, Math.max(4, form.precheck.split("\n").length + 1)) : 2}
+            <CodeEditor
               value={form.precheck}
+              onChange={(precheck) => setForm((f) => ({ ...f, precheck }))}
+              language="javascript"
+              minHeight={80}
+              ariaLabel="Precheck script"
               placeholder={'const res = await fetch("https://…");\nconsole.log(JSON.stringify(await res.json()));'}
-              onChange={(e) => setForm({ ...form, precheck: e.target.value })}
             />
             <span className="muted small">Saved inside the job and run with node before each run. Printing nothing skips the run for free; anything printed is appended to the prompt.</span>
-          </label>
+          </div>
+          <fieldset className="field">
+            <legend>Notifications</legend>
+            <label className="field">
+              <span className="muted small">Webhook URL (Slack, Teams, Discord, Power Automate…) — optional</span>
+              <input
+                className="mono"
+                type="url"
+                value={form.webhook}
+                placeholder="https://hooks.slack.com/services/…"
+                onChange={(e) => setForm({ ...form, webhook: e.target.value })}
+              />
+            </label>
+            <label className="inline check">
+              <input type="checkbox" checked={form.notifyFailures} onChange={(e) => setForm({ ...form, notifyFailures: e.target.checked })} />
+              <span>Also notify when a run fails</span>
+            </label>
+            <span className="muted small">Results always land in the Notifications chat (Team chat), plus the Chat space below and the webhook if set. Runs where the precheck found nothing never notify.</span>
+          </fieldset>
           {!editing && (
           <>
           <label className="inline check">
@@ -525,10 +580,22 @@ export function Schedules({ settings, notify }: ViewProps) {
           </>
           )}
           {editing && (
+            <label className="field">
+              <span>{editing.trigger === "cron" ? "Notify results in" : "Listens in"}</span>
+              <select value={form.space} onChange={(e) => setForm({ ...form, space: e.target.value })}>
+                <option value={TEAM_ONLY}>{editing.trigger === "cron" ? "Only this app (job log)" : "Team chat rooms"}</option>
+                {[...new Set([...settings.allowedSpaces, ...(editing.space !== TEAM_ONLY ? [editing.space] : [])])].map((s) => (
+                  <option key={s} value={s}>
+                    Google Chat · {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {editing && (editing.repo || editing.needsApproval) && (
             <div className="field muted small">
-              <span>Fixed</span> posts to {editing.space.startsWith("spaces/") ? editing.space : "this app only"}
-              {editing.repo ? ` · repo ${editing.repo}` : ""}
-              {editing.needsApproval ? " · asks for approval" : ""} — delete and re-create to change these.
+              <span>Fixed</span>
+              {[editing.repo && `repo ${editing.repo}`, editing.needsApproval && "asks for approval"].filter(Boolean).join(" · ")} — delete and re-create to change these.
             </div>
           )}
           <div className="field">
@@ -538,8 +605,9 @@ export function Schedules({ settings, notify }: ViewProps) {
               precheck={form.precheck.trim() || undefined}
               needsApproval={editing ? editing.needsApproval : form.needsApproval}
               prompt={form.prompt}
-              space={editing ? editing.space : form.space}
+              space={form.space}
               repo={editing ? editing.repo : form.repo || undefined}
+              webhook={/^https?:\/\//.test(form.webhook) ? form.webhook : undefined}
             />
           </div>
           <div className="form-actions">
@@ -594,6 +662,7 @@ export function Schedules({ settings, notify }: ViewProps) {
                     prompt={j.prompt}
                     space={j.space}
                     repo={j.repo}
+                    webhook={j.webhook}
                   />
                   {j.pending && (
                     <div className="approval">
@@ -621,7 +690,7 @@ export function Schedules({ settings, notify }: ViewProps) {
                     aria-label={`Edit ${j.name}`}
                     onClick={() => {
                       setEditing(j);
-                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, precheck: j.precheck ?? "", cron: j.cron || PRESETS[1]!.cron }));
+                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, precheck: j.precheck ?? "", webhook: j.webhook ?? "", notifyFailures: j.notifyFailures ?? true, space: j.space, cron: j.cron || PRESETS[1]!.cron }));
                       setOpen(true);
                     }}
                   >

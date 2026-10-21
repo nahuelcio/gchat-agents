@@ -22,6 +22,10 @@ pub const BUILTIN_GROUPS: &[&str] = &["coding", "switchboard", "google-drive", "
 
 pub const ENGRAM_NAME: &str = "engram";
 pub const CONTEXT7_NAME: &str = "context7";
+pub const PLAYWRIGHT_NAME: &str = "playwright";
+pub const EXA_NAME: &str = "exa";
+
+pub const AUTO_DEFAULT_MCPS: &[&str] = &[ENGRAM_NAME, CONTEXT7_NAME, PLAYWRIGHT_NAME, EXA_NAME];
 
 pub const DEFAULT_PERSONA_MCPS: &[&str] = &[ENGRAM_NAME, CONTEXT7_NAME];
 
@@ -48,6 +52,77 @@ pub fn default_context7() -> McpServer {
         args: vec!["-y".into(), "@upstash/context7-mcp".into()],
         env: BTreeMap::new(),
     }
+}
+
+pub fn default_playwright() -> McpServer {
+    McpServer {
+        name: PLAYWRIGHT_NAME.into(),
+        command: "npx".into(),
+        args: vec![
+            "-y".into(),
+            "@playwright/mcp@latest".into(),
+            "--isolated".into(),
+            "--output-dir".into(),
+            std::env::temp_dir().join("switchboard-playwright").to_string_lossy().into_owned(),
+        ],
+        env: BTreeMap::new(),
+    }
+}
+
+pub fn default_exa() -> McpServer {
+    McpServer {
+        name: EXA_NAME.into(),
+        command: "npx".into(),
+        args: vec!["-y".into(), "mcp-remote".into(), "https://mcp.exa.ai/mcp".into()],
+        env: BTreeMap::new(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogInput {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CatalogMcp {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<CatalogInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<String>,
+}
+
+pub fn catalog() -> Vec<CatalogMcp> {
+    serde_json::from_str(include_str!("../../catalog/mcps.json")).unwrap_or_default()
+}
+
+pub fn from_catalog(name: &str, values: &BTreeMap<String, String>) -> Result<McpServer, String> {
+    let entry = catalog().into_iter().find(|c| c.name == name).ok_or_else(|| format!("{name} is not in the MCP catalog"))?;
+    let fill = |raw: &str| -> String {
+        let mut out = raw.to_string();
+        for input in &entry.inputs {
+            out = out.replace(&format!("{{{}}}", input.key), values.get(&input.key).map(|v| v.trim()).unwrap_or(""));
+        }
+        out
+    };
+    for input in &entry.inputs {
+        if values.get(&input.key).is_none_or(|v| v.trim().is_empty()) {
+            return Err(format!("{} needs {}", entry.title, input.label));
+        }
+    }
+    let args = entry.args.iter().map(|a| fill(a)).collect();
+    let env = entry.env.iter().map(|(k, v)| (k.clone(), fill(v))).collect();
+    Ok(McpServer { name: entry.name.clone(), command: entry.command.clone(), args, env })
 }
 
 pub async fn engram_installed() -> bool {
@@ -280,6 +355,27 @@ rl.on('line', (l) => {
         assert_eq!(bare.servers[0].args, vec!["-y", "@modelcontextprotocol/server-memory"]);
         assert!(parse_mcp_config(r#"{ "mcpServers": { "remote": { "url": "https://x" } } }"#).unwrap_err().contains("stdio"));
         assert!(parse_mcp_config("not json").unwrap_err().contains("not JSON"));
+    }
+
+    #[test]
+    fn catalog_entries_are_valid_and_fill_their_inputs() {
+        let entries = catalog();
+        assert!(entries.len() >= 10);
+        let mut seen = std::collections::HashSet::new();
+        for e in &entries {
+            assert!(valid_name(&e.name), "{} is not a valid MCP name", e.name);
+            assert!(!AUTO_DEFAULT_MCPS.contains(&e.name.as_str()), "{} is already a default", e.name);
+            assert!(seen.insert(e.name.clone()), "{} is listed twice", e.name);
+            let values: BTreeMap<String, String> = e.inputs.iter().map(|i| (i.key.clone(), "v".to_string())).collect();
+            let server = from_catalog(&e.name, &values).unwrap();
+            let text = format!("{:?} {:?}", server.args, server.env);
+            for i in &e.inputs {
+                assert!(!text.contains(&format!("{{{}}}", i.key)), "{} left {{{}}} unfilled", e.name, i.key);
+            }
+        }
+        let gh = from_catalog("github", &BTreeMap::from([("GITHUB_TOKEN".to_string(), " abc ".to_string())])).unwrap();
+        assert_eq!(gh.env["GITHUB_AUTH"], "Bearer abc");
+        assert!(from_catalog("github", &BTreeMap::new()).unwrap_err().contains("token"));
     }
 
     #[test]

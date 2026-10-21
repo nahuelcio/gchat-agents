@@ -210,12 +210,13 @@ impl SettingsStore {
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, String> {
-        let had = {
+        let had: Vec<&str> = {
             let servers = &self.inner.lock().unwrap().mcp_servers;
-            (
-                servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME),
-                servers.iter().any(|m| m.name == crate::mcp_client::CONTEXT7_NAME),
-            )
+            crate::mcp_client::AUTO_DEFAULT_MCPS
+                .iter()
+                .copied()
+                .filter(|n| servers.iter().any(|m| m.name == *n))
+                .collect()
         };
         let patched_mcps = patch.mcp_servers.is_some();
         let next = {
@@ -274,17 +275,13 @@ impl SettingsStore {
         write_atomic(&self.file_path, &body).await.map_err(|e| e.to_string())?;
         *self.inner.lock().unwrap() = next.clone();
         if patched_mcps {
-            let has_engram = next.mcp_servers.iter().any(|m| m.name == crate::mcp_client::ENGRAM_NAME);
-            if had.0 && !has_engram {
-                self.set_mcp_declined(crate::mcp_client::ENGRAM_NAME, true);
-            } else if has_engram {
-                self.set_mcp_declined(crate::mcp_client::ENGRAM_NAME, false);
-            }
-            let has_context7 = next.mcp_servers.iter().any(|m| m.name == crate::mcp_client::CONTEXT7_NAME);
-            if had.1 && !has_context7 {
-                self.set_mcp_declined(crate::mcp_client::CONTEXT7_NAME, true);
-            } else if has_context7 {
-                self.set_mcp_declined(crate::mcp_client::CONTEXT7_NAME, false);
+            for name in crate::mcp_client::AUTO_DEFAULT_MCPS {
+                let has = next.mcp_servers.iter().any(|m| m.name == *name);
+                if had.contains(name) && !has {
+                    self.set_mcp_declined(name, true);
+                } else if has {
+                    self.set_mcp_declined(name, false);
+                }
             }
         }
         for listener in self.listeners.lock().unwrap().iter() {
@@ -311,6 +308,85 @@ impl SettingsStore {
             "Context7",
         )
         .await;
+    }
+
+    pub async fn ensure_default_playwright(&self) {
+        self.ensure_default_mcp(
+            crate::mcp_client::PLAYWRIGHT_NAME,
+            crate::mcp_client::default_playwright,
+            crate::mcp_client::npx_installed().await,
+            "Playwright",
+        )
+        .await;
+    }
+
+    pub async fn ensure_default_exa(&self) {
+        self.ensure_default_mcp(
+            crate::mcp_client::EXA_NAME,
+            crate::mcp_client::default_exa,
+            crate::mcp_client::npx_installed().await,
+            "Exa",
+        )
+        .await;
+    }
+
+    pub async fn ensure_bundled_templates(&self) {
+        let Some(marker) = self.file_path.parent().map(|d| d.join("templates.seeded")) else {
+            return;
+        };
+        let mut seeded: std::collections::BTreeMap<String, Option<u64>> = std::fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.trim().splitn(2, '\t');
+                let id = parts.next().filter(|id| !id.is_empty())?.to_string();
+                Some((id, parts.next().and_then(|f| u64::from_str_radix(f, 16).ok())))
+            })
+            .collect();
+        let mut templates = self.get().templates;
+        let mut changed = false;
+        for bundled in bundled_templates() {
+            let fresh = template_fingerprint(&bundled);
+            match (templates.iter_mut().find(|t| t.id == bundled.id), seeded.get(&bundled.id).copied()) {
+                (Some(current), Some(stored)) => {
+                    let untouched = stored.is_none_or(|f| f == template_fingerprint(current));
+                    if untouched && *current != bundled {
+                        *current = bundled.clone();
+                        changed = true;
+                    }
+                    if untouched {
+                        seeded.insert(bundled.id.clone(), Some(fresh));
+                    }
+                }
+                (Some(_), None) => {}
+                (None, Some(_)) => {}
+                (None, None) => {
+                    seeded.insert(bundled.id.clone(), Some(fresh));
+                    templates.push(bundled);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Err(err) = self
+                .update(SettingsPatch {
+                    templates: Some(templates),
+                    ..Default::default()
+                })
+                .await
+            {
+                tracing::warn!("could not sync bundled agent templates: {err}");
+                return;
+            }
+        }
+        let body: String = seeded
+            .iter()
+            .map(|(id, f)| match f {
+                Some(f) => format!("{id}\t{f:016x}\n"),
+                None => format!("{id}\n"),
+            })
+            .collect();
+        let _ = std::fs::write(&marker, body);
     }
 
     async fn ensure_default_mcp(
@@ -362,6 +438,31 @@ impl SettingsStore {
             let _ = std::fs::remove_file(&path);
         }
     }
+}
+
+#[derive(rust_embed::Embed)]
+#[folder = "../templates"]
+#[include = "*.json"]
+struct BundledTemplates;
+
+fn template_fingerprint(t: &PersonaTemplate) -> u64 {
+    serde_json::to_string(t)
+        .unwrap_or_default()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+pub fn bundled_templates() -> Vec<PersonaTemplate> {
+    let mut out: Vec<PersonaTemplate> = BundledTemplates::iter()
+        .filter_map(|rel| {
+            let file = BundledTemplates::get(&rel)?;
+            serde_json::from_slice(file.data.as_ref())
+                .map_err(|e| tracing::warn!("bundled template {rel} is invalid: {e}"))
+                .ok()
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -596,6 +697,85 @@ mod tests {
             delegates: vec!["qa".into()],
             avatar: None,
         }
+    }
+
+    #[test]
+    fn bundled_templates_only_use_bundled_skills_and_known_mcps() {
+        let dir = tempdir().unwrap();
+        crate::skills::extract_bundled(dir.path()).unwrap();
+        let mut known: Vec<String> = crate::mcp_client::BUILTIN_GROUPS
+            .iter()
+            .chain(crate::mcp_client::AUTO_DEFAULT_MCPS)
+            .map(|s| s.to_string())
+            .collect();
+        known.push("skills".into());
+        known.extend(crate::mcp_client::catalog().into_iter().map(|c| c.name));
+        let templates = bundled_templates();
+        assert!(templates.len() >= 20);
+        for t in &templates {
+            for s in &t.skills {
+                let skill = crate::skills::load_from(dir.path(), s);
+                assert!(skill.is_some(), "template {} uses missing skill {s}", t.id);
+                for m in skill.unwrap().mcps {
+                    assert!(known.contains(&m), "skill {s} uses unknown MCP {m}");
+                }
+            }
+            for m in &t.mcps {
+                assert!(known.contains(m), "template {} uses unknown MCP {m}", t.id);
+            }
+        }
+        validate(&Settings { templates: templates.clone(), ..SettingsStore::open(&dir.path().join("c.json"), SettingsDefaults::default()).get() }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bundled_templates_seed_once_and_stay_deleted() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::open(&dir.path().join("config.json"), SettingsDefaults::default());
+        let bundled = bundled_templates();
+        assert!(bundled.iter().any(|t| t.id == "deep-research"));
+        assert!(bundled.iter().any(|t| t.id == "browser-automation"));
+        store.ensure_bundled_templates().await;
+        assert_eq!(store.get().templates, bundled);
+        store
+            .update(SettingsPatch {
+                templates: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store.ensure_bundled_templates().await;
+        assert!(store.get().templates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bundled_templates_refresh_unless_edited() {
+        let dir = tempdir().unwrap();
+        let store = SettingsStore::open(&dir.path().join("config.json"), SettingsDefaults::default());
+        let bundled = bundled_templates();
+        let stale = |id: &str| PersonaTemplate { prompt: "old prompt".into(), ..bundled.iter().find(|t| t.id == id).unwrap().clone() };
+        let mut edited = stale("qa");
+        edited.prompt = "my own prompt".into();
+        store
+            .update(SettingsPatch {
+                templates: Some(vec![stale("reviewer"), stale("qa")]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let fp = |t: &PersonaTemplate| format!("{:016x}", template_fingerprint(t));
+        std::fs::write(dir.path().join("templates.seeded"), format!("reviewer\t{}\nqa\t{}\n", fp(&stale("reviewer")), fp(&stale("qa")))).unwrap();
+        store
+            .update(SettingsPatch {
+                templates: Some(vec![stale("reviewer"), edited.clone()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store.ensure_bundled_templates().await;
+        let now = store.get().templates;
+        assert_eq!(now.iter().find(|t| t.id == "reviewer").unwrap(), bundled.iter().find(|t| t.id == "reviewer").unwrap());
+        assert_eq!(now.iter().find(|t| t.id == "qa").unwrap(), &edited);
+        assert_eq!(now.len(), bundled.len());
     }
 
     #[test]

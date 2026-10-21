@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { accumulate, progressOf, type ThreadViewState } from "../web/src/thread-progress.ts";
 
 const view = (docs: Record<string, unknown>): ThreadViewState => ({ docs });
@@ -16,7 +16,13 @@ describe("progressOf", () => {
           run: { taskId: "t", inputs: [] },
           generation: {
             attempt: 1,
-            message: { content: [{ type: "thinking", thinking: "a".repeat(4000) }, { type: "text", text: "hi" }, { type: "thinking", thinking: "b" }] },
+            message: {
+              content: [
+                { type: "thinking", thinking: "a".repeat(4000) },
+                { type: "text", text: "hi" },
+                { type: "thinking", thinking: "b" },
+              ],
+            },
           },
         },
       }),
@@ -37,7 +43,15 @@ describe("progressOf", () => {
             { callId: "a", name: "bash", status: "done" },
             { callId: "b", name: "codemode", status: "running", arguments: {} },
           ],
-          nestedTools: [{ callId: "b/1", parentCallId: "b", name: "mem_search", status: "running", arguments: { query: "x" } }],
+          nestedTools: [
+            {
+              callId: "b/1",
+              parentCallId: "b",
+              name: "mem_search",
+              status: "running",
+              arguments: { query: "x" },
+            },
+          ],
         },
       }),
     );
@@ -49,7 +63,10 @@ describe("progressOf", () => {
   });
 
   it("derives tok/s from the partial's output tokens over the run time", () => {
-    const live = { run: { taskId: "t", inputs: [] }, generation: { attempt: 1, message: { content: [], usage: { output: 50 } } } };
+    const live = {
+      run: { taskId: "t", inputs: [] },
+      generation: { attempt: 1, message: { content: [], usage: { output: 50 } } },
+    };
     expect(progressOf(view({ "pi.live": live }), 1000, 5000).tps).toBe(12.5);
     expect(progressOf(view({ "pi.live": live }), undefined, 5000).tps).toBeUndefined();
   });

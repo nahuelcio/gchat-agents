@@ -229,6 +229,13 @@ a { color: var(--accent); }
 .content-narrow > * {
   max-width: 1120px;
 }
+@media (min-width: 1200px) {
+  .content-narrow { padding-inline: max(28px, calc((100% - 1120px) / 2)); }
+}
+@media (min-width: 1800px) {
+  .content-narrow > * { max-width: 1400px; }
+  .content-narrow { padding-inline: max(28px, calc((100% - 1400px) / 2)); }
+}
 .content-narrow > .create-ai.create-ai--editing {
   max-width: none;
 }
@@ -545,7 +552,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .job-main { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .job-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .job-times { flex: 0 1 190px; display: flex; flex-direction: column; color: var(--fg-2); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }
-.job-actions { display: flex; align-items: center; gap: 10px; }
+.job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
 .job-log { margin: 0 16px 14px; padding: 12px; max-height: 420px; overflow: auto; background: var(--logs-bg); color: var(--logs-fg); border-radius: var(--radius-sm); border: 2px solid var(--primary); }
 .job-log-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .job-log-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-size: 12px; }
@@ -1779,3 +1786,7 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .job-flow { margin: 6px 0 4px; padding-left: 20px; display: grid; gap: 2px; color: var(--muted, inherit); }
 .job-flow li { overflow-wrap: anywhere; }
 .job-flow li::marker { font-weight: 600; }
+
+@media (pointer: coarse) {
+  input, textarea, select { font-size: max(16px, 1em); }
+}

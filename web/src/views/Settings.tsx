@@ -4,6 +4,7 @@ import {
   type AdoRepo,
   type AdoStatus,
   type Agent,
+  type CatalogMcp,
   type ContextFooter,
   type DriveMcpStatus,
   type RepoConfig,
@@ -80,6 +81,7 @@ export function SettingsView(props: ViewProps) {
       <p className="muted small settings-hint">{current.hint}</p>
       {tab === "runtime" && <AgentCard {...props} />}
       {tab === "tools" && <McpServersCard {...props} />}
+      {tab === "tools" && <McpCatalogCard {...props} />}
       {tab === "chat" && (
         <>
           <BatchingCard {...props} />
@@ -210,7 +212,7 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
         <h2>MCP servers</h2>
         <p className="muted small">
           Bring any MCP server (stdio). Paste a Claude or Cursor mcp.json, or add one by hand. Its tools show up as name__tool for the agents you allow, on every runtime.{" "}
-          <code>engram</code> and <code>context7</code> register automatically when available (remove either here to opt out).
+          <code>engram</code>, <code>context7</code>, <code>playwright</code> and <code>exa</code> register automatically when available (remove any here to opt out). More are ready to add in the MCP catalog below.
         </p>
       </summary>
       {blob !== null ? (
@@ -309,6 +311,109 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
           + Add MCP server
         </button>
       )}
+    </details>
+  );
+}
+
+function McpCatalogCard({ settings, setSettings, notify }: ViewProps) {
+  const [catalog, setCatalog] = useState<CatalogMcp[]>();
+  const [open, setOpen] = useState<string | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.mcpCatalog().then(setCatalog, () => setCatalog([]));
+  }, []);
+  const installed = new Set((settings.mcpServers ?? []).map((m) => m.name));
+  const add = (entry: CatalogMcp, vals: Record<string, string>) => {
+    setBusy(true);
+    api
+      .addCatalogMcp(entry.name, vals)
+      .then(
+        (next) => {
+          setSettings(next);
+          setOpen(null);
+          setValues({});
+          notify(`${entry.title} added. Allow ${entry.name} on the agents that should use it.`);
+        },
+        (err: Error) => notify(err.message, true),
+      )
+      .finally(() => setBusy(false));
+  };
+  if (!catalog?.length) return null;
+  return (
+    <details className="card" aria-label="MCP catalog">
+      <summary className="card-title">
+        <h2>MCP catalog</h2>
+        <p className="muted small">Optional servers ready to add. Ones that need a key or sign-in ask for it here or open a browser the first time they run.</p>
+      </summary>
+      {catalog.map((entry) => (
+        <div key={entry.name} className="persona-row">
+          <div className="grow">
+            <span className="strong">{entry.title}</span> <code className="muted small">{entry.name}</code>
+            <div className="muted small">
+              {entry.description}
+              {entry.docs && (
+                <>
+                  {" "}
+                  <a href={entry.docs} target="_blank" rel="noreferrer">
+                    Docs
+                  </a>
+                </>
+              )}
+            </div>
+            {open === entry.name && (
+              <form
+                className="persona-form"
+                aria-label={`Add ${entry.title}`}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  add(entry, values);
+                }}
+              >
+                {(entry.inputs ?? []).map((input) => (
+                  <label key={input.key} className="field">
+                    <span>{input.label}</span>
+                    <input
+                      className="mono"
+                      type={input.secret ? "password" : "text"}
+                      autoComplete="off"
+                      value={values[input.key] ?? ""}
+                      onChange={(e) => setValues({ ...values, [input.key]: e.target.value })}
+                      required
+                    />
+                  </label>
+                ))}
+                <div className="row">
+                  <button className="btn primary" disabled={busy}>
+                    {busy ? "Adding…" : "Add"}
+                  </button>
+                  <button type="button" className="btn" onClick={() => setOpen(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+          {installed.has(entry.name) ? (
+            <span className="muted small">Added</span>
+          ) : (
+            open !== entry.name && (
+              <button
+                className="btn small"
+                disabled={busy}
+                onClick={() => {
+                  if (entry.inputs?.length) {
+                    setValues({});
+                    setOpen(entry.name);
+                  } else add(entry, {});
+                }}
+              >
+                Add
+              </button>
+            )
+          )}
+        </div>
+      ))}
     </details>
   );
 }

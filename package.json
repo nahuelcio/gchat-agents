@@ -1,23 +1,20 @@
 {
   "name": "switchboard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "type": "module",
   "description": "Google Chat bridge for local coding agents, with a local control plane",
-  "engines": {
-    "node": ">=20"
-  },
+  "type": "module",
   "scripts": {
     "start": "npm run -s build:web && cargo run --manifest-path rust/Cargo.toml --release",
     "dev": "node scripts/dev.mjs",
     "dev:echo": "node scripts/dev.mjs --driver echo",
     "start:dev": "npm run -s dev",
     "build": "npm run -s build:web && cargo build --manifest-path rust/Cargo.toml --release",
-    "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
+    "build:web": "tsc -p web/tsconfig.json && vp build --config web/vite.config.ts",
     "build:rust": "cargo build --manifest-path rust/Cargo.toml --release",
-    "dev:web": "vite --config web/vite.config.ts",
+    "dev:web": "vp dev --config web/vite.config.ts",
     "test": "cargo test --manifest-path rust/Cargo.toml",
-    "test:web": "vitest run",
+    "test:web": "vp test run",
     "e2e": "cargo build --manifest-path rust/Cargo.toml && node scripts/e2e-rust.mjs",
     "test:browser": "npm run -s build:web && cargo build --manifest-path rust/Cargo.toml && e2e run",
     "smoke": "cargo run --manifest-path rust/Cargo.toml -- --driver echo"
@@ -53,7 +50,13 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
-    "vite": "^8.3.4",
-    "vitest": "^5.0.5"
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.3.0",
+    "vite-plus": "1.3.0"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.3.0"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
   }
 }

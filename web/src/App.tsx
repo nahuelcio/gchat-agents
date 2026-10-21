@@ -5,6 +5,7 @@ import { Overview } from "./views/Overview";
 import { SharePanel, TeamChat } from "./views/TeamChat";
 import { Schedules } from "./views/Schedules";
 import { CreateView } from "./views/CreateWithAi";
+import { useJobAlerts } from "./jobAlerts";
 import { SettingsView } from "./views/Settings";
 
 const VIEWS = [
@@ -104,6 +105,7 @@ function OwnerApp() {
   const [settings, setSettings] = useState<Settings>();
   const [toast, setToast] = useState<{ text: string; error?: boolean }>();
   const [navOpen, setNavOpen] = useState(rememberNavOpen);
+  useJobAlerts();
 
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error });

@@ -76,6 +76,17 @@ export interface McpServer {
   env?: Record<string, string>;
 }
 
+export interface CatalogMcp {
+  name: string;
+  title: string;
+  description: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  inputs?: { key: string; label: string; secret?: boolean }[];
+  docs?: string;
+}
+
 export interface PiKey {
   provider: string;
   label: string;
@@ -236,6 +247,8 @@ export interface Job {
   pattern?: string;
   needsApproval: boolean;
   precheck?: string;
+  webhook?: string;
+  notifyFailures?: boolean;
   pending?: { id: string; at: string; reason: string } | null;
 }
 
@@ -326,6 +339,8 @@ export const api = {
   draftHostChat: (messages: DraftChatMessage[], current?: HostDraft) =>
     call<HostDraftChatReply>("/api/ai/draft-host/chat", { messages, current }),
   importMcp: (json: string) => call<{ imported: string[]; skipped: string[]; settings: Settings }>("/api/mcp/import", { json }),
+  mcpCatalog: () => call<CatalogMcp[]>("/api/mcp/catalog"),
+  addCatalogMcp: (name: string, values: Record<string, string> = {}) => call<Settings>("/api/mcp/catalog", { name, values }),
   piKeys: () => call<PiKey[]>("/api/pi/keys"),
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
   piCustomProviders: () => call<PiCustomProvider[]>("/api/pi/custom-providers"),
@@ -341,12 +356,12 @@ export const api = {
   share: (thread?: string) => call<{ link: string }>(`/api/share${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
   schedules: () => call<Job[]>("/api/schedules"),
-  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string }) =>
+  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
     call<Job[]>("/api/schedules", job),
   approvals: () => call<Approval[]>("/api/approvals"),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
-  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
+  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string; space?: string; webhook?: string; notifyFailures?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
   scheduleLog: (id: string) => call<{ messages: ScheduleLogMessage[] }>(`/api/schedules/log?id=${encodeURIComponent(id)}`),

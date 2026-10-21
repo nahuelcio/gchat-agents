@@ -8,3 +8,4 @@ dist/
 graft/
 web/dist/
 .e2e/
+.vitest/

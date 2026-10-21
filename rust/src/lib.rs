@@ -2,6 +2,7 @@ pub mod activity;
 pub mod admin;
 pub mod agents;
 pub mod ai_draft;
+pub mod job_notify;
 pub mod artifacts;
 pub mod atomic;
 pub mod cli;
@@ -177,11 +178,12 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let schedules_for_run = schedules.clone();
     let driver_for_run = driver;
     let workdir = config.workdir.to_string_lossy().to_string();
-    let google_for_run = google.clone();
+    let notifier = Arc::new(crate::job_notify::JobNotifier::new(google.clone(), transcripts.clone()));
+    let notifier_for_run = notifier.clone();
     let scheduler = Arc::new(Scheduler::new(schedules.clone(), move |job| {
         let driver = driver_for_run.clone();
-        let google = google_for_run.clone();
-        let space = job.space.clone();
+        let notifier = notifier_for_run.clone();
+        let notify_job = job.clone();
         let workdir = workdir.clone();
         let store = schedules_for_run.clone();
         let activity = activity_for_run.clone();
@@ -209,13 +211,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                 Err(err) => format!("Failed: {err}"),
             };
             let entry = |author: &str, text: String, bot: bool| crate::transcripts::TranscriptMessage { author: author.into(), text, bot, at: None, questions: None, attachments: None, reply_to: None };
-            if space.starts_with("spaces/") && !reply.trim().is_empty() {
-                let text: String = format!("*{name}*
-{reply}").chars().take(4000).collect();
-                if let Err(err) = google.post_message(&space, &crate::google::PostMessageBody { text, thread: None, cards_v2: None }).await {
-                    tracing::warn!(%err, "could not post job result");
-                }
-            }
+            notifier.send(&notify_job, result.is_ok(), &reply).await;
             let _ = transcripts.append(&key, vec![entry("schedule", prompt, false), entry(crate::personas::BOT_NAME, reply, true)]).await;
             match result {
                 Ok(_) => {
@@ -230,7 +226,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
             }
         }
         .boxed()
-    }).with_activity(activity.clone()));
+    }).with_activity(activity.clone()).with_notifier(notifier));
     let _ = handler.scheduler.set(scheduler.clone());
 
     let web_dir = find_web_dir();
@@ -288,6 +284,9 @@ pub async fn prepare_runtime(echo: bool) -> Result<Runtime, String> {
     let state = runtime.state.clone();
     state.settings.ensure_default_engram().await;
     state.settings.ensure_default_context7().await;
+    state.settings.ensure_default_playwright().await;
+    state.settings.ensure_default_exa().await;
+    state.settings.ensure_bundled_templates().await;
     if let Some(ledger) = state.handler.ledger.clone() {
         let cut = crate::turn_ledger::recover(state.handler.clone(), ledger, state.transcripts.clone()).await;
         if cut > 0 {
