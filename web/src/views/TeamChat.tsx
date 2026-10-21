@@ -9,6 +9,7 @@ import {
   type MemberChange,
   type Persona,
   type PersonaAvatar,
+  type QueuedItem,
   type TeamAttachmentInput,
   type TeamThreadState,
   type TeamThreadSummary,
@@ -227,6 +228,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [progress, setProgress] = useState<Progress>(emptyProgress);
+  const [queued, setQueued] = useState<QueuedItem[]>([]);
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -448,10 +450,26 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     return () => source.close();
   }, [activeId, transport, sending, state?.busy]);
 
+  useEffect(() => {
+    setQueued([]);
+    const busy = sending || state?.busy;
+    const inbox = transport.inbox;
+    if (!busy || !activeId || !inbox) return;
+    let alive = true;
+    const load = () => inbox(activeId).then((res) => alive && setQueued(res.items), () => {});
+    void load();
+    const id = setInterval(load, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [activeId, transport, sending, state?.busy]);
+
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
-    // Allow another message while a turn is still running — the server queues per thread.
+    // Allow another message while a turn is still running: while busy, a text message steers the running turn.
     if ((!value && !files.length) || !threadId) return;
+    const steer = state?.busy && threadId === activeId && !files.length ? transport.steer : undefined;
     setDraft("");
     clearPending();
     setSending(true);
@@ -466,7 +484,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     );
     try {
       const attachments = files.length ? await Promise.all(files.map(fileToAttachment)) : undefined;
-      await transport.send(threadId, value, name, attachments);
+      if (steer) await steer(threadId, value, name);
+      else await transport.send(threadId, value, name, attachments);
       setState(await transport.thread(threadId));
       loadThreads();
     } catch (err) {
@@ -844,6 +863,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               )}
             </div>
           )}
+          {working && queued.length > 0 && (
+            <ol className="queued-items" aria-label="Queued messages">
+              {queued.map((item) => (
+                <li key={item.id} className="muted small">
+                  <span className="pill">Queued</span> {item.text}
+                </li>
+              ))}
+            </ol>
+          )}
           <div ref={bottom} />
         </div>
 
@@ -958,7 +986,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 onKeyUp={(e) => syncCaret(e.currentTarget)}
                 onSelect={(e) => syncCaret(e.currentTarget)}
                 onKeyDown={onComposerKeyDown}
-                placeholder={listening ? "Listening…" : "Message @agent, paste an image, or use the mic"}
+                placeholder={listening ? "Listening…" : working ? "Steer the running reply, or queue a message" : "Message @agent, paste an image, or use the mic"}
                 autoComplete="off"
                 aria-autocomplete="list"
                 aria-expanded={mentionOpen}

@@ -1029,6 +1029,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .tool-lines li { font-size: 12px; }
 .tool-lines code { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); }
 .tool-lines li.running code::after { content: " …"; }
+.queued-items { margin: 0 0 0 46px; padding: 0; list-style: none; display: grid; gap: 4px; }
 .composer-wrap { flex: none; padding: 0 20px 20px; display: flex; flex-direction: column; gap: 10px; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .suggestions .chip { min-height: 30px; padding: 0 12px; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; }

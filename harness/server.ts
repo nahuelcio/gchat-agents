@@ -496,6 +496,27 @@ async function reset(body: { conversationId: string; handoff?: string }) {
   return { status: "done" };
 }
 
+function inputText(content: unknown): string {
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.map((part) => (part as { text?: string }).text ?? "").join("") : "";
+}
+
+async function inbox(conversationId: string) {
+  const conv = await harness.conversation(conversationId as never, ctx);
+  if (!conv) return { busy: false, items: [] };
+  const view = await conv.viewState(ctx);
+  try {
+    const docs = view.value.docs;
+    const queued = (docs["pi.inbox"] as { items: { id: string; mode: string; content: unknown }[] } | undefined)?.items ?? [];
+    return {
+      busy: !!(docs["pi.live"] as { run?: unknown } | undefined)?.run,
+      items: queued.map((item) => ({ id: item.id, mode: item.mode, text: inputText(item.content) })),
+    };
+  } finally {
+    view.dispose();
+  }
+}
+
 
 const read = (req: IncomingMessage) =>
   new Promise<string>((ok) => {
@@ -552,6 +573,9 @@ createServer(async (req, res) => {
       });
     }
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
+    if (req.method === "GET" && req.url?.startsWith("/inbox?")) {
+      return send(res, 200, await inbox(new URL(req.url, "http://127.0.0.1").searchParams.get("conversation") ?? ""));
+    }
     if (req.method === "POST" && req.url === "/abort") {
       const { thread, conversationId } = JSON.parse(await read(req)) as { thread?: string; conversationId?: string };
       const ids = thread ? Object.entries(threads).filter(([, key]) => key === thread).map(([id]) => id) : conversationId ? [conversationId] : [];
