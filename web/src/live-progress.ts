@@ -4,10 +4,11 @@ export type ProgressEvent =
   | { kind: "thinking"; text: string }
   | { kind: "tool"; text: string; callId?: string }
   | { kind: "tool_done"; text: string; callId?: string }
+  | { kind: "tps"; tps: number }
   | { kind: "idle" };
 
 export type ToolLine = { callId?: string; text: string; running: boolean };
-export type Progress = { thinking: string; tools: ToolLine[] };
+export type Progress = { thinking: string; tools: ToolLine[]; tps?: number };
 
 export const emptyProgress: Progress = { thinking: "", tools: [] };
 
@@ -18,6 +19,8 @@ export function applyProgress(state: Progress, event: ProgressEvent): Progress {
       return emptyProgress;
     case "thinking":
       return { ...state, thinking: state.thinking + event.text };
+    case "tps":
+      return { ...state, tps: event.tps };
     case "tool":
       return { ...state, tools: [...state.tools, { callId: event.callId, text: event.text, running: true }] };
     case "tool_done": {

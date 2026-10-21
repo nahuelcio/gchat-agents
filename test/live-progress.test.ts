@@ -29,4 +29,10 @@ describe("applyProgress", () => {
     const before = fold([{ kind: "tool", text: "bash: ls", callId: "a" }]);
     expect(applyProgress(before, { kind: "tool_done", text: "bash", callId: "zzz" })).toBe(before);
   });
+
+  it("tracks tok/s and clears it on a new turn", () => {
+    const state = fold([{ kind: "tps", tps: 12.5 }]);
+    expect(state.tps).toBe(12.5);
+    expect(applyProgress(state, { kind: "turn" }).tps).toBeUndefined();
+  });
 });

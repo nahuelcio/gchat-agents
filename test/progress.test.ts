@@ -86,4 +86,32 @@ describe("progressMapper", () => {
     ]);
     expect(map([{ type: "turn_start" }] as never)).toEqual([{ kind: "turn", text: "" }]);
   });
+
+  it("emits an estimated tok/s while the model streams, resetting with the turn", () => {
+    let t = 0;
+    const map = progressMapper(() => t);
+    const think = (delta: string) => [{ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta }] }] as never;
+    const rates = (items: ReturnType<ReturnType<typeof progressMapper>>) => items.filter((i) => i.kind === "tps");
+    expect(map([{ type: "turn_start" }] as never)).toEqual([{ kind: "turn", text: "" }]);
+    // 40 chars per call = 10 estimated tokens; the window needs 1.5s before the first rate frame.
+    t = 100;
+    map(think("x".repeat(40)));
+    t = 1300;
+    expect(rates(map(think("x".repeat(40))))).toEqual([]);
+    t = 1700;
+    // 30 tokens generated so far; the 1.6s window holds 20 of them: 20 / 1.6 = 12.5 tok/s.
+    expect(rates(map(think("x".repeat(40))))).toEqual([{ kind: "tps", tps: 12.5 }]);
+    t = 2000;
+    expect(rates(map(think("x".repeat(40))))).toEqual([]);
+  });
+
+  it("emits the real average tok/s from the final usage", () => {
+    let t = 0;
+    const map = progressMapper(() => t);
+    map([{ type: "turn_start" }] as never);
+    t = 4000;
+    expect(map([{ type: "message_end", entry: { model: [{ usage: { output: 120 } }] } }] as never)).toEqual([
+      { kind: "tps", tps: 30 },
+    ]);
+  });
 });

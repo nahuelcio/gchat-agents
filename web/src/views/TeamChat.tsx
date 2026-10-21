@@ -111,20 +111,31 @@ function AgentQuestions({
 }
 
 /** Live progress of the running turn: thinking collapsed, tool calls listed. Nothing is truncated. */
+/** The live thinking stream, open so it is visible as it arrives; collapsible, with the tail in view. */
+function ThinkingStream({ text }: { text: string }) {
+  const pre = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = pre.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  return (
+    <details className="thinking" open>
+      <summary className="muted small">Thinking · {text.length.toLocaleString()} chars</summary>
+      <pre ref={pre}>{text}</pre>
+    </details>
+  );
+}
+
 function LiveProgress({ progress }: { progress: Progress }) {
-  if (!progress.thinking && progress.tools.length === 0) return null;
+  if (!progress.thinking && progress.tools.length === 0 && !progress.tps) return null;
+  const rate = progress.tps ? ` · ${progress.tps.toFixed(1)} tok/s` : "";
   return (
     <details className="live-progress" open>
       <summary>
-        <span className="muted small">Live progress</span>
+        <span className="muted small">Live progress{rate}</span>
         {progress.tools.some((t) => t.running) && <span className="live-dot" aria-hidden />}
       </summary>
-      {progress.thinking && (
-        <details className="thinking">
-          <summary className="muted small">Thinking · {progress.thinking.length.toLocaleString()} chars</summary>
-          <pre>{progress.thinking}</pre>
-        </details>
-      )}
+      {progress.thinking && <ThinkingStream text={progress.thinking} />}
       {progress.tools.length > 0 && (
         <ol className="tool-lines">
           {progress.tools.map((tool, i) => (
