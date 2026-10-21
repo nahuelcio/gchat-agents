@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::types::{AgentDriver, AgentTurnInput, AgentTurnResult};
+use super::types::{AgentDriver, AgentTurnInput, AgentTurnResult, SteerResult};
 use crate::settings::SettingsStore;
 
 #[derive(Clone)]
@@ -143,12 +143,21 @@ impl PiDriver {
     }
 
     pub async fn wait(&self, request_id: &str) -> Result<Option<AgentTurnResult>, String> {
+        match self.settle(request_id).await? {
+            Some(Some(result)) => Ok(Some(result)),
+            Some(None) => Ok(Some(AgentTurnResult { reply: String::new(), session_ref: None, usage: None, pending: None })),
+            None => Ok(None),
+        }
+    }
+
+    async fn settle(&self, request_id: &str) -> Result<Option<Option<AgentTurnResult>>, String> {
         loop {
             let out = self.post("/wait", &json!({ "requestId": request_id, "timeoutMs": self.timeout_ms.clamp(500, 50_000) })).await?;
             let session = out["conversationId"].as_str().map(String::from);
             match out["status"].as_str() {
                 Some("running") => continue,
                 Some("unknown") => return Ok(None),
+                Some("joined") => return Ok(Some(None)),
                 Some("done") => {
                     let usage = out.get("usage").and_then(|u| {
                         let context_tokens = u.get("contextTokens").and_then(|v| v.as_u64()).or_else(|| u.get("context_tokens").and_then(|v| v.as_u64()))?;
@@ -158,12 +167,12 @@ impl PiDriver {
                             .or_else(|| u.get("context_window").and_then(|v| v.as_u64()));
                         Some(crate::driver::types::ContextUsage { context_tokens, context_window })
                     });
-                    return Ok(Some(AgentTurnResult {
+                    return Ok(Some(Some(AgentTurnResult {
                         reply: out["reply"].as_str().unwrap_or_default().to_string(),
                         session_ref: session,
                         usage,
                         pending: None,
-                    }))
+                    })))
                 }
                 _ => return Err(out["error"].as_str().unwrap_or("Pi did not answer").to_string()),
             }
@@ -190,6 +199,36 @@ impl AgentDriver for PiDriver {
         )
         .await?;
         self.wait(&request_id).await?.ok_or_else(|| "Pi lost the request".to_string())
+    }
+
+    async fn steer(&self, thread_key: &str, session_ref: &str, request_id: &str, text: &str) -> Result<Option<SteerResult>, String> {
+        let out = self
+            .post("/steer", &json!({ "conversationId": session_ref, "threadKey": thread_key, "requestId": request_id, "text": text }))
+            .await?;
+        if out["status"].as_str() != Some("steered") {
+            return Ok(None);
+        }
+        Ok(Some(match self.settle(request_id).await? {
+            Some(Some(result)) => SteerResult::Answered(result),
+            _ => SteerResult::Joined,
+        }))
+    }
+
+    async fn compact(&self, session_ref: &str) -> Option<Result<String, String>> {
+        let out = match self.post("/compact", &json!({ "conversationId": session_ref })).await {
+            Ok(out) => out,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(match out["status"].as_str() {
+            Some("done") => Ok("Session compacted. Older turns are summarized; the conversation continues.".into()),
+            Some("nothing") | Some("stale") => Ok("Nothing to compact yet.".into()),
+            Some("unknown") => Ok("Nothing to compact yet.".into()),
+            _ => Err(out["error"].as_str().unwrap_or("compaction failed").to_string()),
+        })
+    }
+
+    async fn reset(&self, session_ref: &str) -> Option<Result<(), String>> {
+        Some(self.post("/reset", &json!({ "conversationId": session_ref })).await.map(|_| ()))
     }
 }
 

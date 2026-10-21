@@ -14,7 +14,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { AssistantEntry, createRegistry, defineExtension, defineTool, Harness, watchEvents, type Conversation } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, defineDoc, defineExtension, defineTool, Harness, watchEvents, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -39,30 +39,19 @@ function loadAdoPat() {
     if (!existsSync(file)) return;
     const stored = JSON.parse(readFileSync(file, "utf8")) as { pat?: string };
     if (stored.pat?.trim()) process.env.AZURE_DEVOPS_PAT = stored.pat.trim();
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 loadAdoPat();
 
 mkdirSync(dataDir, { recursive: true });
-function loadSaved(): { threads: Record<string, string>; requests: Record<string, string> } {
-  try {
-    if (existsSync(threadsFile)) return JSON.parse(readFileSync(threadsFile, "utf8"));
-  } catch (err) {
-    console.error("harness-threads.json unreadable, starting a new map:", err instanceof Error ? err.message : err);
-  }
-  return { threads: {}, requests: {} };
-}
-const saved = loadSaved();
+const ThreadIndex = defineDoc<{ threads: Record<string, string>; requests: Record<string, string> }>({
+  kind: "switchboard.threads",
+  version: 1,
+  scope: "session",
+  initial: () => ({ threads: {}, requests: {} }),
+});
+const saved: { threads: Record<string, string>; requests: Record<string, string> } = { threads: {}, requests: {} };
 const threads = saved.threads;
-const remember = (conversationId: string, threadKey: string, requestId: string) => {
-  threads[conversationId] = threadKey;
-  saved.requests[requestId] = conversationId;
-  const tmp = `${threadsFile}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(saved));
-  renameSync(tmp, threadsFile);
-};
 
 function lastUserText(context: { messages?: { role: string; content: unknown }[] }): string {
   const msg = [...(context.messages ?? [])].reverse().find((m) => m.role === "user" || m.role === "toolResult");
@@ -119,7 +108,6 @@ function buildCustomProvider(cfg: CustomProviderConfig) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
-        // Send pi-durable's per-conversation session id as `x-session-id`, so proxies like TokenBank group and pin sessions.
         compat: { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openrouter" },
       }),
     );
@@ -136,8 +124,6 @@ function buildCustomProvider(cfg: CustomProviderConfig) {
     api: lenientToolCalls(openAICompletionsApi()),
   });
 }
-
-/** Custom OpenAI-compatible proxies (e.g. TokenBank) can garble tool call streams; repair each chunk before pi-ai reads it. */
 function lenientToolCalls(api: ProviderStreams): ProviderStreams {
   const withFix = <O extends { onProviderStreamEvent?: (data: unknown, model: Model<Api>) => void | Promise<void> }>(o?: O) => {
     const fix = toolCallStreamFixer();
@@ -176,11 +162,11 @@ function models(): MutableModels {
     const text = lastUserText(context);
     if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${text.slice(0, 200)}`);
     const read = text.match(/READ:(\S+)/);
-    if (read) return fauxAssistantMessage([fauxToolCall("read", { path: read[1] })], { stopReason: "toolUse" });
+    if (read) return fauxAssistantMessage([fauxToolCall("read", { path: read[1]! })], { stopReason: "toolUse" });
     const sleep = text.match(/SLEEP:(\d+)/);
     if (sleep) return new Promise((ok) => setTimeout(() => ok(fauxAssistantMessage(`Slept ${sleep[1]}s`)), Number(sleep[1]) * 1000));
     const bash = text.match(/BASH:(.+)$/m);
-    if (bash) return fauxAssistantMessage([fauxToolCall("bash", { command: bash[1] })], { stopReason: "toolUse" });
+    if (bash) return fauxAssistantMessage([fauxToolCall("bash", { command: bash[1]! })], { stopReason: "toolUse" });
     return fauxAssistantMessage(`Echo: ${text.split("\n---\n").pop()?.trim()}`);
   };
   faux.setResponses(Array.from({ length: 10_000 }, () => respond));
@@ -223,9 +209,7 @@ class McpClient {
 }
 
 let mcp: McpClient | undefined;
-// Groups whose tools stay direct for the model; every other MCP tool is reachable only from code mode scripts (opencode-style).
 const DIRECT_GROUPS = new Set(["skills"]);
-// Direct tools are model-only, so they stay out of the code mode catalog and leave its budget to the deferred ones.
 const modelOnly = <T extends object>(tool: T) => ({ ...tool, callers: ["model"] as const });
 const coding = { ...CodingTools, tools: (CodingTools.tools ?? []).map(modelOnly) };
 let mcpTools: { group: string; tool: ReturnType<typeof defineTool> }[] = [];
@@ -287,7 +271,39 @@ const harness = await Harness.open(
   },
   ctx,
 );
+await loadThreadIndex();
 harness.resume();
+
+async function loadThreadIndex() {
+  let legacy: typeof saved | undefined;
+  try {
+    if (existsSync(threadsFile)) legacy = JSON.parse(readFileSync(threadsFile, "utf8"));
+  } catch (err) {
+    console.error("harness-threads.json unreadable, skipping its import:", err instanceof Error ? err.message : err);
+  }
+  if (legacy) {
+    await harness.commit(async (tx) => {
+      const doc = await tx.doc(ThreadIndex);
+      Object.assign(doc.threads, legacy.threads ?? {});
+      Object.assign(doc.requests, legacy.requests ?? {});
+    }, ctx);
+    renameSync(threadsFile, `${threadsFile}.imported`);
+  }
+  const stored = await harness.snapshot(ThreadIndex, ctx);
+  Object.assign(saved.threads, stored?.threads ?? {});
+  Object.assign(saved.requests, stored?.requests ?? {});
+}
+
+async function index(tx: Parameters<Parameters<typeof harness.commit>[0]>[0], conversationId: string, threadKey: string, requestId: string) {
+  const doc = await tx.doc(ThreadIndex);
+  doc.threads[conversationId] = threadKey;
+  doc.requests[requestId] = conversationId;
+}
+
+function remember(conversationId: string, threadKey: string, requestId: string) {
+  threads[conversationId] = threadKey;
+  saved.requests[requestId] = conversationId;
+}
 
 function modelRef(spec?: string) {
   const s = spec || defaultModel || (process.env.PI_FAUX === "1" ? "faux/echo" : "");
@@ -317,9 +333,7 @@ async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ repl
       const model = modelsRef.getModel(ref.provider, ref.modelId);
       if (model?.contextWindow) contextWindow = model.contextWindow;
     }
-  } catch {
-    /* model catalog unavailable — window optional */
-  }
+  } catch {}
   if (!contextWindow && process.env.PI_FAUX === "1") contextWindow = 200_000;
   return { reply, usage: { contextTokens, contextWindow } };
 }
@@ -349,19 +363,12 @@ const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>
 type Feed = { items: ProgressItem[]; listeners: Set<(item: ProgressItem) => void> };
 const feeds = new Map<string, Feed>();
 const opening = new Map<string, Promise<Feed>>();
-// Cap the replay buffer so a long-lived conversation cannot grow without bound.
 const FEED_LIMIT = 5000;
-
-/**
- * Live progress feed for one conversation. Attach it before the turn commits so the feed holds the whole
- * turn: the stream reports commits after it mounts, and the SSE endpoint replays what it captured.
- */
 function feedFor(conversationId: string): Promise<Feed> {
   const known = feeds.get(conversationId);
   if (known) return Promise.resolve(known);
   const started = opening.get(conversationId);
   if (started) return started;
-  // pi-durable addresses conversation documents by the numeric id; the saved map holds it as a string.
   const id = Number(conversationId);
   if (!Number.isSafeInteger(id)) return Promise.reject(new Error(`bad conversation id: ${conversationId}`));
   const feed = (async () => {
@@ -397,9 +404,13 @@ async function admit(body: SubmitBody) {
   if (!known && !body.text?.trim()) throw new Error("empty input for a new request");
   let conv = known ? await harness.conversation(known as never, ctx) : undefined;
   if (!conv && body.conversationId) conv = await harness.conversation(body.conversationId as never, ctx);
-  if (!conv) conv = await harness.createConversation({ ownership: { kind: "ownerless" } }, ctx);
+  if (conv) {
+    const id = String(conv.id);
+    if (!known) await conv.commit((tx) => index(tx, id, body.threadKey, body.requestId), ctx);
+  } else {
+    conv = await harness.createConversation({ ownership: { kind: "ownerless" }, init: (tx, id) => index(tx, String(id), body.threadKey, body.requestId) }, ctx);
+  }
   remember(String(conv.id), body.threadKey, body.requestId);
-  // Progress must attach before this turn's commits reach the conversation.
   void feedFor(String(conv.id)).catch((err) => console.error("progress feed unavailable:", err instanceof Error ? err.message : err));
   if (!known) {
     await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
@@ -407,6 +418,39 @@ async function admit(body: SubmitBody) {
   const submission = await conv.submit({ type: "input", content: body.text || "(resumed)", requestId: body.requestId }, ctx);
   submissions.set(body.requestId, submission);
   return { conversationId: String(conv.id) };
+}
+const joins = new Map<string, string[]>();
+
+async function runInputs(conv: Conversation) {
+  const view = await conv.viewState(ctx);
+  try {
+    return (view.value.docs["pi.live"] as { run?: { inputs: string[] } } | undefined)?.run?.inputs;
+  } finally {
+    view.dispose();
+  }
+}
+async function steer(body: { conversationId: string; threadKey: string; requestId: string; text: string }) {
+  const conv = await harness.conversation(body.conversationId as never, ctx);
+  if (!conv || !body.text?.trim()) return { status: "idle" };
+  const inputs = await runInputs(conv);
+  if (!inputs?.length) return { status: "idle" };
+  const id = String(conv.id);
+  if (!saved.requests[body.requestId]) await conv.commit((tx) => index(tx, id, body.threadKey, body.requestId), ctx);
+  remember(id, body.threadKey, body.requestId);
+  joins.set(body.requestId, inputs);
+  const submission = await conv.submit({ type: "input", content: body.text, requestId: body.requestId, whenBusy: "steer" }, ctx);
+  submissions.set(body.requestId, submission);
+  return { status: "steered", conversationId: id };
+}
+
+async function joined(requestId: string, answer: string) {
+  const inputs = joins.get(requestId);
+  joins.delete(requestId);
+  for (const input of inputs ?? []) {
+    const record = await (await harness.submission(input as never, ctx))?.status(ctx);
+    if (record?.status === "done" && String(record.answer) === answer) return true;
+  }
+  return false;
 }
 
 async function waitFor(requestId: string, ms: number) {
@@ -423,13 +467,35 @@ async function waitFor(requestId: string, ms: number) {
   if (!settled) return { status: "running", conversationId: known };
   submissions.delete(requestId);
   if (settled.status !== "done" || settled.type !== "input") {
+    joins.delete(requestId);
     const { reason, detail } = settled as { reason?: unknown; detail?: unknown };
     const why = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : "";
     return { status: "unanswered", conversationId: known, error: [reason ?? "unanswered", why].filter(Boolean).join(": ") };
   }
+  if (await joined(requestId, String(settled.answer))) return { status: "joined", conversationId: known };
   const { reply, usage } = await commitAnswer(conv, settled.answer);
   return { status: "done", conversationId: known, reply, usage };
 }
+
+async function compact(body: { conversationId: string; instructions?: string }) {
+  const conv = await harness.conversation(body.conversationId as never, ctx);
+  if (!conv) return { status: "unknown" };
+  const task = await conv.compact(body.instructions || undefined, ctx);
+  const { outcome } = (await harness.waitForTask(task, ctx)).state as { outcome: { status: string; result?: { submissionId?: string }; error?: unknown } };
+  if (outcome.status !== "completed") return { status: "failed", error: String(outcome.error ?? outcome.status) };
+  const placed = outcome.result?.submissionId;
+  if (placed === undefined) return { status: "nothing" };
+  const settled = await (await harness.submission(placed as never, ctx))?.wait(ctx);
+  return { status: settled?.status === "done" ? "done" : "stale" };
+}
+
+async function reset(body: { conversationId: string; handoff?: string }) {
+  const conv = await harness.conversation(body.conversationId as never, ctx);
+  if (!conv) return { status: "unknown" };
+  await conv.reset(body.handoff || undefined, ctx);
+  return { status: "done" };
+}
+
 
 const read = (req: IncomingMessage) =>
   new Promise<string>((ok) => {
@@ -442,12 +508,9 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 };
-
-/** SSE of live progress for a thread's newest conversation: replays the feed, then follows it. */
 async function streamEvents(req: IncomingMessage, res: ServerResponse) {
   const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
-  // ponytail: last-inserted conversation for the thread; fine while threads map ~1:1 to conversations.
-  const conversationId = Object.entries(threads).findLast(([, key]) => key === thread)?.[0];
+  const conversationId = Object.entries(threads).findLast(([, key]: [string, string]) => key === thread)?.[0];
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   if (!conversationId) return res.end();
   let feed: Feed;
@@ -476,6 +539,9 @@ createServer(async (req, res) => {
       const { requestId, timeoutMs } = JSON.parse(await read(req)) as { requestId: string; timeoutMs?: number };
       return send(res, 200, await waitFor(requestId, Math.min(timeoutMs ?? 50_000, 50_000)));
     }
+    if (req.method === "POST" && req.url === "/steer") return send(res, 200, await steer(JSON.parse(await read(req))));
+    if (req.method === "POST" && req.url === "/compact") return send(res, 200, await compact(JSON.parse(await read(req))));
+    if (req.method === "POST" && req.url === "/reset") return send(res, 200, await reset(JSON.parse(await read(req))));
     if (req.method === "POST" && req.url === "/reload") {
       await loadMcp();
       applyCustomProviders(modelsRef);

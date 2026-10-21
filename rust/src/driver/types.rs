@@ -81,4 +81,21 @@ pub struct AgentTurnResult {
 #[async_trait]
 pub trait AgentDriver: Send + Sync {
     async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String>;
+
+    async fn steer(&self, _thread_key: &str, _session_ref: &str, _request_id: &str, _text: &str) -> Result<Option<SteerResult>, String> {
+        Ok(None)
+    }
+
+    async fn compact(&self, _session_ref: &str) -> Option<Result<String, String>> {
+        None
+    }
+
+    async fn reset(&self, _session_ref: &str) -> Option<Result<(), String>> {
+        None
+    }
+}
+
+pub enum SteerResult {
+    Joined,
+    Answered(AgentTurnResult),
 }

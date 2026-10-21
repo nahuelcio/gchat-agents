@@ -1,6 +1,5 @@
 import type { CSSProperties } from "react";
 
-/** Display name of the default agent in chats (mirrors src/personas.ts). */
 export const BOT_NAME = "Switchi";
 
 /** Stable hue per agent name, so @ventas always has the same color everywhere. */

@@ -273,6 +273,9 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
             request_id: request_id.clone(),
         };
         let Some(request) = debounce(&deps2, request).await else { return };
+        if steered(&request, &deps2).await {
+            return;
+        }
         let id = request.request_id.clone();
         let _ = tracked(&deps2.clone(), id.as_deref(), process_message(request, deps2)).await;
     });
@@ -280,6 +283,32 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
         status: 200,
         body: json!({ "ok": true }),
     }
+}
+
+async fn steered(req: &TurnRequest, deps: &HandlerDeps) -> bool {
+    if command_of(&req.text).is_some() || !deps.queue.busy(&req.thread_key).await {
+        return false;
+    }
+    let Some(session) = deps.store.get(&req.thread_key).and_then(|r| r.session_ref) else {
+        return false;
+    };
+    let request_id = req.request_id.clone().unwrap_or_else(|| format!("{}:steer:{}", req.thread_key, uuid::Uuid::new_v4()));
+    let result = match deps.driver.steer(&req.thread_key, &session, &request_id, &req.text).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!("steer failed, queueing instead: {e}");
+            return false;
+        }
+    };
+    note(deps, "turn_steer", &req.thread_key, req.text.chars().take(80).collect::<String>(), req.sender.clone().unwrap_or_default()).await;
+    if let crate::driver::types::SteerResult::Answered(out) = result {
+        if !is_pass(&out.reply) {
+            deliver_reply(req, deps, &out.reply, None, None).await;
+        }
+    }
+    mark(deps, req.request_id.as_deref(), crate::turn_ledger::TurnState::Posted).await;
+    true
 }
 
 async fn mark(deps: &HandlerDeps, request_id: Option<&str>, state: crate::turn_ledger::TurnState) {
@@ -1419,12 +1448,17 @@ async fn clear_command(args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> 
             .await?;
         return Ok(format!("Started a fresh session for @{key}. Repo and members are untouched."));
     }
+    let session = deps.store.get(&req.thread_key).and_then(|r| r.session_ref);
+    let kept = match &session {
+        Some(s) => matches!(deps.driver.reset(s).await, Some(Ok(()))),
+        None => false,
+    };
     deps.store
         .update(
             &req.thread_key,
             &req.space_name,
             SessionPatch {
-                session_ref: Some(None),
+                session_ref: if kept { None } else { Some(None) },
                 summary: Some(None),
                 context_tokens: Some(None),
                 context_window: Some(None),
@@ -1445,6 +1479,21 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
         return Ok("Nothing to compact yet.".into());
     };
     crate::question_gate::cancel_question(thread_key);
+    if let Some(native) = deps.driver.compact(&session_ref).await {
+        let note = native?;
+        deps.store
+            .update(
+                thread_key,
+                space,
+                SessionPatch {
+                    context_tokens: Some(None),
+                    estimated: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        return Ok(note);
+    }
     let before = record.as_ref().and_then(|r| r.context_tokens);
     let out = deps
         .driver
@@ -1535,7 +1584,6 @@ async fn set_repos(req: &TurnRequest, deps: &HandlerDeps, repos: &[String], dir:
                 repo: Some(some.then(|| repos.join(", "))),
                 worktree: Some(worktree),
                 branch: Some(branch.filter(|_| some)),
-                session_ref: moved.then_some(None),
                 persona_sessions: moved.then_some(None),
                 ..Default::default()
             },
