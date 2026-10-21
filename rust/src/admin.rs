@@ -121,6 +121,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/ai/draft-host/chat", post(post_draft_host_chat))
         .route("/api/pi/keys", get(get_pi_keys).post(post_pi_key))
         .route("/api/pi/custom-providers", get(get_pi_custom_providers).post(post_pi_custom_provider).delete(delete_pi_custom_provider))
+        .route("/api/pi/custom-providers/import-tokenbank", post(import_tokenbank_provider))
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
@@ -1491,6 +1492,16 @@ async fn get_pi_custom_providers(State(state): State<Arc<AppState>>) -> Response
 
 async fn post_pi_custom_provider(State(state): State<Arc<AppState>>, Json(body): Json<crate::pi_custom_providers::CustomProviderUpsert>) -> Response {
     match crate::pi_custom_providers::upsert(&state.data_dir, body).await {
+        Ok(list) => {
+            crate::pi_sidecar::reload();
+            Json(list).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn import_tokenbank_provider(State(state): State<Arc<AppState>>) -> Response {
+    match crate::pi_custom_providers::import_tokenbank(&state.data_dir).await {
         Ok(list) => {
             crate::pi_sidecar::reload();
             Json(list).into_response()

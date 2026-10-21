@@ -171,9 +171,38 @@ pub async fn remove(data_dir: &Path, id: &str) -> Result<Vec<CustomProviderStatu
     Ok(list(data_dir))
 }
 
+fn tokenbank_config(raw: &str) -> Option<(String, String)> {
+    let get = |key: &str| {
+        raw.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix(':')).map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string()).filter(|v| !v.is_empty())
+    };
+    Some((get("tokenbank_url")?, get("tokenbank_api_key")?))
+}
+
+pub async fn import_tokenbank(data_dir: &Path) -> Result<Vec<CustomProviderStatus>, String> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).ok_or("Home directory not found")?;
+    let raw = std::fs::read_to_string(Path::new(&home).join(".ywai").join("config.yaml")).unwrap_or_default();
+    let (url, key) = tokenbank_config(&raw).ok_or("TokenBank not configured. Run `ywai tokenbank setup` first")?;
+    let url = url.trim_end_matches('/');
+    let base_url = if url.ends_with("/v1") { url.to_string() } else { format!("{url}/v1") };
+    let res = reqwest::Client::new().get(format!("{base_url}/models")).bearer_auth(&key).timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| format!("TokenBank models fetch failed: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("TokenBank models fetch failed: HTTP {}", res.status()));
+    }
+    let body: serde_json::Value = res.json().await.map_err(|e| format!("TokenBank models response invalid: {e}"))?;
+    let models: Vec<String> = body["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)).collect();
+    upsert(data_dir, CustomProviderUpsert { id: Some("tokenbank".into()), name: Some("TokenBank".into()), base_url: Some(base_url), models: Some(models), api_key: Some(key), clear_key: None, context_window: None, max_tokens: None }).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_tokenbank_config_lines() {
+        let raw = "profile: x\ntokenbank_url: \"https://tb.example/\"\nnested:\n  tokenbank_api_key: nope\ntokenbank_api_key: 'k1'\n";
+        assert_eq!(tokenbank_config(raw), Some(("https://tb.example/".into(), "k1".into())));
+        assert_eq!(tokenbank_config("tokenbank_url: u\n"), None);
+    }
 
     #[tokio::test]
     async fn upserts_and_never_echoes_the_key() {

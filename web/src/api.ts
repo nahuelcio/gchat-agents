@@ -508,6 +508,7 @@ export const api = {
   setPiKey: (provider: string, key: string) => call<PiKey[]>("/api/pi/keys", { provider, key }),
   piCustomProviders: () => call<PiCustomProvider[]>("/api/pi/custom-providers"),
   savePiCustomProvider: (provider: PiCustomProviderInput) => call<PiCustomProvider[]>("/api/pi/custom-providers", provider),
+  importTokenBank: () => call<PiCustomProvider[]>("/api/pi/custom-providers/import-tokenbank", {}),
   deletePiCustomProvider: (id: string) => call<PiCustomProvider[]>(`/api/pi/custom-providers?id=${encodeURIComponent(id)}`, undefined, "DELETE"),
   search: (q: string) => call<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}`),
   activity: (limit = 50) => call<ActivityEvent[]>(`/api/activity?limit=${limit}`),

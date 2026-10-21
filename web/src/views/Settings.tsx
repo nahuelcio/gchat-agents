@@ -783,6 +783,21 @@ function PiCustomProviders({ notify }: { notify: ViewProps["notify"] }) {
           + Add OpenAI-compatible endpoint
         </button>
       )}
+      <button
+        type="button"
+        className="btn"
+        onClick={() =>
+          void api.importTokenBank().then(
+            (next) => {
+              setList(next);
+              notify("TokenBank imported");
+            },
+            (e: Error) => notify(e.message, true),
+          )
+        }
+      >
+        Import from ywai TokenBank
+      </button>
     </div>
   );
 }
