@@ -1016,7 +1016,8 @@ async fn persona_round(
             .as_ref()
             .and_then(|r| r.worktree.clone())
             .unwrap_or_else(|| deps.config.lock().unwrap().workdir.clone());
-        let persona_request = req.request_id.as_ref().map(|r| format!("{r}#{}#{}", item.persona.name, item.hop));
+        let round_tag = if item.optional { "#room" } else { "" };
+        let persona_request = req.request_id.as_ref().map(|r| format!("{r}#{}#{}{round_tag}", item.persona.name, item.hop));
         if let (Some(ledger), Some(id)) = (&deps.ledger, &persona_request) {
             ledger.begin_persona(id, &req.thread_key, &item.persona.name, &req.space_name, req.thread.clone(), &item.text).await;
         }
