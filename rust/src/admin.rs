@@ -1278,13 +1278,20 @@ pub async fn get_media(State(state): State<Arc<AppState>>, Path(id): Path<String
         HeaderValue::from_static("private, max-age=86400"),
     );
     let raster = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"].contains(&content_type.to_ascii_lowercase().as_str());
-    let disposition = if raster { "inline" } else { "attachment" };
+    // Artifacts render in the pane iframe; attachment would download instead.
+    let html = content_type.to_ascii_lowercase().starts_with("text/html");
+    let disposition = if raster || html { "inline" } else { "attachment" };
     let safe: String = name.unwrap_or_else(|| id.clone()).chars().filter(|c| !c.is_control() && *c != '"').collect();
     if let Ok(v) = HeaderValue::from_str(&format!("{disposition}; filename=\"{safe}\"")) {
         headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
     }
     headers.insert(axum::http::header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(axum::http::header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox; default-src 'none'"));
+    headers.insert(axum::http::header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(if html {
+        // Sandboxed (opaque origin, no same-origin) but templates need inline style/script and web fonts.
+        "sandbox allow-scripts allow-forms allow-modals allow-popups; default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; img-src data: https:"
+    } else {
+        "sandbox; default-src 'none'"
+    }));
     (StatusCode::OK, headers, bytes).into_response()
 }
 

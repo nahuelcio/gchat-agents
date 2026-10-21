@@ -216,6 +216,8 @@ class McpClient {
 
 let mcp: McpClient | undefined;
 const DIRECT_GROUPS = new Set(["skills"]);
+// Memory is used every turn and the prompt names these directly; the rest of engram stays behind codemode.
+const DIRECT_TOOLS = new Set(["engram__mem_save", "engram__mem_search", "engram__mem_context", "engram__mem_session_summary", "engram__mem_get_observation"]);
 const modelOnly = <T extends object>(tool: T) => ({ ...tool, callers: ["model"] as const });
 const RISKY = [
   /\brm\s+-[a-z]*[rf]/i,
@@ -341,7 +343,7 @@ async function loadMcp() {
       description: t.description ?? t.name,
       parameters: Type.Unsafe<Record<string, unknown>>(schema),
       ...(SAFE.has(t.name) ? { replay: "safe" as const } : {}),
-      callers: DIRECT_GROUPS.has(t._meta?.group ?? "") ? (["model"] as const) : (["tools"] as const),
+      callers: DIRECT_GROUPS.has(t._meta?.group ?? "") || DIRECT_TOOLS.has(t.name) ? (["model"] as const) : (["tools"] as const),
       execute: async (args, api) => {
         const thread = threads[api.conversationId] ?? "";
         await approved(String(api.conversationId), t.name, args as Record<string, unknown>);
