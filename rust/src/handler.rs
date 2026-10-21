@@ -732,6 +732,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                         context_tokens,
                         context_window,
                         estimated,
+                        cost_usd: out.usage.as_ref().and_then(|u| u.cost_usd).map(Some),
                         summary: Some(None),
                         ..Default::default()
                     },
@@ -1463,6 +1464,7 @@ async fn clear_command(args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> 
                 context_tokens: Some(None),
                 context_window: Some(None),
                 estimated: Some(None),
+                cost_usd: Some(None),
                 turns: Some(None),
                 pending_questions: Some(None),
                 host_roster: Some(None),
@@ -1700,7 +1702,8 @@ pub fn context_line(r: &crate::session::SessionRecord, options: &TurnOptions) ->
     let pct = context_percent(r)
         .map(|p| format!("{p}%"))
         .unwrap_or_else(|| "?".into());
-    format!("\n_context {pct} · {model}_")
+    let cost = r.cost_usd.map(|c| format!(" · ${c:.4}")).unwrap_or_default();
+    format!("\n_context {pct} · {model}{cost}_")
 }
 
 pub fn settings_to_options(s: &Settings) -> TurnOptions {
