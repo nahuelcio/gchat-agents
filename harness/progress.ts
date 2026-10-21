@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, SnapshotEvent } from "@earendil-works/pi-durable";
 
 export type ProgressItem =
   | { kind: "turn"; text: "" }
@@ -20,6 +20,32 @@ const CHARS_PER_TOKEN = 4;
 
 const thinkingOf = (block: { type: string; thinking?: string } | undefined): string | undefined =>
   block?.type === "thinking" ? (block.thinking ?? "") : undefined;
+
+export function snapshotEvents(snapshot: SnapshotEvent): AgentEvent[] {
+  const args = new Map<string, Record<string, unknown>>();
+  const collect = (message: { content?: unknown } | undefined) => {
+    const content = message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as { type?: string; id?: string; arguments?: Record<string, unknown> }[]) {
+      if (block.type === "toolCall" && block.id) args.set(block.id, block.arguments ?? {});
+    }
+  };
+  for (const entry of snapshot.entries) for (const message of entry.model ?? []) collect(message);
+  const message = snapshot.generation?.message;
+  collect(message);
+  const events: AgentEvent[] = [];
+  if (snapshot.run) events.push({ type: "turn_start" });
+  if (message) events.push({ type: "message_update", usage: message.usage, changes: [{ type: "message", message }] });
+  for (const slot of snapshot.tools) {
+    events.push({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, args: (args.get(slot.callId) ?? {}) as never });
+    if (slot.status === "done") events.push({ type: "tool_execution_end", toolCallId: slot.callId, toolName: slot.name });
+  }
+  for (const slot of snapshot.nestedTools) {
+    events.push({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, parentToolCallId: slot.parentCallId, args: slot.arguments });
+    if (slot.status === "done") events.push({ type: "tool_execution_end", toolCallId: slot.callId, toolName: slot.name, parentToolCallId: slot.parentCallId });
+  }
+  return events;
+}
 
 export function progressMapper(now: () => number = Date.now) {
   let pending = "";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { progressMapper } from "../harness/progress.ts";
+import { progressMapper, snapshotEvents } from "../harness/progress.ts";
 
 describe("progressMapper", () => {
   it("maps tool start/end, nested calls, and run end", () => {
@@ -106,6 +106,40 @@ describe("progressMapper", () => {
     t = 4000;
     expect(map([{ type: "message_end", entry: { model: [{ usage: { output: 120 } }] } }] as never)).toEqual([
       { kind: "tps", tps: 30 },
+    ]);
+  });
+
+  it("rebuilds a running turn from the snapshot, then follows the live stream", () => {
+    let t = 0;
+    const map = progressMapper(() => t);
+    const snapshot = {
+      type: "snapshot",
+      entries: [{ kind: "assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "a", name: "bash", arguments: { command: "ls" } }] }] }],
+      run: { inputs: [] },
+      generation: { attempt: 1, message: { role: "assistant", content: [{ type: "thinking", thinking: "hmm" }], usage: { output: 1 } } },
+      tools: [
+        { callId: "a", name: "bash", status: "running" },
+        { callId: "b", name: "read", status: "done" },
+      ],
+      nestedTools: [],
+      compactions: [],
+      inbox: [],
+      agent: {},
+      usage: {},
+    };
+    expect(map(snapshotEvents(snapshot as never))).toEqual([
+      { kind: "turn", text: "" },
+      { kind: "thinking", text: "hmm" },
+      { kind: "tool", text: 'bash: {"command":"ls"}', callId: "a" },
+      { kind: "tool", text: "read", callId: "b" },
+      { kind: "tool_done", text: "read", callId: "b" },
+    ]);
+    t = 400;
+    expect(map([{ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta: " ok" }] }] as never)).toEqual([
+      { kind: "thinking", text: " ok" },
+    ]);
+    expect(map([{ type: "tool_execution_end", toolCallId: "a", toolName: "bash" }] as never)).toEqual([
+      { kind: "tool_done", text: "bash", callId: "a" },
     ]);
   });
 });

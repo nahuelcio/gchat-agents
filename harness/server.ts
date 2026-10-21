@@ -9,7 +9,7 @@ import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from 
 import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
-import { progressMapper, type ProgressItem } from "./progress.ts";
+import { progressMapper, snapshotEvents, type ProgressItem } from "./progress.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -360,44 +360,6 @@ function loadKeys() {
 
 const submissions = new Map<string, Awaited<ReturnType<Conversation["submit"]>>>();
 
-type Feed = { items: ProgressItem[]; listeners: Set<(item: ProgressItem) => void> };
-const feeds = new Map<string, Feed>();
-const opening = new Map<string, Promise<Feed>>();
-const FEED_LIMIT = 5000;
-function feedFor(conversationId: string): Promise<Feed> {
-  const known = feeds.get(conversationId);
-  if (known) return Promise.resolve(known);
-  const started = opening.get(conversationId);
-  if (started) return started;
-  const id = Number(conversationId);
-  if (!Number.isSafeInteger(id)) return Promise.reject(new Error(`bad conversation id: ${conversationId}`));
-  const feed = (async () => {
-    const stream = await watchEvents(harness, id as never, ctx);
-    const map = progressMapper();
-    const created: Feed = { items: [], listeners: new Set() };
-    feeds.set(conversationId, created);
-    stream.start(async (events) => {
-      for (const item of map(events)) {
-        created.items.push(item);
-        if (created.items.length > FEED_LIMIT) created.items.splice(0, created.items.length - FEED_LIMIT);
-        for (const listener of created.listeners) listener(item);
-      }
-    });
-    const drop = () => {
-      feeds.delete(conversationId);
-      void stream.stop().catch(() => {});
-    };
-    void stream.closed.then(drop, drop);
-    return created;
-  })();
-  opening.set(conversationId, feed);
-  void feed.then(
-    () => opening.delete(conversationId),
-    () => opening.delete(conversationId),
-  );
-  return feed;
-}
-
 async function admit(body: SubmitBody) {
   loadKeys();
   const known = saved.requests[body.requestId];
@@ -411,7 +373,6 @@ async function admit(body: SubmitBody) {
     conv = await harness.createConversation({ ownership: { kind: "ownerless" }, init: (tx, id) => index(tx, String(id), body.threadKey, body.requestId) }, ctx);
   }
   remember(String(conv.id), body.threadKey, body.requestId);
-  void feedFor(String(conv.id)).catch((err) => console.error("progress feed unavailable:", err instanceof Error ? err.message : err));
   if (!known) {
     await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
   }
@@ -509,25 +470,39 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 async function streamEvents(req: IncomingMessage, res: ServerResponse) {
-  const thread = new URL(req.url ?? "", "http://x").searchParams.get("thread") ?? "";
-  const conversationId = Object.entries(threads).findLast(([, key]: [string, string]) => key === thread)?.[0];
+  const query = new URL(req.url ?? "", "http://x").searchParams;
+  const thread = query.get("thread") ?? "";
+  const conversationId = query.get("conversation") ?? Object.entries(threads).findLast(([, key]: [string, string]) => key === thread)?.[0];
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-  if (!conversationId) return res.end();
-  let feed: Feed;
-  try {
-    feed = await feedFor(conversationId);
-  } catch (err) {
+  const id = Number(conversationId);
+  if (!conversationId || !Number.isSafeInteger(id)) return res.end();
+  const stream = await watchEvents(harness, id as never, ctx).catch((err: unknown) => {
     console.error("progress feed unavailable:", err instanceof Error ? err.message : err);
-    return res.end();
-  }
-  const send = (item: ProgressItem) => res.write(`data: ${JSON.stringify(item)}\n\n`);
-  for (const item of feed.items) send(item);
-  feed.listeners.add(send);
-  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
-  res.on("close", () => {
-    clearInterval(ping);
-    feed.listeners.delete(send);
+    return undefined;
   });
+  if (!stream) return res.end();
+  let map = progressMapper();
+  const write = (items: ProgressItem[]) => {
+    for (const item of items) res.write(`data: ${JSON.stringify(item)}\n\n`);
+  };
+  write(map(snapshotEvents(stream.snapshot)));
+  stream.start(async (events) => {
+    for (const event of events) {
+      if (event.type === "snapshot") {
+        map = progressMapper();
+        write([{ kind: "turn", text: "" }, ...map(snapshotEvents(event))]);
+      } else {
+        write(map([event]));
+      }
+    }
+  });
+  const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+  const close = () => {
+    clearInterval(ping);
+    void stream.stop().catch(() => {});
+  };
+  res.on("close", close);
+  void stream.closed.then(() => res.end(), () => res.end());
 }
 
 createServer(async (req, res) => {
