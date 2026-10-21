@@ -14,9 +14,10 @@ import {
   type TeamThreadSummary,
   type TeamTransport,
 } from "../api";
+import { ModelPicker } from "../ModelPicker";
 import { ArtifactPane, ArtifactPreviewProvider, useArtifactPreview } from "../ArtifactPreview";
 import { Icon } from "../App";
-import { progressOf, type Progress, type ThreadViewState } from "../thread-progress";
+import { accumulate, progressOf, type Progress, type TurnLog } from "../thread-progress";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { canListen, canSpeak, speakText, startDictation, stopSpeaking, type LiveDictation } from "../speech";
 
@@ -226,7 +227,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
-  const [watched, setWatched] = useState<{ view: ThreadViewState; startedAt?: number; running: boolean }>();
+  const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog }>();
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -436,14 +437,16 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     setWatched(undefined);
     if (!activeId || !transport.watch) return;
     let startedAt: number | undefined;
+    let log: TurnLog | undefined;
     return transport.watch(activeId, (view) => {
       const running = Boolean((view.docs["pi.live"] as { run?: unknown } | undefined)?.run);
       startedAt = running ? (startedAt ?? Date.now()) : undefined;
-      setWatched({ view, startedAt, running });
+      log = running ? accumulate(log, progressOf(view, startedAt)) : undefined;
+      setWatched({ running, log });
     });
   }, [activeId, transport]);
   const busy = Boolean(sending || state?.busy || watched?.running);
-  const progress = useMemo(() => progressOf(watched?.view, watched?.startedAt), [watched]);
+  const progress: Progress = watched?.log ?? { thinking: "", tools: [], queued: [] };
   const queued = progress.queued;
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
@@ -1066,28 +1069,27 @@ function ArtifactAutoOpen({
   threadId?: string;
 }) {
   const { open, active, close } = useArtifactPreview();
-  const seen = useRef<string>("");
+  const seen = useRef<string | undefined>(undefined);
   useEffect(() => {
     close();
-    seen.current = "";
+    seen.current = undefined;
   }, [threadId, close]);
   useEffect(() => {
-    if (!messages?.length) return;
-    for (let i = messages.length - 1; i >= 0; i--) {
+    if (!messages) return;
+    let last: RegExpExecArray | null = null;
+    for (let i = messages.length - 1; i >= 0 && !last; i--) {
       const m = messages[i]!;
       if (!m.bot) continue;
       const re = new RegExp(ARTIFACT_MARK.source, "g");
-      let last: RegExpExecArray | null = null;
       let hit: RegExpExecArray | null;
       while ((hit = re.exec(m.text))) last = hit;
-      if (!last) continue;
-      const key = `${threadId}:${last[1]}`;
-      if (seen.current === key) return;
-      seen.current = key;
-      if (active?.id === last[1]) return;
-      open({ id: last[1]!, title: last[2]!.trim() || "Artifact", src: mediaUrl(last[1]!) });
-      return;
     }
+    const key = last ? `${threadId}:${last[1]}` : `${threadId}:`;
+    const first = seen.current === undefined;
+    if (seen.current === key) return;
+    seen.current = key;
+    if (first || !last || active?.id === last[1]) return;
+    open({ id: last[1]!, title: last[2]!.trim() || "Artifact", src: mediaUrl(last[1]!) });
   }, [messages, mediaUrl, threadId, open, active?.id]);
   return null;
 }
@@ -1248,6 +1250,7 @@ function RunsSection({
   catalog: PersonaRef[];
   onCommand?: (text: string) => void;
 }) {
+  const [picking, setPicking] = useState(false);
   return (
     <section className="runs" aria-label="Agents that ran">
       <h2>Agents</h2>
@@ -1295,12 +1298,21 @@ function RunsSection({
                     <button type="button" className="btn small" onClick={() => onCommand("/compact")}>
                       Compact
                     </button>
-                    <button type="button" className="btn small" onClick={() => onCommand("/model")}>
+                    <button type="button" className={`btn small ${picking ? "on" : ""}`} onClick={() => setPicking((p) => !p)}>
                       Model
                     </button>
                   </>
                 )}
               </div>
+            )}
+            {host && onCommand && picking && (
+              <ModelPicker
+                value={run.model ?? undefined}
+                onPick={(m) => {
+                  setPicking(false);
+                  onCommand(`/model ${m}`);
+                }}
+              />
             )}
           </details>
         );

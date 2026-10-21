@@ -1,6 +1,6 @@
 import type { QueuedItem } from "./api";
 
-export type ThreadViewState = { readonly docs: Readonly<Record<string, unknown>> };
+export type ThreadViewState = { readonly docs: Readonly<Record<string, unknown>>; readonly entries?: readonly { model?: readonly Message[] }[] };
 
 export type ToolLine = { callId?: string; text: string; running: boolean };
 export type Progress = { thinking: string; tools: ToolLine[]; tps?: number; queued: QueuedItem[] };
@@ -26,7 +26,8 @@ export function progressOf(view: ThreadViewState | undefined, startedAt?: number
   const message = live.generation?.message;
   const blocks = message?.content ?? [];
   const calls = new Map<string, Args>();
-  for (const block of blocks) if (block.type === "toolCall" && block.id) calls.set(block.id, block.arguments ?? {});
+  const recent = (view?.entries ?? []).slice(-8).flatMap((entry) => (entry.model ?? []).flatMap((m) => m.content ?? []));
+  for (const block of [...recent, ...blocks]) if (block.type === "toolCall" && block.id) calls.set(block.id, block.arguments ?? {});
   const tools = [...(live.tools ?? []), ...(live.nestedTools ?? [])].map((slot) => {
     const args = describe(slot.arguments ?? calls.get(slot.callId));
     return {
@@ -48,4 +49,25 @@ export function progressOf(view: ThreadViewState | undefined, startedAt?: number
     ...(tps !== undefined && { tps }),
     queued,
   };
+}
+
+export type TurnLog = Progress & { segments: string[]; open: boolean };
+
+export function accumulate(prev: TurnLog | undefined, next: Progress): TurnLog {
+  const segments = [...(prev?.segments ?? [])];
+  let open = prev?.open ?? false;
+  if (next.thinking) {
+    if (open) segments[segments.length - 1] = next.thinking;
+    else segments.push(next.thinking);
+    open = true;
+  } else {
+    open = false;
+  }
+  const tools = [...(prev?.tools ?? [])];
+  for (const tool of next.tools) {
+    const at = tools.findIndex((t) => t.callId === tool.callId);
+    if (at >= 0) tools[at] = tool;
+    else tools.push(tool);
+  }
+  return { ...next, thinking: segments.join("\n\n"), tools, segments, open };
 }

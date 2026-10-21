@@ -13,6 +13,7 @@ import {
   type PiKey,
   type TunnelMode,
 } from "../api";
+import { ModelPicker } from "../ModelPicker";
 import type { ViewProps } from "../App";
 import { GoogleChatCard } from "./GoogleChat";
 
@@ -135,21 +136,13 @@ export function SettingsView(props: ViewProps) {
 
 function AgentCard({ settings, save, notify }: ViewProps) {
   const [pi, setPi] = useState<Agent>();
-  const [models, setModels] = useState<string[]>([]);
-  const [modelsBusy, setModelsBusy] = useState(false);
   const [model, setModel] = useState(settings.models.pi ?? "");
-
-  const loadModels = (refresh = false) => {
-    setModelsBusy(true);
-    return api.models(refresh).then(setModels, () => setModels([])).finally(() => setModelsBusy(false));
-  };
 
   useEffect(() => {
     api.agents().then(
       (list) => setPi(list.find((a) => a.id === "pi")),
       () => setPi(undefined),
     );
-    void loadModels();
   }, []);
   useEffect(() => {
     setModel(settings.models.pi ?? "");
@@ -179,34 +172,20 @@ function AgentCard({ settings, save, notify }: ViewProps) {
         }}
       >
         <div className="field grow">
-          <div className="field-head">
-            <span>Default model</span>
-            <button type="button" className="btn linkish" disabled={modelsBusy} onClick={() => void loadModels(true)}>
-              {modelsBusy ? "Loading…" : "Refresh list"}
-            </button>
-          </div>
+          <span>Default model</span>
           <input
             className="mono"
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="provider/model, e.g. anthropic/claude-sonnet-5-5 — needs that provider's API key"
           />
-          <div className="model-chips">
-            {modelsBusy && models.length === 0 && <span className="muted small">Loading models…</span>}
-            {models.map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={`chip ${model === m ? "on" : ""}`}
-                onClick={() => {
-                  setModel(m);
-                  void save({ models: { pi: m } }, `Default model: ${m}`);
-                }}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
+          <ModelPicker
+            value={model}
+            onPick={(m) => {
+              setModel(m);
+              void save({ models: { pi: m } }, `Default model: ${m}`);
+            }}
+          />
           <span className="muted small">Threads can override it with /model.</span>
         </div>
         <button className="btn primary">Save</button>

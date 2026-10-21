@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { progressOf, type ThreadViewState } from "../web/src/thread-progress.ts";
+import { accumulate, progressOf, type ThreadViewState } from "../web/src/thread-progress.ts";
 
 const view = (docs: Record<string, unknown>): ThreadViewState => ({ docs });
 
@@ -70,5 +70,19 @@ describe("progressOf", () => {
       { id: "1", mode: "steer", text: "use pnpm" },
       { id: "2", mode: "followUp", text: "run the tests" },
     ]);
+  });
+});
+
+describe("accumulate", () => {
+  it("keeps finished tools and earlier thinking for the whole turn", () => {
+    const tool = (callId: string, running: boolean) => ({ callId, text: "bash: ls", running });
+    let log = accumulate(undefined, { thinking: "plan", tools: [], queued: [] });
+    log = accumulate(log, { thinking: "plan more", tools: [], queued: [] });
+    log = accumulate(log, { thinking: "", tools: [tool("a", true)], queued: [] });
+    log = accumulate(log, { thinking: "", tools: [tool("a", false)], queued: [] });
+    log = accumulate(log, { thinking: "", tools: [], queued: [] });
+    log = accumulate(log, { thinking: "answer", tools: [], queued: [] });
+    expect(log.thinking).toBe("plan more\n\nanswer");
+    expect(log.tools).toEqual([tool("a", false)]);
   });
 });
