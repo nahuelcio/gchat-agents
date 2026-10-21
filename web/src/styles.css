@@ -1535,6 +1535,8 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 }
 @media (max-width: 960px) {
   .create-ai--editing .create-ai-workspace { grid-template-columns: 1fr; }
+  .create-ai--editing .create-ai-workspace > .create-ai-layout { order: -1; }
+  .create-ai--editing .create-ai-catalog { position: static; max-height: none; overflow: visible; }
 }
 
 .create-ai-catalog { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -1791,7 +1793,7 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .job-flow li::marker { font-weight: 600; }
 
 @media (pointer: coarse) {
-  input, textarea, select { font-size: max(16px, 1em) !important; }
+  input, textarea, select, .cm-content, [contenteditable] { font-size: max(16px, 1em) !important; }
 }
 .composer-file { display: flex; align-items: center; justify-content: center; height: 100%; padding: 4px; font-size: 11px; text-align: center; word-break: break-all; overflow: hidden; }
 .usage-total { margin: 4px 0 12px; }

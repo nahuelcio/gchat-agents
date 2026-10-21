@@ -269,6 +269,11 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     setSkillHits([]);
   };
 
+  const revealEditor = () => {
+    if (!matchMedia("(max-width: 960px)").matches) return;
+    requestAnimationFrame(() => document.querySelector(".create-ai-layout")?.scrollIntoView({ block: "start" }));
+  };
+
   const startEditHost = (withAi = false) => {
     setKind("agent");
     setMessages([]);
@@ -294,6 +299,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     }
     setReady(true);
     setAiOpen(withAi);
+    revealEditor();
   };
 
   const startEditAgent = (p: Persona, withAi = false) => {
@@ -309,6 +315,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     setEditingAgent(p.name);
     setReady(true);
     setAiOpen(withAi);
+    revealEditor();
   };
 
   const startEditSkill = (sk: SkillInfo, withAi = false) => {
@@ -324,6 +331,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     setEditingSkill(sk.name);
     setReady(true);
     setAiOpen(withAi);
+    revealEditor();
   };
 
   const startBlank = () => {
