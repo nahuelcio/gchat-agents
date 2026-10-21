@@ -6,6 +6,7 @@ import {
   api,
   type AgentQuestion,
   type MessageAttachment,
+  type Quote,
   type MemberChange,
   type Persona,
   type PersonaAvatar,
@@ -163,6 +164,20 @@ function isImageType(contentType: string): boolean {
   return contentType.startsWith("image/");
 }
 
+const excerpt = (text: string) => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 160 ? `${flat.slice(0, 160)}…` : flat;
+};
+
+function QuoteBlock({ quote }: { quote: Quote }) {
+  return (
+    <blockquote className="message-quote">
+      {quote.author && <span className="strong small">{quote.author}</span>}
+      <span className="small">{quote.text}</span>
+    </blockquote>
+  );
+}
+
 function MessageContent({ text, attachments, mediaUrl }: { text: string; attachments?: MessageAttachment[]; mediaUrl: (id: string) => string }) {
   const images = (attachments ?? []).filter((a) => isImageType(a.contentType));
   const files = (attachments ?? []).filter((a) => !isImageType(a.contentType));
@@ -201,7 +216,7 @@ interface Props {
   /** Thread to open first (deeplink). */
   initialThread?: string;
   /** Builds the public deeplink for a thread, when sharing is available. */
-  linkFor?: (thread: string) => string | undefined;
+  linkFor?: (thread: string) => string | undefined | Promise<string | undefined>;
   notify: (text: string, error?: boolean) => void;
   /** Owner only: the share panel. */
   shareSlot?: React.ReactNode;
@@ -209,12 +224,13 @@ interface Props {
   repos?: { name: string; base?: string }[];
   /** Owner: live list from settings. Guests load via transport. */
   personas?: Persona[];
+  singleThread?: boolean;
 }
 
 /** Name + optional blob face — enough for @mentions and avatars. */
 type PersonaRef = { name: string; avatar?: PersonaAvatar; prompt?: string };
 
-export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos, personas: personasProp }: Props) {
+export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot, repos, personas: personasProp, singleThread }: Props) {
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -227,6 +243,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [state, setState] = useState<TeamThreadState>();
   const [loadError, setLoadError] = useState<string>();
   const [draft, setDraft] = useState("");
+  const [replyTo, setReplyTo] = useState<Quote>();
   const [caret, setCaret] = useState(0);
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
@@ -458,22 +475,24 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     // Allow another message while a turn is still running: while busy, a text message steers the running turn.
     if ((!value && !files.length) || !threadId) return;
     const steer = busy && threadId === activeId && !files.length ? transport.steer : undefined;
+    const quote = threadId === activeId ? replyTo : undefined;
     setDraft("");
+    setReplyTo(undefined);
     clearPending();
     setSending(true);
     setState((s) =>
       s
         ? {
             ...s,
-            messages: [...s.messages, { author: name, text: value || "(image)", bot: false }],
+            messages: [...s.messages, { author: name, text: value || "(image)", bot: false, replyTo: quote }],
             busy: true,
           }
         : s,
     );
     try {
       const attachments = files.length ? await Promise.all(files.map(fileToAttachment)) : undefined;
-      if (steer) await steer(threadId, value, name);
-      else await transport.send(threadId, value, name, attachments);
+      if (steer) await steer(threadId, value, name, quote);
+      else await transport.send(threadId, value, name, attachments, quote);
       setState(await transport.thread(threadId));
       loadThreads();
     } catch (err) {
@@ -534,10 +553,10 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     loadThreads();
   }
 
-  function copyThreadLink(id: string) {
-    const link = linkFor?.(id);
+  async function copyThreadLink(id: string) {
+    const link = await Promise.resolve(linkFor?.(id)).catch(() => undefined);
     if (!link) return notify("Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.", true);
-    navigator.clipboard.writeText(link).then(() => notify("Link to this thread copied"), () => notify("Copy failed", true));
+    navigator.clipboard.writeText(link).then(() => notify("Link to this conversation copied: it opens only this one"), () => notify("Copy failed", true));
   }
 
   if (!name) {
@@ -608,8 +627,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         {!threadsOpen ? (
           <button type="button" className="play-rail-toggle" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
             <Icon size={16}>
-              <path d="M4 6h16M4 12h10M4 18h14" />
+              <path d="M9 18l6-6-6-6" />
             </Icon>
+            <span className="play-rail-label">Threads</span>
           </button>
         ) : (
           <>
@@ -627,17 +647,17 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 <path d="M15 18l-6-6 6-6" />
               </Icon>
             </button>
-            <button className="btn icon" onClick={() => (repos?.length ? setPicking(!picking) : newThread())} aria-label="New thread" aria-expanded={picking}>
+            {!singleThread && <button className="btn icon" onClick={() => (repos?.length ? setPicking(!picking) : newThread())} aria-label="New thread" aria-expanded={picking}>
               <Icon>
                 <path d="M12 5v14M5 12h14" />
               </Icon>
-            </button>
+            </button>}
           </span>
         </div>
         <p className="muted small">
           {transport.guest ? `Chatting as ${name}. ` : "Every team thread. "}
           <button className="linklike" onClick={() => { store("switchboard.name", ""); setName(""); }}>
-            Change name
+            Change your name
           </button>
         </p>
         {picking && (
@@ -692,8 +712,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   <button
                     type="button"
                     className="btn icon ghost"
-                    title="Copy link"
-                    aria-label={`Copy link to ${t.title}`}
+                    title="Share"
+                    aria-label={`Share ${t.title}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       copyThreadLink(t.id);
@@ -772,7 +792,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           <span className="head-actions push">
             {activeId && linkFor && (
               <button className="btn small" onClick={() => copyThreadLink(activeId)}>
-                Copy link
+                Share
               </button>
             )}
             {activeId && transport.archive && (
@@ -803,8 +823,17 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             const body = m.bot ? splitFooter(tagged ? m.text.slice(tagged[0].length) : m.text) : { text: m.text };
             const mine = !m.bot && m.author === name;
             const agent = tagged?.[1] ?? (m.bot && m.author.startsWith("@") ? m.author : undefined);
+            const prev = all[i - 1];
+            const prevAgent = prev?.bot ? (prev.text.match(/^\*(@[\w.-]+)\*/)?.[1] ?? (prev.author.startsWith("@") ? prev.author : undefined)) : undefined;
+            const cont =
+              Boolean(prev) &&
+              prev.bot === m.bot &&
+              prev.author === m.author &&
+              prevAgent === agent &&
+              !m.replyTo &&
+              (!m.at || !prev.at || new Date(m.at).getTime() - new Date(prev.at).getTime() < 5 * 60_000);
             return (
-              <div key={i} className={`message ${agent ? "agent-tint" : ""}`} style={agent ? agentTint(agent) : undefined}>
+              <div key={i} className={`message${agent ? " agent-tint" : ""}${cont ? " cont" : ""}`} style={agent ? agentTint(agent) : undefined}>
                 <Face
                   host={m.bot && !agent}
                   agent={Boolean(agent)}
@@ -812,10 +841,11 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   avatar={agent ? avatarOf(catalog, agent) : undefined}
                 />
                 <div className="message-body">
-                  <div>
+                  <div className="message-head">
                     <span className="strong author" data-testid="message-author">{m.bot ? (agent ?? BOT_NAME) : mine ? `${m.author} (you)` : m.author}</span>{" "}
                     {m.at && <span className="muted small">{new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>}
                   </div>
+                  {m.replyTo && <QuoteBlock quote={m.replyTo} />}
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
                   {body.footer && <div className="message-footer">{body.footer}</div>}
                   {m.bot && speechOut && body.text.trim() && (
@@ -835,6 +865,23 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                             <path d="M17 8a5 5 0 0 1 0 8" />
                           </>
                         )}
+                      </Icon>
+                    </button>
+                  )}
+                  {body.text.trim() && (
+                    <button
+                      type="button"
+                      className="reply-btn"
+                      aria-label="Reply to this message"
+                      title="Reply"
+                      onClick={() => {
+                        setReplyTo({ author: m.bot ? (agent ?? BOT_NAME) : m.author, text: excerpt(body.text) });
+                        composerInput.current?.focus();
+                      }}
+                    >
+                      <Icon size={14}>
+                        <path d="M9 14L4 9l5-5" />
+                        <path d="M4 9h10a6 6 0 0 1 6 6v5" />
                       </Icon>
                     </button>
                   )}
@@ -889,6 +936,14 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
         {activeId && (
           <div className="composer-wrap">
+            {replyTo && (
+              <div className="composer-reply">
+                <QuoteBlock quote={replyTo} />
+                <button type="button" className="btn icon ghost" aria-label="Cancel reply" onClick={() => setReplyTo(undefined)}>
+                  ×
+                </button>
+              </div>
+            )}
             {pending.length > 0 && (
               <div className="composer-previews">
                 {pending.map((p, i) => (
@@ -1078,8 +1133,9 @@ function TeamChatSide({
         <aside className="play-context collapsed" aria-label="Thread context">
           <button type="button" className="play-rail-toggle" aria-label="Show context" title="Show context" onClick={onShowContext}>
             <Icon size={16}>
-              <path d="M4 6h16M4 12h16M4 18h10" />
+              <path d="M15 18l-6-6 6-6" />
             </Icon>
+            <span className="play-rail-label">Context</span>
           </button>
         </aside>
       )}
@@ -1278,9 +1334,12 @@ function Face({
       </span>
     );
   }
-  const letters = name.replace(/^@/, "").slice(0, 2).toUpperCase();
+  const clean = name.replace(/^@/, "").trim();
+  const words = clean.split(/\s+/).filter(Boolean);
+  const letters = (words.length > 1 ? words[0][0] + words[1][0] : clean.slice(0, 1)).toUpperCase() || "?";
+  const hue = [...clean.toLowerCase()].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   return (
-    <span className="avatar" aria-hidden="true">
+    <span className="avatar human" aria-hidden="true" style={{ "--hue": hue } as React.CSSProperties}>
       {letters}
     </span>
   );
@@ -1336,15 +1395,15 @@ function RunsSection({
                   className="btn small"
                   onClick={() => onCommand(host ? "/clear" : `/clear @${run.name}`)}
                 >
-                  Reset
+                  New session
                 </button>
                 {host && (
                   <>
                     <button type="button" className="btn small" onClick={() => onCommand("/compact")}>
-                      Compact
+                      Summarize context
                     </button>
                     <button type="button" className={`btn small ${picking ? "on" : ""}`} onClick={() => setPicking((p) => !p)}>
-                      Model
+                      Change model
                     </button>
                   </>
                 )}
@@ -1486,13 +1545,13 @@ export function SharePanel({ link, setLink, notify }: { link?: string; setLink: 
   if (!link) return <p className="muted small pad">Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.</p>;
   return (
     <div className="share-panel">
-      <span className="small strong">Share team chat</span>
+      <span className="small strong">Invite people</span>
       <div className="share-actions">
         <button className="btn small" onClick={() => navigator.clipboard.writeText(link).then(() => notify("Team chat link copied"), () => notify("Copy failed", true))}>
-          Copy link
+          Copy invite link
         </button>
         <a className="btn small" href={link} target="_blank" rel="noreferrer">
-          Open
+          Preview as guest
         </a>
         <button
           className="btn small ghost"
@@ -1504,7 +1563,7 @@ export function SharePanel({ link, setLink, notify }: { link?: string; setLink: 
             }, (e: Error) => notify(e.message, true));
           }}
         >
-          New link
+          Reset link
         </button>
       </div>
       <span className="muted small">

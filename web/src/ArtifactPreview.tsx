@@ -102,7 +102,7 @@ export function ArtifactPane() {
         </div>
         <div className="artifact-pane-actions">
           <button type="button" className="btn small" onClick={() => void copyLink()}>
-            {copied ? "Copied" : "Copy link"}
+            {copied ? "Copied" : "Share"}
           </button>
           <a className="btn small" href={active.src} download={`${slug(active.title)}.html`}>
             Download

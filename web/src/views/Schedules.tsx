@@ -81,9 +81,32 @@ function status(job: Job): { label: string; tone: string } {
   if (job.lastStatus === "running") return { label: "Running", tone: "info" };
   if (job.lastStatus === "failed") return { label: job.failures ? `Failed · retry ${job.failures} of 3` : "Failed", tone: "bad" };
   if (job.lastStatus === "ok") return { label: "Succeeded", tone: "ok" };
+  if (job.lastStatus === "idle") return { label: "Nothing to do", tone: "" };
   if (job.pending) return { label: "Waiting for approval", tone: "warn" };
   if (job.lastStatus === "denied") return { label: "Denied", tone: "" };
   return { label: job.trigger === "cron" ? "Scheduled" : "Listening", tone: "accent" };
+}
+
+function promptSummary(prompt: string): string {
+  const first = prompt.split(/\n/).find((l) => l.trim()) ?? "";
+  return first.length > 140 ? `${first.slice(0, 140)}…` : first;
+}
+
+function JobFlow(props: { when: string; precheck?: string; needsApproval: boolean; prompt: string; space: string; repo?: string }) {
+  const steps = [
+    props.when,
+    ...(props.precheck ? [`Runs its precheck script (${props.precheck.split("\n").length} lines) — stops here if it prints nothing`] : []),
+    ...(props.needsApproval ? ["Waits for your approval"] : []),
+    `Agent${props.repo ? ` in ${props.repo}` : ""}: ${promptSummary(props.prompt) || "—"}`,
+    props.space.startsWith("spaces/") ? `Posts the reply to ${props.space}` : "Keeps the reply in the job log",
+  ];
+  return (
+    <ol className="job-flow small">
+      {steps.map((step, i) => (
+        <li key={i}>{step}</li>
+      ))}
+    </ol>
+  );
 }
 
 /** Not a Chat space: the run is only recorded in the job log (see schedule-run.ts). */
@@ -106,6 +129,7 @@ export function Schedules({ settings, notify }: ViewProps) {
     command: "",
     pattern: "",
     needsApproval: false,
+    precheck: "",
   });
   const [logId, setLogId] = useState<string>();
   const [logMessages, setLogMessages] = useState<ScheduleLogMessage[]>();
@@ -162,6 +186,63 @@ export function Schedules({ settings, notify }: ViewProps) {
     return () => clearInterval(id);
   }, [logId, notify]);
 
+  const exportJobs = (only?: Job) => {
+    const portable = (only ? [only] : jobs ?? []).map((j) => ({
+      name: j.name,
+      prompt: j.prompt,
+      cron: j.cron,
+      trigger: j.trigger,
+      space: j.space,
+      ...(j.repo && { repo: j.repo }),
+      ...(j.command && { command: j.command }),
+      ...(j.pattern && { pattern: j.pattern }),
+      ...(j.precheck && { precheck: j.precheck }),
+      needsApproval: j.needsApproval,
+    }));
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, jobs: portable }, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = only ? `job-${only.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || only.id}.json` : "switchboard-jobs.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importJobs = async (file: File) => {
+    let list: Partial<Job>[];
+    try {
+      const data = JSON.parse(await file.text());
+      list = Array.isArray(data) ? data : data.jobs;
+      if (!Array.isArray(list)) throw new Error("no jobs in file");
+    } catch (err) {
+      notify(`Import failed: ${(err as Error).message}`, true);
+      return;
+    }
+    let added = 0;
+    const failed: string[] = [];
+    for (const j of list) {
+      if (!j.prompt) continue;
+      const space = j.space && (j.space === TEAM_ONLY || settings.allowedSpaces.includes(j.space)) ? j.space : TEAM_ONLY;
+      try {
+        setJobs(await api.addSchedule({
+          name: j.name,
+          prompt: j.prompt,
+          cron: j.cron ?? "",
+          space,
+          trigger: j.trigger,
+          needsApproval: j.needsApproval ?? false,
+          ...(j.repo && settings.repos[j.repo] && { repo: j.repo }),
+          ...(j.command && { command: j.command }),
+          ...(j.pattern && { pattern: j.pattern }),
+          ...(j.precheck && { precheck: j.precheck }),
+        }));
+        added++;
+      } catch (err) {
+        failed.push(`${j.name ?? "job"}: ${(err as Error).message}`);
+      }
+    }
+    notify(failed.length ? `Imported ${added}, failed ${failed.length} — ${failed.join("; ")}` : `Imported ${added} job${added === 1 ? "" : "s"}`, failed.length > 0);
+  };
+
   const act = (p: Promise<Job[]>, ok: string) =>
     p.then(
       (list) => {
@@ -195,9 +276,18 @@ export function Schedules({ settings, notify }: ViewProps) {
           <h1>Schedules</h1>
           <p className="sub">Recurring prompts the agent runs on its own — describe one in plain language, or use /schedule in a thread.</p>
         </div>
-        <button className="btn primary" onClick={() => { setEditing(undefined); if (!open) setForm((f) => ({ ...f, name: "", prompt: "" })); setOpen(!open); }}>
-          New job
+        <div className="head-actions">
+        <button className="btn" onClick={() => exportJobs()} disabled={!jobs?.length}>
+          Export
         </button>
+        <label className="btn">
+          Import
+          <input type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importJobs(f); }} />
+        </label>
+        <button className="btn primary" onClick={() => { setEditing(undefined); if (!open) setForm((f) => ({ ...f, name: "", prompt: "" })); setOpen(!open); }}>
+          New schedule
+        </button>
+        </div>
       </header>
 
       <section className="card alive" aria-label="Keep-alive">
@@ -262,6 +352,7 @@ export function Schedules({ settings, notify }: ViewProps) {
               void act(api.updateSchedule(editing.id, {
                 ...(form.name.trim() && { name: form.name.trim() }),
                 prompt: form.prompt,
+                precheck: form.precheck,
                 ...(cronChanged && { cron: form.cron }),
               }), "Job updated").then(() => {
                 setOpen(false);
@@ -275,6 +366,7 @@ export function Schedules({ settings, notify }: ViewProps) {
               space: form.space,
               trigger: form.trigger,
               needsApproval: form.needsApproval,
+              ...(form.precheck.trim() && { precheck: form.precheck.trim() }),
               ...(form.repo && { repo: form.repo }),
               ...(form.trigger === "command" && { command: form.command }),
               ...(form.trigger === "mention" && { pattern: form.pattern }),
@@ -286,7 +378,7 @@ export function Schedules({ settings, notify }: ViewProps) {
             });
           }}
         >
-          <h2>{editing ? "Edit job" : "New job"}</h2>
+          <h2>{editing ? "Edit schedule" : "New schedule"}</h2>
           {!editing && (
           <div className="field">
             <span>Recipe</span>
@@ -336,7 +428,7 @@ export function Schedules({ settings, notify }: ViewProps) {
           )}
           <label className="field">
             <span>What should the agent do?</span>
-            <textarea rows={2} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />
+            <textarea rows={Math.min(18, Math.max(4, form.prompt.split("\n").length + 1))} required value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} placeholder="Summarize yesterday's commits on dev and list open questions." />
           </label>
           {!editing && (
           <fieldset className="field">
@@ -388,6 +480,17 @@ export function Schedules({ settings, notify }: ViewProps) {
             </label>
           </fieldset>
           )}
+          <label className="field">
+            <span>Precheck script (Node.js, optional)</span>
+            <textarea
+              className="mono"
+              rows={form.precheck ? Math.min(14, Math.max(4, form.precheck.split("\n").length + 1)) : 2}
+              value={form.precheck}
+              placeholder={'const res = await fetch("https://…");\nconsole.log(JSON.stringify(await res.json()));'}
+              onChange={(e) => setForm({ ...form, precheck: e.target.value })}
+            />
+            <span className="muted small">Saved inside the job and run with node before each run. Printing nothing skips the run for free; anything printed is appended to the prompt.</span>
+          </label>
           {!editing && (
           <>
           <label className="inline check">
@@ -428,6 +531,17 @@ export function Schedules({ settings, notify }: ViewProps) {
               {editing.needsApproval ? " · asks for approval" : ""} — delete and re-create to change these.
             </div>
           )}
+          <div className="field">
+            <span>How it runs</span>
+            <JobFlow
+              when={form.trigger === "command" ? `When someone writes /${form.command}` : form.trigger === "mention" ? `When a message contains “${form.pattern}”` : `On cron ${form.cron}`}
+              precheck={form.precheck.trim() || undefined}
+              needsApproval={editing ? editing.needsApproval : form.needsApproval}
+              prompt={form.prompt}
+              space={editing ? editing.space : form.space}
+              repo={editing ? editing.repo : form.repo || undefined}
+            />
+          </div>
           <div className="form-actions">
             <button type="button" className="btn" onClick={() => { setEditing(undefined); setOpen(false); }}>
               Cancel
@@ -473,6 +587,14 @@ export function Schedules({ settings, notify }: ViewProps) {
                     )}
                     {j.needsApproval && <span className="pill"> needs approval</span>}
                   </div>
+                  <JobFlow
+                    when={j.trigger === "command" ? `When someone writes /${j.command}` : j.trigger === "mention" ? `When a message contains “${j.pattern}”` : j.when}
+                    precheck={j.precheck}
+                    needsApproval={j.needsApproval}
+                    prompt={j.prompt}
+                    space={j.space}
+                    repo={j.repo}
+                  />
                   {j.pending && (
                     <div className="approval">
                       <span className="small">Waiting for approval ({j.pending.reason})</span>
@@ -499,11 +621,14 @@ export function Schedules({ settings, notify }: ViewProps) {
                     aria-label={`Edit ${j.name}`}
                     onClick={() => {
                       setEditing(j);
-                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, cron: j.cron || PRESETS[1]!.cron }));
+                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, precheck: j.precheck ?? "", cron: j.cron || PRESETS[1]!.cron }));
                       setOpen(true);
                     }}
                   >
                     Edit
+                  </button>
+                  <button className="btn" aria-label={`Export ${j.name}`} onClick={() => exportJobs(j)}>
+                    Export
                   </button>
                   <button className="btn" onClick={() => setLogId(showingLog ? undefined : j.id)} aria-pressed={showingLog}>
                     {showingLog ? "Hide log" : "Log"}

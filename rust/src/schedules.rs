@@ -37,6 +37,8 @@ pub struct Job {
     #[serde(default)]
     pub needs_approval: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precheck: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<PendingRun>,
 }
 
@@ -63,6 +65,7 @@ pub struct NewJob {
     pub command: Option<String>,
     pub pattern: Option<String>,
     pub needs_approval: bool,
+    pub precheck: Option<String>,
 }
 
 impl Job {
@@ -266,6 +269,7 @@ impl ScheduleStore {
             command,
             pattern,
             needs_approval: input.needs_approval,
+            precheck: input.precheck.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
             pending: None,
         };
         job.next_run_at = job.next_after(now)?;
@@ -292,6 +296,9 @@ impl ScheduleStore {
             }
             if let Some(v) = patch.name {
                 next.name = v;
+            }
+            if let Some(v) = patch.precheck {
+                next.precheck = Some(v.trim().to_string()).filter(|c| !c.is_empty());
             }
             if let Some(v) = patch.last_status {
                 next.last_status = v;
@@ -341,6 +348,41 @@ pub struct JobPatch {
     pub failures: Option<u32>,
     pub next_run_at: Option<Option<String>>,
     pub pending: Option<Option<PendingRun>>,
+    pub precheck: Option<String>,
+}
+
+const PRECHECK_TIMEOUT_SECS: u64 = 300;
+
+pub enum Precheck {
+    Nothing,
+    Found(String),
+    Failed(String),
+}
+
+pub async fn run_precheck(script: &str) -> Precheck {
+    let file = std::env::temp_dir().join(format!("switchboard-precheck-{}.mjs", Uuid::new_v4()));
+    if let Err(e) = tokio::fs::write(&file, script).await {
+        return Precheck::Failed(e.to_string());
+    }
+    let mut cmd = tokio::process::Command::new(crate::driver::spawn::resolve_bin("node"));
+    cmd.arg(&file).kill_on_drop(true).stdin(std::process::Stdio::null());
+    let result = tokio::time::timeout(std::time::Duration::from_secs(PRECHECK_TIMEOUT_SECS), cmd.output()).await;
+    let _ = tokio::fs::remove_file(&file).await;
+    let output = match result {
+        Err(_) => return Precheck::Failed(format!("precheck timed out after {PRECHECK_TIMEOUT_SECS}s")),
+        Ok(Err(e)) => return Precheck::Failed(e.to_string()),
+        Ok(Ok(o)) => o,
+    };
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().chars().take(500).collect::<String>();
+        return Precheck::Failed(format!("precheck exited with {}: {err}", output.status));
+    }
+    let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if out.is_empty() || out == "[]" || out == "{}" {
+        Precheck::Nothing
+    } else {
+        Precheck::Found(out)
+    }
 }
 
 const MAX_RETRIES: u32 = 3;
@@ -487,7 +529,39 @@ impl Scheduler {
                 now,
             )
             .await?;
-        let ok = (self.run)(job.clone()).await;
+        let mut work = job.clone();
+        let ok = match job.precheck.as_deref().map(run_precheck) {
+            None => (self.run)(work).await,
+            Some(check) => match check.await {
+                Precheck::Nothing => {
+                    self.note("precheck_idle", &job, "nothing to do").await;
+                    return self
+                        .store
+                        .update(
+                            id,
+                            JobPatch {
+                                last_status: Some(Some("idle".into())),
+                                failures: Some(0),
+                                next_run_at: Some(job.next_after(now)?),
+                                ..Default::default()
+                            },
+                            now,
+                        )
+                        .await;
+                }
+                Precheck::Found(out) => {
+                    work.prompt = format!("{}
+
+Precheck output:
+{out}", job.prompt);
+                    (self.run)(work).await
+                }
+                Precheck::Failed(err) => {
+                    self.note("precheck_failed", &job, &err).await;
+                    false
+                }
+            },
+        };
         if ok {
             return self
                 .store
@@ -566,6 +640,27 @@ mod tests {
         assert!(scheduler.jobs_for_text("nothing here", "share/room1").is_empty());
     }
 
+    #[tokio::test]
+    async fn precheck_skips_empty_and_feeds_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(ScheduleStore::open(dir.path().join("s.json")));
+        let now = Local::now();
+        let idle = store.add(NewJob { name: "a".into(), prompt: "p".into(), cron: "0 9 * * *".into(), precheck: Some("console.log(\"[]\")".into()), ..Default::default() }, now).await.unwrap();
+        let busy = store.add(NewJob { name: "b".into(), prompt: "p".into(), cron: "0 9 * * *".into(), precheck: Some("console.log(42)".into()), ..Default::default() }, now).await.unwrap();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let scheduler = Scheduler::new(store, move |job| {
+            sink.lock().unwrap().push(job.prompt);
+            futures::FutureExt::boxed(async { true })
+        });
+        assert_eq!(scheduler.run_now(&idle.id, now).await.unwrap().last_status.as_deref(), Some("idle"));
+        assert_eq!(scheduler.run_now(&busy.id, now).await.unwrap().last_status.as_deref(), Some("ok"));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].ends_with("Precheck output:
+42"));
+    }
+
     #[test]
     fn next_run_hourly() {
         let from = Local.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
@@ -587,6 +682,7 @@ mod tests {
                     command: None,
                     pattern: None,
                     needs_approval: false,
+                    precheck: None,
                     name: "n".into(),
                     prompt: "p".into(),
                     cron: "0 9 * * *".into(),

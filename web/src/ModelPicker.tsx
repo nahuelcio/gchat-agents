@@ -39,7 +39,7 @@ export function ModelPicker({ value, onPick }: { value?: string; onPick: (model:
           {busy ? "Loading…" : "Refresh"}
         </button>
       </div>
-      <select
+      {shown.length > 0 && <select
         className="mono"
         size={Math.min(8, Math.max(2, shown.length))}
         value={value ?? ""}
@@ -51,8 +51,10 @@ export function ModelPicker({ value, onPick }: { value?: string; onPick: (model:
             {provider ? m.slice(provider.length + 1) : m}
           </option>
         ))}
-      </select>
-      {!busy && shown.length === 0 && <span className="muted small">No models match.</span>}
+      </select>}
+      {!busy && shown.length === 0 && (
+        <span className="muted small">{models.length > 0 ? "No models match this filter." : "No models listed yet. Press Refresh."}</span>
+      )}
     </div>
   );
 }

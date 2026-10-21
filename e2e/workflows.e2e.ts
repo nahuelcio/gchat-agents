@@ -4,7 +4,7 @@ import { expect } from "e2e";
 test("a /command job waits for approval and deny keeps it from running", async ({ app, screen }) => {
   const command = `ship${Date.now().toString(36)}`;
   await app.open("/#schedules");
-  await screen.getByRole("button", "New job").tap();
+  await screen.getByRole("button", "New schedule").tap();
   await screen.getByLabel("What should the agent do?").fill(`deploy ${command}`);
   await screen.getByRole("button", "When someone writes /command").tap();
   await screen.getByLabel("Command, without the slash").fill(command);

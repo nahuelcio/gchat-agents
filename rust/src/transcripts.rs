@@ -28,6 +28,14 @@ pub struct TranscriptMessage {
     pub questions: Option<Vec<AgentQuestion>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<MessageAttachment>>,
+    #[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<Quote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Quote {
+    pub author: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +253,7 @@ mod tests {
                     at: None,
                     questions: None,
                     attachments: None,
+                    reply_to: None,
                 }],
             )
             .await
@@ -261,7 +270,7 @@ mod search_tests {
     use super::*;
 
     fn msg(author: &str, text: &str) -> TranscriptMessage {
-        TranscriptMessage { author: author.into(), text: text.into(), bot: false, at: None, questions: None, attachments: None }
+        TranscriptMessage { author: author.into(), text: text.into(), bot: false, at: None, questions: None, attachments: None, reply_to: None }
     }
 
     #[tokio::test]

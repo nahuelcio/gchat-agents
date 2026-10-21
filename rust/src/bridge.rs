@@ -4,12 +4,13 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::handler::{handle_event, ChatEvent};
+use crate::share::ShareAccess;
 use crate::state::AppState;
 use crate::static_files::serve_static;
 
@@ -18,7 +19,7 @@ pub fn bridge_router(state: Arc<AppState>) -> Router {
         .route("/play/api/threads", get(play_threads))
         .route("/play/api/thread", get(play_thread))
         .route("/play/api/send", post(play_send))
-        .route("/play/api/stop", post(crate::admin::post_team_stop))
+        .route("/play/api/stop", post(play_stop))
         .route("/play/api/agents", get(play_agents))
         .route("/play/api/personas", get(play_personas))
         .route("/play/api/media/{id}", get(crate::admin::get_media))
@@ -46,10 +47,23 @@ async fn require_share_token(State(state): State<Arc<AppState>>, req: axum::extr
         .query()
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("access=")))
         .map(percent_decode);
-    if !state.share.lock().await.check(bearer.or(access).as_deref()) {
+    let Some(scope) = state.share.lock().await.access(bearer.or(access).as_deref()) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "invalid or expired share link" }))).into_response();
-    }
+    };
+    let mut req = req;
+    req.extensions_mut().insert(scope);
     next.run(req).await
+}
+
+fn allows(scope: &ShareAccess, thread: &str) -> bool {
+    match scope {
+        ShareAccess::All => true,
+        ShareAccess::Thread(t) => t == thread,
+    }
+}
+
+fn forbidden() -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": "this link only opens one conversation" }))).into_response()
 }
 
 fn percent_decode(v: &str) -> String {
@@ -81,12 +95,13 @@ struct ThreadsQuery {
     archived: Option<String>,
 }
 
-async fn play_threads(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<ThreadsQuery>) -> Response {
+async fn play_threads(State(state): State<Arc<AppState>>, Extension(scope): Extension<ShareAccess>, axum::extract::Query(q): axum::extract::Query<ThreadsQuery>) -> Response {
     let archived = q.archived.as_deref() == Some("1");
     let list: Vec<_> = state
         .transcripts
         .list(crate::handler::TEAM_PREFIX, archived)
         .into_iter()
+        .filter(|t| allows(&scope, t.key.strip_prefix(crate::handler::TEAM_PREFIX).unwrap_or(&t.key)))
         .map(|t| {
             let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
             json!({
@@ -100,7 +115,10 @@ async fn play_threads(State(state): State<Arc<AppState>>, axum::extract::Query(q
     Json(list).into_response()
 }
 
-async fn play_thread(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<ThreadQuery>) -> Response {
+async fn play_thread(State(state): State<Arc<AppState>>, Extension(scope): Extension<ShareAccess>, axum::extract::Query(q): axum::extract::Query<ThreadQuery>) -> Response {
+    if !allows(&scope, q.thread.as_deref().unwrap_or("")) {
+        return forbidden();
+    }
     match crate::team::team_thread(state.handler.clone(), state.transcripts.clone(), q.thread.as_deref().unwrap_or("")).await {
         Ok(t) => Json(t).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
@@ -113,9 +131,14 @@ struct PlaySend {
     text: Option<String>,
     name: Option<String>,
     attachments: Option<Vec<crate::team::TeamAttachmentInput>>,
+    #[serde(rename = "replyTo")]
+    reply_to: Option<crate::transcripts::Quote>,
 }
 
-async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend>) -> Response {
+async fn play_send(State(state): State<Arc<AppState>>, Extension(scope): Extension<ShareAccess>, Json(body): Json<PlaySend>) -> Response {
+    if !allows(&scope, body.thread.as_deref().unwrap_or("")) {
+        return forbidden();
+    }
     let name: String = body.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Guest".into()).chars().take(40).collect();
     match crate::team::team_send(
         state.handler.clone(),
@@ -125,12 +148,20 @@ async fn play_send(State(state): State<Arc<AppState>>, Json(body): Json<PlaySend
         &name,
         Some(crate::team::GUEST_COMMANDS),
         body.attachments.as_deref().unwrap_or_default(),
+        body.reply_to,
     )
     .await
     {
         Ok(v) => Json(v).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
+}
+
+async fn play_stop(Extension(scope): Extension<ShareAccess>, Json(body): Json<crate::admin::TeamThreadBody>) -> Response {
+    if !allows(&scope, body.thread.as_deref().unwrap_or("")) {
+        return forbidden();
+    }
+    crate::admin::post_team_stop(Json(body)).await
 }
 
 async fn play_agents(State(_state): State<Arc<AppState>>) -> Response {

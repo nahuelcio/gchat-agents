@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use crate::handler::{process_message, HandlerDeps, TurnRequest, TEAM_PREFIX};
 use crate::personas::{with_agent, with_human, BOT_NAME};
 use crate::session::{RoomMember, SessionPatch};
-use crate::transcripts::{TranscriptMessage, TranscriptStore};
+use crate::transcripts::{Quote, TranscriptMessage, TranscriptStore};
 
 pub fn thread_id_ok(id: &str) -> bool {
     Regex::new(r"^[a-zA-Z0-9_-]{1,64}$").unwrap().is_match(id)
@@ -196,6 +196,7 @@ pub async fn team_send(
     name: &str,
     allowed_commands: Option<&[&str]>,
     attachments: &[TeamAttachmentInput],
+    reply_to: Option<Quote>,
 ) -> Result<serde_json::Value, String> {
     if !thread_id_ok(thread) {
         return Err("bad thread id".into());
@@ -222,6 +223,7 @@ pub async fn team_send(
                 at: None,
                 questions: None,
                 attachments: Some(stored).filter(|s| !s.is_empty()),
+                reply_to,
             }],
         )
         .await?;
@@ -271,19 +273,8 @@ pub async fn team_send(
             Ok(_) => {
                 let replies = captured.lock().await.clone();
                 for reply in replies {
-                    let _ = transcripts2
-                        .append(
-                            &thread_key2,
-                            vec![TranscriptMessage {
-                                author: BOT_NAME.into(),
-                                text: reply,
-                                bot: true,
-                                at: None,
-                                questions: None,
-                                attachments: None,
-                            }],
-                        )
-                        .await;
+                    let message = bot_message(&transcripts2.get(&thread_key2), reply);
+                    let _ = transcripts2.append(&thread_key2, vec![message]).await;
                 }
             }
             Err(err) => tracing::error!(%err, "team turn failed"),
@@ -299,6 +290,7 @@ pub async fn team_steer(
     thread: &str,
     text: &str,
     name: &str,
+    reply_to: Option<Quote>,
 ) -> Result<serde_json::Value, String> {
     if !thread_id_ok(thread) {
         return Err("bad thread id".into());
@@ -312,7 +304,7 @@ pub async fn team_steer(
     let request = TurnRequest {
         thread_key: thread_key.clone(),
         space_name: "team-chat".into(),
-        text: text.into(),
+        text: quoted(reply_to.as_ref(), text),
         sender: Some(name.into()),
         reply_via_chat: false,
         thread: None,
@@ -321,7 +313,7 @@ pub async fn team_steer(
         request_id: None,
     };
     if !crate::handler::steered(&request, &deps).await {
-        return team_send(deps, transcripts, thread, text, name, None, &[]).await;
+        return team_send(deps, transcripts, thread, text, name, None, &[], reply_to).await;
     }
     transcripts
         .append(
@@ -333,26 +325,64 @@ pub async fn team_steer(
                 at: None,
                 questions: None,
                 attachments: None,
+                reply_to,
             }],
         )
         .await?;
-    let replies = captured
-        .lock()
-        .await
-        .iter()
-        .map(|reply| TranscriptMessage {
-            author: BOT_NAME.into(),
-            text: reply.clone(),
-            bot: true,
-            at: None,
-            questions: None,
-            attachments: None,
-        })
-        .collect::<Vec<_>>();
-    if !replies.is_empty() {
-        transcripts.append(&thread_key, replies).await?;
+    for reply in captured.lock().await.iter() {
+        let message = bot_message(&transcripts.get(&thread_key), reply.clone());
+        transcripts.append(&thread_key, vec![message]).await?;
     }
     Ok(serde_json::json!({ "ok": true, "replies": [] }))
+}
+
+fn quoted(reply_to: Option<&Quote>, text: &str) -> String {
+    let Some(q) = reply_to else { return text.to_string() };
+    let excerpt: String = q.text.chars().take(400).collect();
+    let lines = excerpt.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n");
+    format!("Replying to {}:\n{lines}\n\n{text}", q.author)
+}
+
+pub fn split_quote(text: &str, prior: &[TranscriptMessage]) -> (String, Option<Quote>) {
+    let (head, body) = match text.split_once('\n') {
+        Some((h, b)) if h.starts_with("*@") && h.ends_with('*') => (Some(h), b),
+        _ => (None, text),
+    };
+    let quote_lines: Vec<&str> = body.lines().take_while(|l| l.starts_with('>')).collect();
+    if quote_lines.is_empty() {
+        return (text.to_string(), None);
+    }
+    let quote = quote_lines.iter().map(|l| l.trim_start_matches('>').trim()).collect::<Vec<_>>().join("\n").trim().to_string();
+    let rest = body.lines().skip(quote_lines.len()).collect::<Vec<_>>().join("\n").trim().to_string();
+    if quote.is_empty() || rest.is_empty() {
+        return (text.to_string(), None);
+    }
+    let needle = quote.trim_end_matches(['.', '…']).to_lowercase();
+    let author = prior.iter().rev().find(|m| m.text.to_lowercase().contains(&needle)).map(speaker).unwrap_or_default();
+    let text = head.map(|h| format!("{h}\n{rest}")).unwrap_or(rest);
+    (text, Some(Quote { author, text: quote }))
+}
+
+fn speaker(m: &TranscriptMessage) -> String {
+    m.text
+        .split_once('\n')
+        .map(|(h, _)| h)
+        .filter(|h| m.bot && h.starts_with("*@") && h.ends_with('*'))
+        .map(|h| h.trim_matches('*').to_string())
+        .unwrap_or_else(|| m.author.clone())
+}
+
+fn bot_message(prior: &[TranscriptMessage], reply: String) -> TranscriptMessage {
+    let (text, reply_to) = split_quote(&reply, prior);
+    TranscriptMessage {
+        author: BOT_NAME.into(),
+        text,
+        bot: true,
+        at: None,
+        questions: None,
+        attachments: None,
+        reply_to,
+    }
 }
 
 pub async fn team_members(
@@ -622,5 +652,33 @@ mod presence_tests {
         assert_eq!(runs[1].context_window, Some(128_000));
         assert_eq!(runs[1].turns, Some(2));
         assert_eq!(runs[1].estimated, Some(false));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(author: &str, text: &str, bot: bool) -> TranscriptMessage {
+        TranscriptMessage { author: author.into(), text: text.into(), bot, at: None, questions: None, attachments: None, reply_to: None }
+    }
+
+    #[test]
+    fn agent_replies_starting_with_a_quote_cite_the_matching_message() {
+        let prior = vec![msg("Ana", "usemos pnpm en vez de npm", false), msg(BOT_NAME, "*@dev*\nlisto, corro los tests", true)];
+        let (text, quote) = split_quote("*@qa*\n> corro los tests\nfallan dos", &prior);
+        assert_eq!(text, "*@qa*\nfallan dos");
+        assert_eq!(quote, Some(Quote { author: "@dev".into(), text: "corro los tests".into() }));
+        let (text, quote) = split_quote("> usemos pnpm\nok", &prior);
+        assert_eq!((text.as_str(), quote.unwrap().author.as_str()), ("ok", "Ana"));
+        assert_eq!(split_quote("sin cita", &prior), ("sin cita".into(), None));
+        assert_eq!(split_quote("> solo cita", &prior).1, None);
+    }
+
+    #[test]
+    fn human_replies_carry_the_quote_into_the_prompt() {
+        let q = Quote { author: "@dev".into(), text: "a\nb".into() };
+        assert_eq!(quoted(Some(&q), "por qué?"), "Replying to @dev:\n> a\n> b\n\npor qué?");
+        assert_eq!(quoted(None, "hola"), "hola");
     }
 }

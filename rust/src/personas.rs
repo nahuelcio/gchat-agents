@@ -269,6 +269,8 @@ pub fn room_catch_up(log: Option<&[RoomEntry]>, who: &str, seen: Option<u64>, be
     format!("Messages in this chat since your last turn (for context):\n{lines}\n\n---\n\n")
 }
 
+const QUOTE_HINT: &str = "Messages that reply to an earlier one arrive as \"Replying to <name>:\" followed by the quoted lines. To reply to a specific message yourself, start your reply with the part you answer quoted on lines beginning with \"> \", then write your answer.";
+
 fn roster_preamble(p: &Persona, all: &[Persona]) -> String {
     let others: Vec<_> = all
         .iter()
@@ -292,6 +294,7 @@ fn roster_preamble(p: &Persona, all: &[Persona]) -> String {
     parts.push(format!(
         "You see every message in the chat. When one is not for you and you have nothing useful to add, reply exactly {PASS}."
     ));
+    parts.push(QUOTE_HINT.to_string());
     parts.join("\n\n")
 }
 
@@ -430,7 +433,7 @@ pub fn host_preamble(personas: &[Persona], host_prompt: Option<&str>) -> String 
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(default_host_prompt);
-    format!("{body}\n\n{agents}")
+    format!("{body}\n\n{agents}\n\n{QUOTE_HINT}")
 }
 
 pub fn roster_update(before: Option<&[String]>, now: &[String]) -> String {

@@ -71,10 +71,13 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&config.workdir).map_err(|e| e.to_string())?;
     // data/skills = propias (writable), .agents/skills = gestionadas por skills.sh (npx skills update -p), skills = vendor manual.
+    let bundled = config.data_dir.join("bundled-skills");
+    crate::skills::extract_bundled(&bundled)?;
     crate::skills::set_dirs(vec![
         config.data_dir.join("skills"),
         PathBuf::from(".agents/skills"),
         PathBuf::from("skills"),
+        bundled,
     ]);
 
     let settings = Arc::new(SettingsStore::open(
@@ -174,8 +177,11 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     let schedules_for_run = schedules.clone();
     let driver_for_run = driver;
     let workdir = config.workdir.to_string_lossy().to_string();
+    let google_for_run = google.clone();
     let scheduler = Arc::new(Scheduler::new(schedules.clone(), move |job| {
         let driver = driver_for_run.clone();
+        let google = google_for_run.clone();
+        let space = job.space.clone();
         let workdir = workdir.clone();
         let store = schedules_for_run.clone();
         let activity = activity_for_run.clone();
@@ -202,7 +208,14 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                 Ok(out) => out.reply.clone(),
                 Err(err) => format!("Failed: {err}"),
             };
-            let entry = |author: &str, text: String, bot: bool| crate::transcripts::TranscriptMessage { author: author.into(), text, bot, at: None, questions: None, attachments: None };
+            let entry = |author: &str, text: String, bot: bool| crate::transcripts::TranscriptMessage { author: author.into(), text, bot, at: None, questions: None, attachments: None, reply_to: None };
+            if space.starts_with("spaces/") && !reply.trim().is_empty() {
+                let text: String = format!("*{name}*
+{reply}").chars().take(4000).collect();
+                if let Err(err) = google.post_message(&space, &crate::google::PostMessageBody { text, thread: None, cards_v2: None }).await {
+                    tracing::warn!(%err, "could not post job result");
+                }
+            }
             let _ = transcripts.append(&key, vec![entry("schedule", prompt, false), entry(crate::personas::BOT_NAME, reply, true)]).await;
             match result {
                 Ok(_) => {

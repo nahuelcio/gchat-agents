@@ -160,7 +160,7 @@ export function CreateView(props: ViewProps) {
     <>
       <header className="page-head">
         <div>
-          <h1>Create</h1>
+          <h1>Agents</h1>
           <p className="sub">Agents and skills — edit the form, or refine with AI.</p>
         </div>
       </header>
@@ -491,6 +491,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   };
 
   const removeAgent = (name: string) => {
+    if (!confirm(`Delete @${name}? Threads keep its past messages.`)) return;
     void save(
       { personas: personas.filter((p) => p.name.toLowerCase() !== name.toLowerCase()) },
       `@${name} removed`,
@@ -521,6 +522,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
   };
 
   const removeSkill = (name: string) => {
+    if (!confirm(`Delete skill ${name}?`)) return;
     void api.deleteSkill(name).then(
       (list) => {
         setSkills(list);
@@ -614,7 +616,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
               + New {kind === "agent" ? "agent" : "skill"}
             </button>
             <button className="btn primary" type="button" onClick={startWithAi}>
-              + New with AI
+              + Generate with AI
             </button>
           </div>
         )}
@@ -756,7 +758,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   Edit
                 </button>
                 <button className="btn small primary" type="button" onClick={() => startEditHost(true)}>
-                  Edit with AI
+                  Refine with AI
                 </button>
               </span>
             </div>
@@ -776,9 +778,9 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                     Edit
                   </button>
                   <button className="btn small primary" type="button" onClick={() => startEditAgent(p, true)}>
-                    Edit with AI
+                    Refine with AI
                   </button>
-                  <button className="btn small" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
+                  <button className="btn small danger" type="button" aria-label={`Remove @${p.name}`} onClick={() => removeAgent(p.name)}>
                     Delete
                   </button>
                 </span>
@@ -803,10 +805,10 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
                   Edit
                 </button>
                 <button className="btn small primary" type="button" onClick={() => startEditSkill(sk, true)}>
-                  Edit with AI
+                  Refine with AI
                 </button>
                 {sk.name !== "skill-creator" && (
-                  <button className="btn small" type="button" aria-label={`Delete skill ${sk.name}`} onClick={() => removeSkill(sk.name)}>
+                  <button className="btn small danger" type="button" aria-label={`Delete skill ${sk.name}`} onClick={() => removeSkill(sk.name)}>
                     Delete
                   </button>
                 )}
@@ -871,7 +873,7 @@ export function CreateWithAiCard({ settings, save, notify }: ViewProps) {
               </div>
               {focusForm && (
                 <button type="button" className={`btn small${aiOpen ? " primary" : ""}`} onClick={() => setAiOpen((o) => !o)}>
-                  {aiOpen ? "Hide AI" : editingSkill || editingAgent || editingHost ? "Edit with AI" : "Create with AI"}
+                  {aiOpen ? "Hide AI" : editingSkill || editingAgent || editingHost ? "Refine with AI" : "Generate with AI"}
                 </button>
               )}
             </div>

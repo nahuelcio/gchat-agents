@@ -229,12 +229,13 @@ export interface Job {
   createdBy: string;
   nextRunAt?: string;
   lastRunAt?: string;
-  lastStatus?: "ok" | "failed" | "running" | "pending" | "approved" | "denied";
+  lastStatus?: "ok" | "idle" | "failed" | "running" | "pending" | "approved" | "denied";
   failures: number;
   trigger: JobTrigger;
   command?: string;
   pattern?: string;
   needsApproval: boolean;
+  precheck?: string;
   pending?: { id: string; at: string; reason: string } | null;
 }
 
@@ -337,15 +338,15 @@ export const api = {
   agents: () => call<Agent[]>("/api/agents"),
   models: (refresh = false) => call<string[]>(`/api/agents/pi/models${refresh ? "?refresh=1" : ""}`),
   health: () => call<Health>("/api/health"),
-  share: () => call<{ link: string }>("/api/share"),
+  share: (thread?: string) => call<{ link: string }>(`/api/share${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
   schedules: () => call<Job[]>("/api/schedules"),
-  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean }) =>
+  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string }) =>
     call<Job[]>("/api/schedules", job),
   approvals: () => call<Approval[]>("/api/approvals"),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
-  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
+  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
   scheduleLog: (id: string) => call<{ messages: ScheduleLogMessage[] }>(`/api/schedules/log?id=${encodeURIComponent(id)}`),
@@ -424,6 +425,12 @@ export interface TeamMessage {
   at?: string;
   questions?: AgentQuestion[];
   attachments?: MessageAttachment[];
+  replyTo?: Quote;
+}
+
+export interface Quote {
+  author: string;
+  text: string;
 }
 
 export interface TeamAttachmentInput {
@@ -517,8 +524,8 @@ export interface TeamTransport {
   archive?: (id: string, archived: boolean) => Promise<unknown>;
   remove?: (id: string) => Promise<{ branchKept?: string }>;
   thread: (id: string) => Promise<TeamThreadState>;
-  send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[]) => Promise<{ ok: boolean; replies: string[] }>;
-  steer?: (id: string, text: string, name: string) => Promise<{ ok: boolean; replies: string[] }>;
+  send: (id: string, text: string, name: string, attachments?: TeamAttachmentInput[], replyTo?: Quote) => Promise<{ ok: boolean; replies: string[] }>;
+  steer?: (id: string, text: string, name: string, replyTo?: Quote) => Promise<{ ok: boolean; replies: string[] }>;
   agents: () => Promise<{ id: string; name: string; ready?: boolean }[]>;
   /** Agents you can @mention in chat (names without @). */
   personas?: () => Promise<{ name: string; avatar?: PersonaAvatar }[]>;
@@ -537,8 +544,8 @@ export const ownerTransport: TeamTransport = {
   archive: (id, archived) => call("/api/team/archive", { thread: id, archived }),
   remove: (id) => call<{ branchKept?: string }>("/api/team/delete", { thread: id }),
   thread: (id) => call<TeamThreadState>(`/api/team/thread?thread=${encodeURIComponent(id)}`),
-  send: (id, text, name, attachments) => call("/api/team/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
-  steer: (id, text, name) => call("/api/team/steer", { thread: id, text, name }),
+  send: (id, text, name, attachments, replyTo) => call("/api/team/send", { thread: id, text, name, replyTo, ...(attachments?.length && { attachments }) }),
+  steer: (id, text, name, replyTo) => call("/api/team/steer", { thread: id, text, name, replyTo }),
   agents: () => call<Agent[]>("/api/agents").then((list) => list.filter((a) => a.supported && a.installed)),
   personas: () =>
     call<Settings>("/api/settings").then((s) =>
@@ -566,7 +573,7 @@ export function guestTransport(token: string): TeamTransport {
     guest: true,
     threads: (archived = false) => req<TeamThreadSummary[]>(`/play/api/threads${archived ? "?archived=1" : ""}`),
     thread: (id) => req<TeamThreadState>(`/play/api/thread?thread=${encodeURIComponent(id)}`),
-    send: (id, text, name, attachments) => req("/play/api/send", { thread: id, text, name, ...(attachments?.length && { attachments }) }),
+    send: (id, text, name, attachments, replyTo) => req("/play/api/send", { thread: id, text, name, replyTo, ...(attachments?.length && { attachments }) }),
     agents: () => req("/play/api/agents"),
     personas: () => req("/play/api/personas"),
     mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,

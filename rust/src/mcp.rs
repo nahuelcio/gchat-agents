@@ -773,8 +773,8 @@ mod tests {
         assert!(out.contains("\"kind\":\"references\""), "{out}");
         assert!(out.contains("file tools"), "{out}");
         assert!(!out.contains("page rule"), "{out}");
-        let folder = dir.path().join("pdf").to_string_lossy().into_owned();
-        assert!(out.contains(&folder), "{out}");
+        let folder = serde_json::to_string(&dir.path().join("pdf").to_string_lossy()).unwrap();
+        assert!(out.contains(folder.trim_matches('"')), "{out}");
 
         let err = run("skill_load", json!({ "name": "nope" })).await.unwrap_err();
         assert!(err.contains("unknown skill: nope"), "{err}");

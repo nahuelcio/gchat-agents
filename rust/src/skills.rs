@@ -5,6 +5,34 @@ use crate::settings::Persona;
 
 static DIRS: RwLock<Option<Vec<PathBuf>>> = RwLock::new(None);
 
+#[derive(rust_embed::Embed)]
+#[folder = "../skills"]
+struct Bundled;
+
+#[derive(rust_embed::Embed)]
+#[folder = "../.agents/skills"]
+struct Managed;
+
+pub fn extract_bundled(dir: &Path) -> Result<(), String> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    write_embedded::<Managed>(dir)?;
+    write_embedded::<Bundled>(dir)
+}
+
+fn write_embedded<E: rust_embed::Embed>(dir: &Path) -> Result<(), String> {
+    for rel in E::iter() {
+        let Some(file) = E::get(&rel) else { continue };
+        let path = dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, file.data.as_ref()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn set_dirs(dirs: Vec<PathBuf>) {
     *DIRS.write().unwrap() = Some(dirs);
 }
@@ -268,6 +296,19 @@ pub fn mcps(persona: &Persona) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_skills_extract_with_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("bundled");
+        extract_bundled(&out).unwrap();
+        let skill = load_from(&out, "artifacts").unwrap();
+        assert_eq!(skill.name, "artifacts");
+        assert!(skill.files.iter().any(|f| f.path == "references/walkthrough.html"));
+        assert!(load_from(&out, "skill-creator").is_some());
+        let tdd = load_from(&out, "tdd").unwrap();
+        assert!(tdd.description.contains("Test-driven"));
+    }
 
     #[test]
     fn saved_skills_read_back_the_same() {

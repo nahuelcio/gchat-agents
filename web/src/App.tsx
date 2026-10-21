@@ -10,7 +10,7 @@ import { SettingsView } from "./views/Settings";
 const VIEWS = [
   { id: "overview", label: "Overview", icon: <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" /> },
   { id: "team", label: "Team chat", icon: <path d="M4 5h16v11H9l-5 4z" /> },
-  { id: "create", label: "Create", icon: <path d="M12 5v14M5 12h14" /> },
+  { id: "create", label: "Agents", icon: <path d="M12 5v14M5 12h14" /> },
   { id: "schedules", label: "Schedules", icon: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></> },
   { id: "settings", label: "Settings", icon: <><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></> },
 ] as const;
@@ -60,9 +60,10 @@ function GuestApp() {
     );
   }
   const base = `${location.origin}/play#${token}`;
+  const scoped = token.includes(".");
   return (
     <>
-      <TeamChat transport={transport} initialThread={thread} linkFor={(id) => `${base}&thread=${id}`} notify={notify} />
+      <TeamChat transport={transport} initialThread={thread} linkFor={(id) => (scoped && id !== thread ? undefined : `${base}&thread=${id}`)} notify={notify} singleThread={scoped} />
       {toast && <div className={`toast ${toast.error ? "error" : ""}`} role="status">{toast.text}</div>}
     </>
   );
@@ -206,7 +207,7 @@ function OwnerApp() {
             key={hash.startsWith("#team/") ? hash : "team"}
             transport={ownerTransport}
             initialThread={hashThread()}
-            linkFor={shareLink ? (id) => `${shareLink}&thread=${id}` : undefined}
+            linkFor={shareLink ? (id) => api.share(id).then((r) => r.link) : undefined}
             notify={notify}
             shareSlot={<SharePanel link={shareLink} setLink={setShareLink} notify={notify} />}
             repos={Object.entries(settings.repos).map(([name, r]) => ({ name, ...(r.base && { base: r.base }) }))}

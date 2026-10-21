@@ -459,7 +459,7 @@ function PiCustomProviders({ notify }: { notify: ViewProps["notify"] }) {
           </div>
         </form>
       ) : (
-        <button className="btn" onClick={() => setDraft({ ...EMPTY_CUSTOM })}>
+        <button className="btn add-endpoint" onClick={() => setDraft({ ...EMPTY_CUSTOM })}>
           + Add OpenAI-compatible endpoint
         </button>
       )}

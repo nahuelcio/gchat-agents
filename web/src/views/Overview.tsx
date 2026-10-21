@@ -49,7 +49,7 @@ export function Overview({ settings, notify }: ViewProps) {
   const showSetup = !chatConnected || !hasPersonas || !hasJobs;
 
   const primaryCta = !hasPersonas
-    ? { href: "#create", label: "Create agent" }
+    ? { href: "#create", label: "Add an agent" }
     : !hasJobs
       ? { href: "#schedules?new=1", label: "New schedule" }
       : { href: "#team", label: "Open team chat" };
@@ -112,7 +112,7 @@ export function Overview({ settings, notify }: ViewProps) {
                 {!hasPersonas && (
                   <div className="row setup-actions">
                     <a className="btn small primary" href="#create">
-                      Open Create
+                      Open Agents
                     </a>
                   </div>
                 )}
@@ -137,7 +137,7 @@ export function Overview({ settings, notify }: ViewProps) {
                       Repo digest
                     </a>
                     <a className="btn small" href="#schedules?new=1">
-                      New job
+                      New schedule
                     </a>
                   </div>
                 )}

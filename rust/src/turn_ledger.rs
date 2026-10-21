@@ -122,7 +122,7 @@ impl TurnLedger {
 
 async fn notify(deps: &HandlerDeps, transcripts: &TranscriptStore, thread_key: &str, space: &str, thread: Option<PostThread>, text: &str) {
     if thread_key.starts_with(TEAM_PREFIX) {
-        let message = TranscriptMessage { author: crate::personas::BOT_NAME.into(), text: text.into(), bot: true, at: None, questions: None, attachments: None };
+        let message = TranscriptMessage { author: crate::personas::BOT_NAME.into(), text: text.into(), bot: true, at: None, questions: None, attachments: None, reply_to: None };
         let _ = transcripts.append(thread_key, vec![message]).await;
     } else {
         let mut body = PostMessageBody::text(text);

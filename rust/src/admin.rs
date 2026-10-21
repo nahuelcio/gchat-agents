@@ -268,6 +268,7 @@ struct ScheduleBody {
     command: Option<String>,
     pattern: Option<String>,
     needs_approval: Option<bool>,
+    precheck: Option<String>,
 }
 
 async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<ScheduleBody>) -> Response {
@@ -295,6 +296,7 @@ async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<Sch
                 command: body.command,
                 pattern: body.pattern,
                 needs_approval: body.needs_approval.unwrap_or(false),
+                precheck: body.precheck,
             },
             chrono::Local::now(),
         )
@@ -318,6 +320,7 @@ async fn post_schedules_update(State(state): State<Arc<AppState>>, Json(body): J
                 cron: body.cron,
                 prompt: body.prompt,
                 name: body.name,
+                precheck: body.precheck,
                 ..Default::default()
             },
             chrono::Local::now(),
@@ -433,13 +436,22 @@ async fn get_search(State(state): State<Arc<AppState>>, Query(q): Query<SearchQu
     Json(state.transcripts.search(query.trim(), q.limit.unwrap_or(30).min(30))).into_response()
 }
 
-async fn get_share(State(state): State<Arc<AppState>>) -> Response {
+#[derive(Deserialize)]
+struct ShareQuery {
+    thread: Option<String>,
+}
+
+async fn get_share(State(state): State<Arc<AppState>>, Query(q): Query<ShareQuery>) -> Response {
     let url = state.public_url.lock().unwrap().clone();
     let Some(url) = url else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "sharing needs the tunnel" }))).into_response();
     };
-    let token = state.share.lock().await.value().to_string();
-    Json(json!({ "link": format!("{url}/play#{token}") })).into_response()
+    let share = state.share.lock().await;
+    match q.thread {
+        Some(thread) if thread_id_ok(&thread) => Json(json!({ "link": format!("{url}/play#{}&thread={thread}", share.scoped(&thread)) })).into_response(),
+        Some(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response(),
+        None => Json(json!({ "link": format!("{url}/play#{}", share.value()) })).into_response(),
+    }
 }
 
 async fn post_share_rotate(State(state): State<Arc<AppState>>) -> Response {
@@ -779,6 +791,8 @@ struct TeamSendBody {
     text: Option<String>,
     name: Option<String>,
     attachments: Option<Vec<crate::team::TeamAttachmentInput>>,
+    #[serde(rename = "replyTo")]
+    reply_to: Option<crate::transcripts::Quote>,
 }
 
 async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<TeamSendBody>) -> Response {
@@ -793,6 +807,7 @@ async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<Tea
         &name.chars().take(40).collect::<String>(),
         None,
         body.attachments.as_deref().unwrap_or_default(),
+        body.reply_to,
     )
     .await
     {
@@ -806,6 +821,8 @@ struct TeamSteerBody {
     thread: Option<String>,
     text: Option<String>,
     name: Option<String>,
+    #[serde(rename = "replyTo")]
+    reply_to: Option<crate::transcripts::Quote>,
 }
 
 async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<TeamSteerBody>) -> Response {
@@ -818,6 +835,7 @@ async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<Te
         &thread,
         &text,
         &name.chars().take(40).collect::<String>(),
+        body.reply_to,
     )
     .await
     {
@@ -828,7 +846,7 @@ async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<Te
 
 #[derive(Deserialize)]
 pub struct TeamThreadBody {
-    thread: Option<String>,
+    pub thread: Option<String>,
     archived: Option<bool>,
 }
 
