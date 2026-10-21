@@ -313,18 +313,29 @@ function modelRef(spec?: string) {
 
 type AssistantModel = {
   content?: { type: string; text?: string }[];
-  usage?: { input?: number; output?: number; totalTokens?: number };
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 };
 
-async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number } }> {
+type UsageTotals = { cost: { total: number } };
+
+async function conversationCostUsd(conv: Conversation): Promise<number> {
+  const view = await conv.viewState(ctx);
+  try {
+    const usage = view.value.docs["pi.usage"] as { models?: Record<string, UsageTotals>; tools?: Record<string, UsageTotals> } | undefined;
+    return [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})].reduce((sum, t) => sum + t.cost.total, 0);
+  } finally {
+    view.dispose();
+  }
+}
+
+async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number; costUsd: number } }> {
   const entry = await conv.commit((tx) => tx.entry(AssistantEntry, answer as never), ctx);
   const msg = (entry?.model?.[0] as AssistantModel | undefined) ?? {};
   const content = msg.content ?? [];
   const reply = content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
-  const fromUsage = msg.usage
-    ? Math.round((msg.usage.input ?? 0) + (msg.usage.output ?? 0) || msg.usage.totalTokens || 0)
-    : 0;
-  const contextTokens = fromUsage > 0 ? fromUsage : Math.max(1, Math.ceil(reply.length / 4));
+  const u = msg.usage;
+  const contextTokens = (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0) + (u?.output ?? 0);
+  if (contextTokens <= 0) return { reply };
   let contextWindow: number | undefined;
   try {
     const agent = await conv.agent(ctx);
@@ -334,8 +345,7 @@ async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ repl
       if (model?.contextWindow) contextWindow = model.contextWindow;
     }
   } catch {}
-  if (!contextWindow && process.env.PI_FAUX === "1") contextWindow = 200_000;
-  return { reply, usage: { contextTokens, contextWindow } };
+  return { reply, usage: { contextTokens, contextWindow, costUsd: await conversationCostUsd(conv) } };
 }
 
 type SubmitBody = {

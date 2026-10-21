@@ -99,6 +99,8 @@ pub struct SessionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_questions: Option<Vec<AgentQuestion>>,
@@ -197,6 +199,7 @@ pub struct SessionPatch {
     pub context_tokens: Option<Option<u64>>,
     pub context_window: Option<Option<u64>>,
     pub estimated: Option<Option<bool>>,
+    pub cost_usd: Option<Option<f64>>,
     pub turns: Option<Option<u64>>,
     pub pending_questions: Option<Option<Vec<AgentQuestion>>>,
     pub persona_sessions: Option<Option<HashMap<String, String>>>,
@@ -247,6 +250,9 @@ impl SessionPatch {
         if let Some(v) = self.estimated {
             record.estimated = v;
         }
+        if let Some(v) = self.cost_usd {
+            record.cost_usd = v;
+        }
         if let Some(v) = self.turns {
             record.turns = v;
         }
@@ -288,7 +294,7 @@ mod tests {
 
     #[test]
     fn persona_usage_tracks_real_and_estimated_tokens() {
-        let real = persona_usage_after(None, Some(&ContextUsage { context_tokens: 225, context_window: Some(200_000) }), 10, 20);
+        let real = persona_usage_after(None, Some(&ContextUsage { context_tokens: 225, context_window: Some(200_000), cost_usd: None }), 10, 20);
         assert_eq!(real.context_tokens, Some(225));
         assert_eq!(real.context_window, Some(200_000));
         assert_eq!(real.estimated, Some(false));

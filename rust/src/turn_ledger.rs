@@ -200,6 +200,7 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
                         context_tokens,
                         context_window,
                         estimated,
+                        cost_usd: out.usage.as_ref().and_then(|u| u.cost_usd).map(Some),
                         ..Default::default()
                     }
                 }

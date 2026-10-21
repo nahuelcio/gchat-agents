@@ -38,6 +38,7 @@ pub struct AgentTurnInput {
 pub struct ContextUsage {
     pub context_tokens: u64,
     pub context_window: Option<u64>,
+    pub cost_usd: Option<f64>,
 }
 
 pub struct PendingAgent {
