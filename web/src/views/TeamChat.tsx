@@ -155,6 +155,10 @@ function splitFooter(text: string): { text: string; footer?: string } {
   return m ? { text: text.slice(0, m.index), footer: m[1] } : { text };
 }
 
+function isNarrow(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 820px)").matches;
+}
+
 function isImageType(contentType: string): boolean {
   return contentType.startsWith("image/");
 }
@@ -214,8 +218,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
-  const [threadsOpen, setThreadsOpen] = useState(() => remember("switchboard.threadsOpen", true));
-  const [contextOpen, setContextOpen] = useState(() => remember("switchboard.contextOpen", true));
+  const [threadsOpen, setThreadsOpen] = useState(() => !isNarrow() && remember("switchboard.threadsOpen", true));
+  const [contextOpen, setContextOpen] = useState(() => !isNarrow() && remember("switchboard.contextOpen", true));
   const [name, setName] = useState<string>(() => remember("switchboard.name", ""));
   const [nameDraft, setNameDraft] = useState("");
   const [threads, setThreads] = useState<TeamThreadSummary[]>([]);
@@ -566,17 +570,40 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
   function toggleThreads(open: boolean) {
     setThreadsOpen(open);
+    if (isNarrow()) {
+      if (open) setContextOpen(false);
+      return;
+    }
     store("switchboard.threadsOpen", open);
   }
   function toggleContext(open: boolean) {
     setContextOpen(open);
+    if (isNarrow()) {
+      if (open) setThreadsOpen(false);
+      return;
+    }
     store("switchboard.contextOpen", open);
+  }
+  function pickThread(id: string) {
+    setActiveId(id);
+    if (isNarrow()) setThreadsOpen(false);
   }
 
   return (
     <ArtifactPreviewProvider>
     <div className={`playground ${transport.guest ? "standalone" : ""}`}>
       <ArtifactAutoOpen messages={state?.messages} mediaUrl={transport.mediaUrl} threadId={activeId} />
+      {(threadsOpen || (contextOpen && activeId)) && (
+        <button
+          type="button"
+          className="play-scrim"
+          aria-label="Close panel"
+          onClick={() => {
+            setThreadsOpen(false);
+            setContextOpen(false);
+          }}
+        />
+      )}
       <aside className={`play-threads${threadsOpen ? "" : " collapsed"}`} aria-label="Threads">
         {!threadsOpen ? (
           <button type="button" className="play-rail-toggle" aria-label="Show threads" title="Show threads" onClick={() => toggleThreads(true)}>
@@ -651,7 +678,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           {threads.length === 0 && <p className="muted small pad">{showArchived ? "No archived threads." : "No threads yet. Start one with +."}</p>}
           {threads.map((t) => (
             <div key={t.id} className={`play-thread${t.id === activeId ? " active" : ""}`}>
-              <button type="button" className="play-thread-main" onClick={() => setActiveId(t.id)}>
+              <button type="button" className="play-thread-main" onClick={() => pickThread(t.id)}>
                 <span className="strong">
                   {t.title}
                   {t.busy && <span className="live-dot" title="Agents are answering" aria-label="Agents are answering" />}
@@ -836,6 +863,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   </span>
                 );
               })}
+              {state?.debounce && !watched?.running && <DebounceNote key={state.debounce.count} debounce={state.debounce} />}
               {activeId && (
                 <button
                   className="btn linkish"
@@ -1056,6 +1084,23 @@ function TeamChatSide({
         </aside>
       )}
     </>
+  );
+}
+
+function DebounceNote({ debounce }: { debounce: { count: number; msLeft: number } }) {
+  const [until] = useState(() => Date.now() + debounce.msLeft);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, []);
+  const left = Math.max(0, Math.ceil((until - now) / 1000));
+  if (left === 0) return null;
+  const what = debounce.count === 1 ? "1 message" : `${debounce.count} messages`;
+  return (
+    <span className="muted small debounce-note" title="Waiting a moment for more messages before the turn starts">
+      Waiting for more · {what} · starts in {left}s
+    </span>
   );
 }
 

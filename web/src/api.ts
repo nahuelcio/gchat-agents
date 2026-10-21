@@ -479,6 +479,7 @@ export interface TeamThreadState {
   answering?: string[];
   presence?: Presence[];
   runs?: AgentRun[];
+  debounce?: { count: number; msLeft: number } | null;
 }
 
 export interface Presence {

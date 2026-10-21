@@ -320,12 +320,20 @@ async fn mark(deps: &HandlerDeps, request_id: Option<&str>, state: crate::turn_l
 struct Batch {
     generation: u64,
     items: Vec<(Option<String>, String, Option<String>)>,
+    due: std::time::Instant,
 }
 
 static BATCHES: std::sync::Mutex<Option<std::collections::HashMap<String, Batch>>> = std::sync::Mutex::new(None);
 
 pub fn debouncing(thread_key: &str) -> bool {
-    BATCHES.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(thread_key))
+    debounce_pending(thread_key).is_some()
+}
+
+pub fn debounce_pending(thread_key: &str) -> Option<(usize, u64)> {
+    let guard = BATCHES.lock().unwrap();
+    let batch = guard.as_ref()?.get(thread_key)?;
+    let left = batch.due.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
+    Some((batch.items.len(), left))
 }
 
 pub async fn debounce(deps: &HandlerDeps, req: TurnRequest) -> Option<TurnRequest> {
@@ -335,8 +343,9 @@ pub async fn debounce(deps: &HandlerDeps, req: TurnRequest) -> Option<TurnReques
     }
     let generation = {
         let mut guard = BATCHES.lock().unwrap();
-        let batch = guard.get_or_insert_with(std::collections::HashMap::new).entry(req.thread_key.clone()).or_insert(Batch { generation: 0, items: Vec::new() });
+        let batch = guard.get_or_insert_with(std::collections::HashMap::new).entry(req.thread_key.clone()).or_insert(Batch { generation: 0, items: Vec::new(), due: std::time::Instant::now() });
         batch.generation += 1;
+        batch.due = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
         batch.items.push((req.sender.clone(), req.text.clone(), req.request_id.clone()));
         batch.generation
     };

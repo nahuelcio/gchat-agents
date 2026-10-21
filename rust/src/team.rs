@@ -41,6 +41,14 @@ pub struct TeamThreadState {
     pub answering: Vec<String>,
     pub presence: Vec<Presence>,
     pub runs: Vec<AgentRun>,
+    pub debounce: Option<Debounce>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Debounce {
+    pub count: usize,
+    pub ms_left: u64,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -507,6 +515,7 @@ pub async fn team_thread(
             record.as_ref().and_then(|r| r.room_seen.as_ref()),
         ),
         runs: record.as_ref().map(|r| agent_runs(r, &options)).unwrap_or_default(),
+        debounce: crate::handler::debounce_pending(&thread_key).map(|(count, ms_left)| Debounce { count, ms_left }),
     })
 }
 
