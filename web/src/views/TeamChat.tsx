@@ -912,6 +912,12 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   </span>
                 );
               })}
+              {(state?.upcoming ?? []).map((handle) => (
+                <span key={`next-${handle}`} className="working-agent upcoming" title="Waiting for its turn">
+                  <AgentBlob name={handle} avatar={avatarOf(catalog, handle)} size={28} />
+                  <span className="muted small">@{handle} · next</span>
+                </span>
+              ))}
               {state?.debounce && !watched?.running && <DebounceNote key={state.debounce.count} debounce={state.debounce} />}
               {activeId && (
                 <button

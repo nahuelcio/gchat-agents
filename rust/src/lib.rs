@@ -39,6 +39,7 @@ pub mod text;
 pub mod transcripts;
 pub mod turn_ledger;
 pub mod usage;
+pub mod insights;
 pub mod tunnel;
 pub mod verify;
 pub mod workspace;

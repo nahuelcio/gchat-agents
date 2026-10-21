@@ -56,7 +56,7 @@ pub async fn search(q: &str, owner: Option<&str>, limit: u32) -> Result<Vec<Sear
     } else {
         return Ok(vec![]);
     };
-    let limit = limit.clamp(1, 20);
+    let limit = limit.clamp(1, 60);
     let limit_s = limit.to_string();
     let mut pairs: Vec<(&str, &str)> = vec![("q", query.as_str()), ("limit", limit_s.as_str())];
     if let Some(ref o) = owner {
@@ -81,7 +81,7 @@ pub async fn search(q: &str, owner: Option<&str>, limit: u32) -> Result<Vec<Sear
     }
     let data: Value = serde_json::from_str(&body).map_err(|e| format!("bad skills.sh response: {e}"))?;
     let skills = data.get("skills").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    Ok(skills
+    let mut hits: Vec<SearchHit> = skills
         .into_iter()
         .filter_map(|s| {
             let source = s.get("source")?.as_str()?.trim().to_string();
@@ -109,7 +109,11 @@ pub async fn search(q: &str, owner: Option<&str>, limit: u32) -> Result<Vec<Sear
                 installs,
             })
         })
-        .collect())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    hits.retain(|h| seen.insert(format!("{}@{}", h.source, h.skill_id)));
+    hits.sort_by(|a, b| b.installs.cmp(&a.installs));
+    Ok(hits)
 }
 
 pub async fn install_at(source: &str, dir: &Path, ends: &Endpoints) -> Result<Vec<String>, String> {

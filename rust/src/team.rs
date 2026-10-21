@@ -39,6 +39,7 @@ pub struct TeamThreadState {
     pub members: Option<Vec<RoomMember>>,
     pub kicked: Vec<String>,
     pub answering: Vec<String>,
+    pub upcoming: Vec<String>,
     pub presence: Vec<Presence>,
     pub runs: Vec<AgentRun>,
     pub debounce: Option<Debounce>,
@@ -271,7 +272,6 @@ pub async fn team_send(
         ledger.remember_prompt(&request_id, &format!("{name}: {prompt}")).await;
     }
     tokio::spawn(async move {
-        let captured = Arc::new(Mutex::new(Vec::new()));
         let deps3 = deps2.clone();
         let request = TurnRequest {
             thread_key: thread_key2.clone(),
@@ -281,20 +281,14 @@ pub async fn team_send(
             reply_via_chat: false,
             thread: None,
             room_n: None,
-            captured_replies: Some(captured.clone()),
+            captured_replies: None,
+            reply_sink: Some(transcripts2.clone()),
             request_id: Some(request_id.clone()),
         };
         let Some(request) = crate::handler::debounce(&deps3, request).await else { return };
         let result = crate::handler::tracked(&deps3, Some(&request_id), process_message(request, deps2)).await;
-        match result {
-            Ok(_) => {
-                let replies = captured.lock().await.clone();
-                for reply in replies {
-                    let message = bot_message(&transcripts2.get(&thread_key2), reply);
-                    let _ = transcripts2.append(&thread_key2, vec![message]).await;
-                }
-            }
-            Err(err) => tracing::error!(%err, "team turn failed"),
+        if let Err(err) = result {
+            tracing::error!(%err, "team turn failed");
         }
     });
 
@@ -327,6 +321,7 @@ pub async fn team_steer(
         thread: None,
         room_n: None,
         captured_replies: Some(captured.clone()),
+        reply_sink: None,
         request_id: None,
     };
     if !crate::handler::steered(&request, &deps).await {
@@ -389,7 +384,7 @@ fn speaker(m: &TranscriptMessage) -> String {
         .unwrap_or_else(|| m.author.clone())
 }
 
-fn bot_message(prior: &[TranscriptMessage], reply: String) -> TranscriptMessage {
+pub(crate) fn bot_message(prior: &[TranscriptMessage], reply: String) -> TranscriptMessage {
     let (text, reply_to) = split_quote(&reply, prior);
     TranscriptMessage {
         author: BOT_NAME.into(),
@@ -555,6 +550,10 @@ pub async fn team_thread(
         members: record.as_ref().and_then(|r| r.members.clone()),
         kicked: record.as_ref().and_then(|r| r.kicked.clone()).unwrap_or_default(),
         answering: talking.iter().map(|w| w.strip_prefix('@').unwrap_or(w)).map(String::from).collect(),
+        upcoming: crate::handler::upcoming(&thread_key)
+            .into_iter()
+            .filter(|n| !talking.iter().any(|t| t.trim_start_matches('@').eq_ignore_ascii_case(n)))
+            .collect(),
         presence: presence(
             &effective_members(record.as_ref(), &options.personas),
             &talking,

@@ -527,7 +527,7 @@ fn validate_chat_messages(messages: &[DraftChatMessage]) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_draft(driver: &Arc<dyn AgentDriver>, thread_key: &str, instructions: String, text: String, ctx: &DraftContext) -> Result<String, String> {
+pub(crate) async fn run_draft(driver: &Arc<dyn AgentDriver>, thread_key: &str, instructions: String, text: String, ctx: &DraftContext) -> Result<String, String> {
     let out = driver
         .run_turn(AgentTurnInput {
             thread_key: thread_key.into(),

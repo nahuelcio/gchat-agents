@@ -314,6 +314,7 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
             thread,
             room_n: None,
             captured_replies: None,
+            reply_sink: None,
             request_id: request_id.clone(),
         };
         let Some(request) = debounce(&deps2, request).await else { return };
@@ -482,6 +483,7 @@ pub struct TurnRequest {
     pub thread: Option<PostThread>,
     pub room_n: Option<u64>,
     pub captured_replies: Option<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    pub reply_sink: Option<Arc<crate::transcripts::TranscriptStore>>,
     pub request_id: Option<String>,
 }
 
@@ -596,7 +598,12 @@ async fn deliver_reply(
     } else {
         text.to_string()
     };
-    if let Some(buf) = &req.captured_replies {
+    if let Some(sink) = &req.reply_sink {
+        let message = crate::team::bot_message(&sink.get(&req.thread_key), body_text.clone());
+        if let Err(err) = sink.append(&req.thread_key, vec![message]).await {
+            tracing::error!(%err, "team reply append failed");
+        }
+    } else if let Some(buf) = &req.captured_replies {
         buf.lock().await.push(body_text.clone());
     }
     if let Some(room_author) = author.map(|a| format!("@{a}")).or(Some(BOT_NAME.to_string())) {
@@ -939,7 +946,9 @@ async fn persona_round(
     let mut idx = 0;
     let mut hops_done = 0;
     let mut interjections = 0;
+    let _upcoming = Upcoming(req.thread_key.clone());
     while idx < queue.len() && hops_done < max_hops + first.len() {
+        set_upcoming(&req.thread_key, queue[idx + 1..].iter().map(|q| q.persona.name.clone()).collect());
         if take_stop(&req.thread_key) {
             let left: Vec<_> = queue[idx..].iter().map(|q| format!("@{}", q.persona.name)).collect();
             deliver_reply(
@@ -1444,6 +1453,7 @@ pub async fn thread_command(deps: &HandlerDeps, thread_key: &str, text: &str) ->
         thread: None,
         room_n: None,
         captured_replies: None,
+        reply_sink: None,
         request_id: None,
     };
     run_command(&req, deps).await
@@ -1621,6 +1631,34 @@ impl Drop for Speaking {
             list.remove(i);
         }
     }
+}
+
+static UPCOMING: std::sync::Mutex<Vec<(String, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
+
+struct Upcoming(String);
+
+impl Drop for Upcoming {
+    fn drop(&mut self) {
+        UPCOMING.lock().unwrap().retain(|(k, _)| k != &self.0);
+    }
+}
+
+fn set_upcoming(thread_key: &str, names: Vec<String>) {
+    let mut list = UPCOMING.lock().unwrap();
+    list.retain(|(k, _)| k != thread_key);
+    if !names.is_empty() {
+        list.push((thread_key.to_string(), names));
+    }
+}
+
+pub fn upcoming(thread_key: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in UPCOMING.lock().unwrap().iter().filter(|(k, _)| k == thread_key).flat_map(|(_, n)| n) {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(name)) {
+            out.push(name.clone());
+        }
+    }
+    out
 }
 
 pub fn speaking(thread_key: &str) -> Vec<String> {
@@ -2080,6 +2118,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2133,6 +2172,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                reply_sink: None,
                 request_id: None,
             },
             d.clone(),
@@ -2150,6 +2190,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: None,
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2190,6 +2231,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2231,6 +2273,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2272,6 +2315,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: Some("m1".into()),
             },
             d,
@@ -2310,6 +2354,7 @@ mod tests {
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2375,6 +2420,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: None,
+            reply_sink: None,
             request_id: None,
         };
         let sessions = |d: &HandlerDeps| d.store.get("team/t1").map(|r| (r.session_ref.is_some(), r.persona_sessions.is_some())).unwrap();
@@ -2449,6 +2495,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: None,
+            reply_sink: None,
             request_id: None,
         };
         let note = run_command(&run("/clear @QA"), &deps).await.unwrap();
@@ -2504,6 +2551,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: Some(Arc::new(tokio::sync::Mutex::new(Vec::new()))),
+            reply_sink: None,
             request_id: None,
         };
         let note = run_command(&req("/compact"), &d).await.unwrap();
@@ -2582,6 +2630,7 @@ mod tests {
             thread: None,
             room_n: None,
             captured_replies: None,
+            reply_sink: None,
             request_id: Some(id.into()),
         };
         let ledger = deps.ledger.clone().unwrap();
@@ -2712,6 +2761,7 @@ Beto: yo tambien");
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2749,6 +2799,7 @@ Beto: yo tambien");
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,
@@ -2781,6 +2832,7 @@ Beto: yo tambien");
                 thread: None,
                 room_n: None,
                 captured_replies: Some(captured.clone()),
+                reply_sink: None,
                 request_id: None,
             },
             d,

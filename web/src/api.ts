@@ -294,6 +294,37 @@ export interface PiListing {
   homepage?: string;
 }
 
+export interface InsightsTool { name: string; calls: number; errors: number; ms: number; argsChars: number; resultChars: number; sampleErrors: string[] }
+export interface InsightsDigest {
+  days: number;
+  totals: { turns: number; cost: number; input: number; output: number; cacheRead: number; reasoning: number; passes: number; passCost: number; emptyReplies: number; errors: number; toolCalls: number; toolErrors: number };
+  models: { model: string; calls: number; input: number; output: number; cacheRead: number; cost: number }[];
+  agents: { agent: string; conversations: number; turns: number; toolCalls: number; toolErrors: number; cost: number; input: number; passes: number }[];
+  tools: InsightsTool[];
+  prompts: { chars: number; uses: number; agents: string[]; text: string }[];
+  codemodeChars: { max: number; last: number };
+  errorSamples: string[];
+  exchanges: { thread: string; agent: string; at: string; user: string; tools: string[]; reply: string; input: number; cost: number; error?: string }[];
+  options: { agents: string[]; repos: string[]; threads: string[] };
+}
+
+export interface InsightsFilter {
+  agent?: string;
+  repo?: string;
+  thread?: string;
+}
+
+export interface EngramDigest {
+  available: boolean;
+  path: string;
+  projects?: string[];
+  totals?: { observations: number; deleted: number; pinned: number; revised: number; sessions: number; sessionsOpen: number; sessionsNoSummary: number; prompts: number; last7d: number; last30d: number };
+  byProject?: { project: string; n: number }[];
+  byType?: { type: string; n: number }[];
+  relations?: { relation: string; status: string; n: number }[];
+  sameTitle?: { title: string; n: number; ids: string }[];
+}
+
 export interface Touch {
   at: string;
   thread: string;
@@ -421,6 +452,13 @@ export const api = {
   removePiPackage: (name: string) => call<PiPackage[]>("/api/pi/packages/remove", { name }),
   touches: (threadKey: string) => call<Touch[]>(`/api/threads/touches?threadKey=${encodeURIComponent(threadKey)}`),
   checkMcp: (name: string) => call<McpProbe>("/api/mcp/check", { name }),
+  insights: (days: number, filter: InsightsFilter = {}) => {
+    const q = new URLSearchParams({ days: String(days) });
+    for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+    return call<InsightsDigest>(`/api/insights?${q}`);
+  },
+  analyzeInsights: (body: { days: number; focus: string; source: "harness" | "talk" | "engram"; project?: string } & InsightsFilter) => call<{ report: string }>("/api/insights/analyze", body),
+  engramInsights: (project = "") => call<EngramDigest>(`/api/insights/engram${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   usage: (days = 30) => call<UsageReport>(`/api/usage?days=${days}`),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
@@ -562,6 +600,7 @@ export interface TeamThreadState {
   members?: RoomMember[] | null;
   kicked?: string[];
   answering?: string[];
+  upcoming?: string[];
   presence?: Presence[];
   runs?: AgentRun[];
   debounce?: { count: number; msLeft: number } | null;

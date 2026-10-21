@@ -430,7 +430,7 @@ function PiMarketplace({ installed, busy, onInstall }: { installed: Set<string>;
       {error && <p className="small mcp-error">{error}</p>}
       {items && <p className="muted small">{query ? `Results for “${query}”, ` : "From pi.dev, "}most popular first. Only tools work here; packages that are just TUI themes or commands load with nothing to use.</p>}
       <div className="pi-grid">
-        {items?.map((p) => {
+        {items && [...items].sort((a, b) => Number(installed.has(b.name)) - Number(installed.has(a.name))).map((p) => {
           const have = installed.has(p.name);
           return (
             <article key={p.name} className="pi-item">
@@ -507,7 +507,7 @@ function PiPackagesCard({ notify }: ViewProps) {
           {busy === "install" ? "Installing…" : "Install"}
         </button>
       </form>
-      {list?.length === 0 && <p className="muted small">No packages yet.</p>}
+      {!!list?.length && <h3 className="pi-installed-title">Installed ({list.length})</h3>}
       {list?.map((p) => (
         <div key={p.name} className="persona-row">
           <div className="grow">

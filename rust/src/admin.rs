@@ -43,6 +43,9 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/approvals/decide", post(post_approvals_decide))
         .route("/api/gate", post(post_gate))
         .route("/api/usage", get(get_usage))
+        .route("/api/insights", get(get_insights))
+        .route("/api/insights/analyze", post(post_insights_analyze))
+        .route("/api/insights/engram", get(get_insights_engram))
         .route("/api/pi/packages", get(get_pi_packages))
         .route("/api/pi/search", get(get_pi_search))
         .route("/api/pi/packages/install", post(post_pi_install))
@@ -483,6 +486,66 @@ async fn post_pi_remove(Json(body): Json<Value>) -> Response {
 #[derive(Deserialize)]
 struct UsageQuery {
     days: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct InsightsQuery {
+    days: Option<u32>,
+    agent: Option<String>,
+    repo: Option<String>,
+    thread: Option<String>,
+    project: Option<String>,
+}
+
+impl InsightsQuery {
+    fn filter(&self) -> Value {
+        let pick = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+        json!({ "agent": pick(&self.agent), "repo": pick(&self.repo), "thread": pick(&self.thread) })
+    }
+}
+
+async fn get_insights(State(state): State<Arc<AppState>>, Query(q): Query<InsightsQuery>) -> Response {
+    harness_reply(crate::insights::collect(&state.handler.store, q.days.unwrap_or(7).clamp(1, 90), q.filter()).await)
+}
+
+async fn get_insights_engram(Query(q): Query<InsightsQuery>) -> Response {
+    harness_reply(crate::insights::collect_engram(q.project.as_deref()).await)
+}
+
+#[derive(Deserialize)]
+struct AnalyzeBody {
+    focus: Option<String>,
+    source: Option<String>,
+    #[serde(flatten)]
+    q: InsightsQuery,
+}
+
+async fn post_insights_analyze(State(state): State<Arc<AppState>>, Json(b): Json<AnalyzeBody>) -> Response {
+    if b.source.as_deref() == Some("engram") {
+        let result = match crate::insights::collect_engram(b.q.project.as_deref()).await {
+            Ok(d) if d.get("available").and_then(|v| v.as_bool()) == Some(false) => Err("Engram is not installed or has no memory yet".to_string()),
+            Ok(d) => crate::insights::analyze_engram(&state.handler.driver, &d, b.focus.as_deref().unwrap_or(""), &draft_ctx(&state)).await,
+            Err(e) => Err(e),
+        };
+        return match result {
+            Ok(report) => Json(json!({ "report": report })).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+        };
+    }
+    let digest = match crate::insights::collect(&state.handler.store, b.q.days.unwrap_or(7).clamp(1, 90), b.q.filter()).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
+    };
+    let focus = b.focus.as_deref().unwrap_or("");
+    let result = if b.source.as_deref() == Some("talk") {
+        crate::insights::analyze_talk(&state.handler.driver, &digest, focus, &draft_ctx(&state)).await
+    } else {
+        crate::insights::analyze(&state.handler.driver, &digest, focus, &draft_ctx(&state)).await
+    };
+    match result {
+        Ok(report) => Json(json!({ "report": report })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    }
 }
 
 async fn get_usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> Response {

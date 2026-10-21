@@ -30,6 +30,8 @@ function formatInstalls(n: number): string {
   return String(n);
 }
 
+const SKILL_TOPICS = ["react", "testing", "design", "git", "docs", "security", "sql", "python", "rust", "devops", "review", "pdf"];
+
 function skillInstallSpec(hit: SkillSearchHit): string {
   return `${hit.source}@${hit.skillId}`;
 }
@@ -219,7 +221,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     setSkillSearching(true);
     const t = window.setTimeout(() => {
       api
-        .searchSkills(q, { owner: owner || undefined })
+        .searchSkills(q, { owner: owner || undefined, limit: 40 })
         .then(
           ({ skills: hits }) => setSkillHits(hits),
           () => setSkillHits([]),
@@ -229,7 +231,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     return () => window.clearTimeout(t);
   }, [skillSearch, skillOwner]);
 
-  const installFromSpec = (spec: string, clearSearch = false) => {
+  const installFromSpec = (spec: string) => {
     if (!spec || installing) return;
     setInstalling(true);
     setInstallingSpec(spec);
@@ -239,11 +241,6 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
         ({ installed, skills: list }) => {
           setSkills(list);
           setSkillSource("");
-          if (clearSearch) {
-            setSkillSearch("");
-            setSkillOwner("");
-            setSkillHits([]);
-          }
           notify(installed.length ? `Installed ${installed.join(", ")}` : "Nothing new to install");
         },
         (err: Error) => notify(err.message, true),
@@ -714,7 +711,25 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                 />
               </label>
             </div>
+            <div className="chips">
+              {SKILL_TOPICS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`chip ${skillSearch.trim() === t ? "on" : ""}`}
+                  aria-pressed={skillSearch.trim() === t}
+                  onClick={() => setSkillSearch(skillSearch.trim() === t ? "" : t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
             {skillSearching && <p className="muted small create-ai-search-status">Searching…</p>}
+            {!skillSearching && skillHits.length > 0 && (
+              <p className="muted small create-ai-search-status">
+                {skillHits.length} skills on <a href="https://skills.sh" target="_blank" rel="noreferrer">skills.sh</a>, most installed first.
+              </p>
+            )}
             {!skillSearching &&
               (skillSearch.trim().length >= 2 || skillOwner.trim().length >= 2) &&
               skillHits.length === 0 && (
@@ -722,18 +737,22 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
             )}
             {skillHits.length > 0 && (
               <ul className="create-ai-search-hits" aria-label="skills.sh results">
-                {skillHits.map((hit) => {
+                {skillHits
+                  .map((hit) => ({ hit, have: skills.some((s) => s.name.toLowerCase() === hit.skillId.toLowerCase() || s.name === hit.name) }))
+                  .sort((a, b) => Number(b.have) - Number(a.have))
+                  .map(({ hit, have }) => {
                   const spec = skillInstallSpec(hit);
                   const busy = installingSpec === spec;
-                  const have = skills.some(
-                    (s) => s.name === hit.skillId || s.name === hit.name || s.name.toLowerCase() === hit.skillId.toLowerCase(),
-                  );
                   return (
                     <li key={spec} className="create-ai-search-hit">
                       <div className="create-ai-search-hit-text">
-                        <span className="strong">{hit.name}</span>
+                        <a className="strong" href={`https://skills.sh/${hit.source}/${hit.skillId}`} target="_blank" rel="noreferrer">
+                          {hit.name}
+                        </a>
                         <span className="muted small mono">
-                          {hit.source}
+                          <a href={`https://github.com/${hit.source}`} target="_blank" rel="noreferrer">
+                            {hit.source}
+                          </a>
                           {hit.installs > 0 ? ` · ${formatInstalls(hit.installs)} installs` : ""}
                         </span>
                       </div>
@@ -741,9 +760,9 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                         type="button"
                         className="btn small primary"
                         disabled={installing || have}
-                        onClick={() => installFromSpec(spec, true)}
+                        onClick={() => installFromSpec(spec)}
                       >
-                        {busy ? "…" : have ? "Installed" : "Install"}
+                        {busy ? "Installing…" : have ? "Installed" : "Install"}
                       </button>
                     </li>
                   );
