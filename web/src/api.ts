@@ -707,6 +707,7 @@ export interface TeamThreadSummary {
   updatedAt?: string;
   count: number;
   busy?: boolean;
+  needsApproval?: boolean;
 }
 
 export interface QueuedItem {

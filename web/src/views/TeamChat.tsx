@@ -367,6 +367,24 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     transport.threads?.(showArchived).then(setThreads, () => {});
   }, [transport, showArchived]);
 
+  // ponytail: 5s poll so approval requests in other threads surface; push via SSE if it ever matters.
+  useEffect(() => {
+    const id = setInterval(loadThreads, 5000);
+    return () => clearInterval(id);
+  }, [loadThreads]);
+
+  const gatedRef = useRef(new Set<string>());
+  useEffect(() => {
+    const gated = threads.filter((t) => t.needsApproval);
+    const fresh = gated.filter((t) => !gatedRef.current.has(t.id));
+    gatedRef.current = new Set(gated.map((t) => t.id));
+    document.title = gated.length ? `(${gated.length}) Approval needed · Switchboard` : "Switchboard";
+    if (!fresh.length || typeof Notification === "undefined") return;
+    const notify = () => fresh.forEach((t) => new Notification("Approval needed", { body: t.title, tag: `approval-${t.id}` }));
+    if (Notification.permission === "granted") notify();
+    else if (Notification.permission === "default") Notification.requestPermission().then((p) => p === "granted" && notify(), () => {});
+  }, [threads]);
+
   useEffect(() => {
     loadThreads();
     transport.agents().then(setAgents, () => {});
@@ -728,6 +746,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 <span className="strong">
                   {t.title}
                   {t.busy && <span className="live-dot" title="Agents are answering" aria-label="Agents are answering" />}
+                  {t.needsApproval && <span className="approval-badge" title="Needs your approval">Approval</span>}
                 </span>
                 <span className="muted small">
                   {t.count} messages{t.updatedAt ? ` · ${ago(t.updatedAt)}` : ""}
@@ -873,6 +892,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   </div>
                   {m.replyTo && <QuoteBlock quote={m.replyTo} />}
                   <MessageContent text={body.text} attachments={m.attachments} mediaUrl={transport.mediaUrl} />
+                  {m.bot && (() => {
+                    const id = body.text.match(/\/approve (\w+) or \/deny \1/)?.[1];
+                    return id && (
+                      <div className="row">
+                        <button type="button" className="btn small" onClick={() => void send(`/approve ${id}`)}>Approve</button>{" "}
+                        <button type="button" className="btn small" onClick={() => void send(`/deny ${id}`)}>Deny</button>
+                      </div>
+                    );
+                  })()}
                   {body.footer && <div className="message-footer">{body.footer}</div>}
                   {m.bot && speechOut && body.text.trim() && (
                     <button

@@ -1036,6 +1036,7 @@ struct ArchivedQuery {
 async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<ArchivedQuery>) -> Response {
     let archived = q.archived.as_deref() == Some("1");
     let mut list: Vec<Value> = Vec::new();
+    let gated: Vec<String> = crate::gate::pending().into_iter().map(|g| g.thread_key).collect();
     for t in state.transcripts.list(TEAM_PREFIX, archived) {
         let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
         let busy = state.handler.queue.busy(&t.key).await || crate::handler::debouncing(&t.key);
@@ -1045,6 +1046,7 @@ async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<Ar
             "updatedAt": t.updated_at,
             "count": t.count,
             "busy": busy,
+            "needsApproval": gated.contains(&t.key),
         }));
     }
     Json(list).into_response()
