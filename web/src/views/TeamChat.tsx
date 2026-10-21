@@ -111,7 +111,6 @@ function AgentQuestions({
 }
 
 /** Live progress of the running turn: thinking collapsed, tool calls listed. Nothing is truncated. */
-/** The live thinking stream, open so it is visible as it arrives; collapsible, with the tail in view. */
 function ThinkingStream({ text }: { text: string }) {
   const pre = useRef<HTMLPreElement>(null);
   useEffect(() => {
@@ -650,7 +649,10 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           {threads.map((t) => (
             <div key={t.id} className={`play-thread${t.id === activeId ? " active" : ""}`}>
               <button type="button" className="play-thread-main" onClick={() => setActiveId(t.id)}>
-                <span className="strong">{t.title}</span>
+                <span className="strong">
+                  {t.title}
+                  {t.busy && <span className="live-dot" title="Agents are answering" aria-label="Agents are answering" />}
+                </span>
                 <span className="muted small">
                   {t.count} messages{t.updatedAt ? ` · ${ago(t.updatedAt)}` : ""}
                 </span>

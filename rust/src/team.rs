@@ -437,7 +437,7 @@ pub async fn team_thread(
         busy: deps.queue.busy(&thread_key).await,
         members: record.as_ref().and_then(|r| r.members.clone()),
         kicked: record.as_ref().and_then(|r| r.kicked.clone()).unwrap_or_default(),
-        answering: talking.iter().filter_map(|w| w.strip_prefix('@')).map(String::from).collect(),
+        answering: talking.iter().map(|w| w.strip_prefix('@').unwrap_or(w)).map(String::from).collect(),
         presence: presence(
             &effective_members(record.as_ref(), &options.personas),
             &talking,

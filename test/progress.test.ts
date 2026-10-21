@@ -34,7 +34,6 @@ describe("progressMapper", () => {
   it("backfills thinking that arrives collapsed into a whole block or message", () => {
     let t = 0;
     const map = progressMapper(() => t);
-    // pi-durable writes the first block whole: its leading text rides on thinking_start, not on deltas.
     expect(
       map([{ type: "message_update", changes: [{ type: "thinking_start", contentIndex: 0, block: { type: "thinking", thinking: "We need answer. " } }] }] as never),
     ).toEqual([{ kind: "thinking", text: "We need answer. " }]);
@@ -42,7 +41,6 @@ describe("progressMapper", () => {
     expect(
       map([{ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta: "more" }] }] as never),
     ).toEqual([{ kind: "thinking", text: "more" }]);
-    // A batch that collapses everything into one whole message must still forward the unseen text.
     t = 800;
     expect(
       map([{ type: "message_update", changes: [{ type: "message", message: { content: [{ type: "thinking", thinking: "We need answer. more text" }] } }] }] as never),
@@ -55,11 +53,9 @@ describe("progressMapper", () => {
     const think = (delta: string) => [{ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta }] }] as never;
     expect(map(think("abc"))).toEqual([{ kind: "thinking", text: "abc" }]);
     t = 400;
-    // The block repeats what was already sent plus a suffix: only the suffix goes out.
     expect(
       map([{ type: "message_update", changes: [{ type: "block", contentIndex: 0, block: { type: "thinking", thinking: "abcdef" } }] }] as never),
     ).toEqual([{ kind: "thinking", text: "def" }]);
-    // A shorter rewrite must not emit anything stale.
     t = 800;
     expect(
       map([{ type: "message_update", changes: [{ type: "block", contentIndex: 0, block: { type: "thinking", thinking: "xy" } }] }] as never),
@@ -93,13 +89,11 @@ describe("progressMapper", () => {
     const think = (delta: string) => [{ type: "message_update", changes: [{ type: "thinking_delta", contentIndex: 0, delta }] }] as never;
     const rates = (items: ReturnType<ReturnType<typeof progressMapper>>) => items.filter((i) => i.kind === "tps");
     expect(map([{ type: "turn_start" }] as never)).toEqual([{ kind: "turn", text: "" }]);
-    // 40 chars per call = 10 estimated tokens; the window needs 1.5s before the first rate frame.
     t = 100;
     map(think("x".repeat(40)));
     t = 1300;
     expect(rates(map(think("x".repeat(40))))).toEqual([]);
     t = 1700;
-    // 30 tokens generated so far; the 1.6s window holds 20 of them: 20 / 1.6 = 12.5 tok/s.
     expect(rates(map(think("x".repeat(40))))).toEqual([{ kind: "tps", tps: 12.5 }]);
     t = 2000;
     expect(rates(map(think("x".repeat(40))))).toEqual([]);

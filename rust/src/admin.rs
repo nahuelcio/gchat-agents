@@ -691,20 +691,18 @@ struct ArchivedQuery {
 
 async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<ArchivedQuery>) -> Response {
     let archived = q.archived.as_deref() == Some("1");
-    let list: Vec<Value> = state
-        .transcripts
-        .list(TEAM_PREFIX, archived)
-        .into_iter()
-        .map(|t| {
-            let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
-            json!({
-                "id": t.key.strip_prefix(TEAM_PREFIX).unwrap_or(&t.key),
-                "title": title,
-                "updatedAt": t.updated_at,
-                "count": t.count,
-            })
-        })
-        .collect();
+    let mut list: Vec<Value> = Vec::new();
+    for t in state.transcripts.list(TEAM_PREFIX, archived) {
+        let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
+        let busy = state.handler.queue.busy(&t.key).await;
+        list.push(json!({
+            "id": t.key.strip_prefix(TEAM_PREFIX).unwrap_or(&t.key),
+            "title": title,
+            "updatedAt": t.updated_at,
+            "count": t.count,
+            "busy": busy,
+        }));
+    }
     Json(list).into_response()
 }
 
@@ -788,7 +786,6 @@ pub async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
     }
     let key = format!("{TEAM_PREFIX}{thread}");
     crate::personas::request_stop(&key);
-    // The queue flag only gates the next hand-off; the reply in flight has to be aborted at the harness.
     let _ = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{}/abort", crate::pi_sidecar::port()))
         .json(&json!({ "thread": key }))

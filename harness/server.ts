@@ -488,7 +488,6 @@ createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
     if (req.method === "POST" && req.url === "/abort") {
       const { thread, conversationId } = JSON.parse(await read(req)) as { thread?: string; conversationId?: string };
-      // A thread may hold several conversations (one per persona); stop them all.
       const ids = thread ? Object.entries(threads).filter(([, key]) => key === thread).map(([id]) => id) : conversationId ? [conversationId] : [];
       let aborted = 0;
       for (const id of ids) {

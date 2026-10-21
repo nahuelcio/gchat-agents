@@ -497,6 +497,7 @@ export interface TeamThreadSummary {
   title: string;
   updatedAt?: string;
   count: number;
+  busy?: boolean;
 }
 
 export interface TeamTransport {
