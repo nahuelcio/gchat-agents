@@ -697,7 +697,7 @@ async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<Ar
     let mut list: Vec<Value> = Vec::new();
     for t in state.transcripts.list(TEAM_PREFIX, archived) {
         let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
-        let busy = state.handler.queue.busy(&t.key).await;
+        let busy = state.handler.queue.busy(&t.key).await || crate::handler::debouncing(&t.key);
         list.push(json!({
             "id": t.key.strip_prefix(TEAM_PREFIX).unwrap_or(&t.key),
             "title": title,

@@ -324,9 +324,13 @@ struct Batch {
 
 static BATCHES: std::sync::Mutex<Option<std::collections::HashMap<String, Batch>>> = std::sync::Mutex::new(None);
 
+pub fn debouncing(thread_key: &str) -> bool {
+    BATCHES.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(thread_key))
+}
+
 pub async fn debounce(deps: &HandlerDeps, req: TurnRequest) -> Option<TurnRequest> {
     let ms = (deps.options)().debounce_ms;
-    if ms == 0 || command_of(&req.text).is_some() {
+    if ms == 0 || command_of(&req.text).is_some() || deps.queue.busy(&req.thread_key).await {
         return Some(req);
     }
     let generation = {

@@ -226,7 +226,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
-  const [watched, setWatched] = useState<{ view: ThreadViewState; startedAt: number }>();
+  const [watched, setWatched] = useState<{ view: ThreadViewState; startedAt?: number; running: boolean }>();
   const [sending, setSending] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -432,13 +432,17 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     if (list) list.scrollTop = list.scrollHeight;
   }, [state?.messages.length, sending]);
 
-  const busy = Boolean(sending || state?.busy);
   useEffect(() => {
     setWatched(undefined);
-    if (!busy || !activeId || !transport.watch) return;
-    const startedAt = Date.now();
-    return transport.watch(activeId, (view) => setWatched({ view, startedAt }));
-  }, [activeId, transport, busy]);
+    if (!activeId || !transport.watch) return;
+    let startedAt: number | undefined;
+    return transport.watch(activeId, (view) => {
+      const running = Boolean((view.docs["pi.live"] as { run?: unknown } | undefined)?.run);
+      startedAt = running ? (startedAt ?? Date.now()) : undefined;
+      setWatched({ view, startedAt, running });
+    });
+  }, [activeId, transport]);
+  const busy = Boolean(sending || state?.busy || watched?.running);
   const progress = useMemo(() => progressOf(watched?.view, watched?.startedAt), [watched]);
   const queued = progress.queued;
 
@@ -446,7 +450,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     const value = text.trim();
     // Allow another message while a turn is still running: while busy, a text message steers the running turn.
     if ((!value && !files.length) || !threadId) return;
-    const steer = state?.busy && threadId === activeId && !files.length ? transport.steer : undefined;
+    const steer = busy && threadId === activeId && !files.length ? transport.steer : undefined;
     setDraft("");
     clearPending();
     setSending(true);
@@ -555,7 +559,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   const active = threads.find((t) => t.id === activeId);
-  const working = sending || state?.busy;
+  const working = busy;
 
   function toggleThreads(open: boolean) {
     setThreadsOpen(open);
