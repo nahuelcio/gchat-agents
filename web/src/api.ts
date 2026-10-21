@@ -281,6 +281,19 @@ export interface PiPackage {
   error?: string;
 }
 
+export interface PiListing {
+  name: string;
+  version: string;
+  description?: string;
+  keywords?: string[];
+  publisher?: string;
+  updated?: string;
+  monthly?: number;
+  npm?: string;
+  repository?: string;
+  homepage?: string;
+}
+
 export interface Touch {
   at: string;
   thread: string;
@@ -402,6 +415,7 @@ export const api = {
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
     call<Job[]>("/api/schedules", job),
   approvals: () => call<Approval[]>("/api/approvals"),
+  piSearch: (q: string, from = 0) => call<{ total: number; items: PiListing[] }>(`/api/pi/search?q=${encodeURIComponent(q)}&from=${from}`),
   piPackages: () => call<PiPackage[]>("/api/pi/packages"),
   installPiPackage: (spec: string) => call<PiPackage[]>("/api/pi/packages/install", { spec }),
   removePiPackage: (name: string) => call<PiPackage[]>("/api/pi/packages/remove", { name }),

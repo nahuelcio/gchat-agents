@@ -44,6 +44,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/gate", post(post_gate))
         .route("/api/usage", get(get_usage))
         .route("/api/pi/packages", get(get_pi_packages))
+        .route("/api/pi/search", get(get_pi_search))
         .route("/api/pi/packages/install", post(post_pi_install))
         .route("/api/pi/packages/remove", post(post_pi_remove))
         .route("/api/threads/touches", get(get_touches))
@@ -424,6 +425,47 @@ fn harness_reply(r: Result<Value, String>) -> Response {
         Ok(v) => Json(v).into_response(),
         Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct PiSearchQuery {
+    q: Option<String>,
+    from: Option<u32>,
+}
+
+async fn get_pi_search(Query(q): Query<PiSearchQuery>) -> Response {
+    let text = format!("keywords:pi-package {}", q.q.unwrap_or_default().trim());
+    let res = reqwest::Client::new()
+        .get("https://registry.npmjs.org/-/v1/search")
+        .query(&[("text", text.trim().to_string()), ("size", "24".into()), ("from", q.from.unwrap_or(0).to_string())])
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await;
+    let body: Value = match res {
+        Ok(r) => r.json().await.unwrap_or(Value::Null),
+        Err(err) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("npm search failed: {err}") }))).into_response(),
+    };
+    let items: Vec<Value> = body["objects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let p = &o["package"];
+            json!({
+                "name": p["name"],
+                "version": p["version"],
+                "description": p["description"],
+                "keywords": p["keywords"],
+                "publisher": p["publisher"]["username"],
+                "updated": o["updated"].as_str().or(p["date"].as_str()),
+                "monthly": o["downloads"]["monthly"],
+                "npm": p["links"]["npm"],
+                "repository": p["links"]["repository"],
+                "homepage": p["links"]["homepage"],
+            })
+        })
+        .collect();
+    Json(json!({ "total": body["total"], "items": items })).into_response()
 }
 
 async fn get_pi_packages() -> Response {

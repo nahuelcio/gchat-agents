@@ -88,7 +88,7 @@ Any other stdio MCP server can be added by hand or by pasting a Claude or Cursor
 
 ### pi.dev packages
 
-Install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**. Their tools become a `pi-<name>` group you can give to agents, and bundled skills are added to your skills. Only tools are adapted; TUI, commands and event hooks are ignored and listed as such.
+Browse, search and install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**, most popular first. Their tools become a `pi-<name>` group you can give to agents, and bundled skills are added to your skills. Only tools are adapted; TUI, commands and event hooks are ignored and listed as such.
 
 ## Connect Google Chat
 

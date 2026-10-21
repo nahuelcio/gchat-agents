@@ -1,5 +1,6 @@
 import { useEffect, useState, type FocusEvent, type ReactNode } from "react";
 import {
+  ago,
   api,
   type AdoRepo,
   type AdoStatus,
@@ -10,6 +11,7 @@ import {
   type RepoConfig,
   type Settings,
   type McpProbe,
+  type PiListing,
   type PiPackage,
   type McpServer,
   type PiCustomProvider,
@@ -356,6 +358,116 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
   );
 }
 
+const PI_TOPICS = ["web search", "browser", "mcp", "subagents", "git", "memory", "review", "docs", "test", "plan", "image"];
+
+function downloads(n?: number) {
+  if (!n) return "";
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M/mo` : n >= 1000 ? `${Math.round(n / 1000)}k/mo` : `${n}/mo`;
+}
+
+function PiMarketplace({ installed, busy, onInstall }: { installed: Set<string>; busy: string | null; onInstall: (name: string) => void }) {
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
+  const [items, setItems] = useState<PiListing[]>();
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    setError(undefined);
+    api
+      .piSearch(query)
+      .then(
+        (r) => {
+          if (!live) return;
+          setItems(r.items);
+          setTotal(r.total);
+        },
+        (e: Error) => live && setError(e.message),
+      )
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [query]);
+  const more = () => {
+    setLoading(true);
+    void api
+      .piSearch(query, items?.length ?? 0)
+      .then((r) => setItems((prev) => [...(prev ?? []), ...r.items]), (e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+  return (
+    <section className="pi-market" aria-label="pi.dev marketplace">
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setQuery(q.trim());
+        }}
+      >
+        <input className="grow" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search pi packages" aria-label="Search pi packages" />
+        <button className="btn">Search</button>
+      </form>
+      <div className="chips">
+        {PI_TOPICS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={`chip ${query === t ? "on" : ""}`}
+            aria-pressed={query === t}
+            onClick={() => {
+              const next = query === t ? "" : t;
+              setQ(next);
+              setQuery(next);
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      {error && <p className="small mcp-error">{error}</p>}
+      {items && <p className="muted small">{query ? `Results for “${query}”, ` : "From pi.dev, "}most popular first. Only tools work here; packages that are just TUI themes or commands load with nothing to use.</p>}
+      <div className="pi-grid">
+        {items?.map((p) => {
+          const have = installed.has(p.name);
+          return (
+            <article key={p.name} className="pi-item">
+              <div className="pi-item-head">
+                <a className="strong" href={p.npm ?? `https://www.npmjs.com/package/${p.name}`} target="_blank" rel="noreferrer">
+                  {p.name}
+                </a>
+                <span className="muted small">v{p.version}</span>
+              </div>
+              <p className="small pi-desc">{p.description || "No description."}</p>
+              <div className="pi-item-foot">
+                <span className="muted small">
+                  {[downloads(p.monthly), p.publisher, p.updated && ago(p.updated)].filter(Boolean).join(" · ")}
+                </span>
+                {p.repository && (
+                  <a className="small" href={p.repository} target="_blank" rel="noreferrer">
+                    source
+                  </a>
+                )}
+                <button type="button" className={`btn small ${have ? "" : "primary"}`} disabled={have || busy !== null} onClick={() => onInstall(p.name)}>
+                  {have ? "Installed" : busy === p.name ? "Installing…" : "Install"}
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {loading && <p className="muted small">Loading…</p>}
+      {items && items.length < total && !loading && (
+        <button type="button" className="btn small" onClick={more}>
+          Show more
+        </button>
+      )}
+    </section>
+  );
+}
+
 function PiPackagesCard({ notify }: ViewProps) {
   const [list, setList] = useState<PiPackage[]>();
   const [spec, setSpec] = useState("");
@@ -411,6 +523,8 @@ function PiPackagesCard({ notify }: ViewProps) {
           </button>
         </div>
       ))}
+      <h3 className="pi-installed-title">Browse</h3>
+      <PiMarketplace installed={new Set((list ?? []).map((p) => p.name))} busy={busy} onInstall={(name) => run(name, api.installPiPackage(name), `${name} installed`)} />
     </details>
   );
 }

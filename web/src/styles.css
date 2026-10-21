@@ -1813,3 +1813,12 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .touches li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .touch-write, .touch-edit { background: var(--info-soft); color: var(--info); }
 .touch-bash, .touch-powershell { background: var(--ok-soft); color: var(--ok); }
+.pi-market { display: grid; gap: 10px; margin: 8px 0 16px; }
+.pi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.pi-item { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: var(--radius-sm, 6px); background: var(--panel); min-width: 0; }
+.pi-item-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.pi-item-head a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pi-desc { margin: 0; flex: 1; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.pi-item-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pi-item-foot .btn { margin-left: auto; }
+.pi-installed-title { font-size: 0.95em; margin: 8px 0 0; }
