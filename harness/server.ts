@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -481,6 +482,42 @@ async function conversationTotals(conv: Conversation): Promise<{ costUsd: number
   }
 }
 
+// Output tokens per second of model time for one turn: generations after the submission, minus the tool calls inside them.
+function turnTps(requestId: string): number | undefined {
+  try {
+    const db = new DatabaseSync(join(dataDir, "harness.sqlite"), { readOnly: true });
+    try {
+      const sub = db.prepare("select id, conversation_id c from submissions where request_id = ? order by id desc limit 1").get(JSON.stringify(requestId)) as { id: number; c: number } | undefined;
+      if (!sub) return undefined;
+      type Task = { kind: string; startedAt?: number; endedAt?: number; state?: { outcome?: { result?: { entryId?: number } } } };
+      const tasks = (db.prepare("select record from tasks where conversation_id = ? and id > ?").all(sub.c, sub.id) as { record: string }[]).map((r) => JSON.parse(r.record) as Task).filter((t) => t.startedAt && t.endedAt);
+      const tools = tasks.filter((t) => t.kind === "pi.tool");
+      let out = 0;
+      let ms = 0;
+      for (const g of tasks.filter((t) => t.kind === "pi.generation")) {
+        const entry = g.state?.outcome?.result?.entryId;
+        const row = entry === undefined ? undefined : (db.prepare("select record from entries where id = ?").get(entry) as { record: string } | undefined);
+        const model = row ? JSON.parse(row.record).model : undefined;
+        const tokens = (Array.isArray(model) ? model[0] : model)?.usage?.output ?? 0;
+        if (!tokens) continue;
+        let busy = 0;
+        let end = g.startedAt!;
+        for (const t of tools.filter((t) => t.startedAt! >= g.startedAt! && t.endedAt! <= g.endedAt!).sort((a, b) => a.startedAt! - b.startedAt!)) {
+          busy += Math.max(0, t.endedAt! - Math.max(t.startedAt!, end));
+          end = Math.max(end, t.endedAt!);
+        }
+        out += tokens;
+        ms += g.endedAt! - g.startedAt! - busy;
+      }
+      return out && ms > 0 ? Math.round((out / ms) * 10000) / 10 : undefined;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 async function commitAnswer(conv: Conversation, answer: unknown): Promise<{ reply: string; usage?: { contextTokens: number; contextWindow?: number; costUsd: number; tokensIn: number; tokensOut: number } }> {
   const entry = await conv.commit((tx) => tx.entry(AssistantEntry, answer as never), ctx);
   const msg = (entry?.model?.[0] as AssistantModel | undefined) ?? {};
@@ -614,7 +651,7 @@ async function waitFor(requestId: string, ms: number) {
   }
   if (await joined(requestId, String(settled.answer))) return { status: "joined", conversationId: known };
   const { reply, usage } = await commitAnswer(conv, settled.answer);
-  return { status: "done", conversationId: known, reply, usage };
+  return { status: "done", conversationId: known, reply, usage: usage && { ...usage, tokensPerSec: turnTps(requestId) } };
 }
 
 async function compact(body: { conversationId: string; instructions?: string }) {

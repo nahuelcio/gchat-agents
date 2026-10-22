@@ -807,6 +807,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                         context_window,
                         estimated,
                         cost_usd: out.usage.as_ref().and_then(|u| u.cost_usd).map(Some),
+                        tokens_per_sec: Some(out.usage.as_ref().and_then(|u| u.tokens_per_sec)),
                         summary: Some(None),
                         ..Default::default()
                     },
@@ -1906,7 +1907,8 @@ pub fn context_line(r: &crate::session::SessionRecord, options: &TurnOptions) ->
         .map(|p| format!("{p}%"))
         .unwrap_or_else(|| "?".into());
     let cost = r.cost_usd.map(|c| format!(" · ${c:.4}")).unwrap_or_default();
-    format!("\n_context {pct} · {model}{cost}_")
+    let tps = r.tokens_per_sec.map(|t| format!(" · {t:.0} tok/s")).unwrap_or_default();
+    format!("\n_context {pct} · {model}{cost}{tps}_")
 }
 
 pub fn settings_to_options(s: &Settings) -> TurnOptions {

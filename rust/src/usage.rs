@@ -142,7 +142,7 @@ mod tests {
     use super::*;
 
     fn usage(cost: f64, tin: u64, tout: u64) -> ContextUsage {
-        ContextUsage { context_tokens: 1, context_window: None, cost_usd: Some(cost), tokens_in: Some(tin), tokens_out: Some(tout) }
+        ContextUsage { context_tokens: 1, context_window: None, cost_usd: Some(cost), tokens_in: Some(tin), tokens_out: Some(tout), tokens_per_sec: None }
     }
 
     #[test]

@@ -91,6 +91,19 @@ pub fn wrap_html(title: &str, html: &str) -> String {
     } else {
         trimmed
     };
+    // Keep <style>/<link> from a full document's <head>; only <title>/<meta> are ours.
+    let lower = trimmed.to_ascii_lowercase();
+    let head_inner = match (lower.find("<head>"), lower.find("</head>")) {
+        (Some(a), Some(b)) if a < b => trimmed[a + 6..b]
+            .lines()
+            .filter(|l| {
+                let l = l.trim_start().to_ascii_lowercase();
+                !l.starts_with("<title") && !l.starts_with("<meta")
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
     let safe_title = title
         .chars()
         .map(|c| if c == '<' || c == '>' || c == '&' { ' ' } else { c })
@@ -103,6 +116,7 @@ pub fn wrap_html(title: &str, html: &str) -> String {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>{safe_title}</title>
+{head_inner}
 </head>
 <body>
 {body_inner}
@@ -139,6 +153,14 @@ pub fn marker(id: &str, title: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn keeps_head_styles() {
+        let out = wrap_html("T", "<html><head><title>x</title>\n<style>.a{color:red}</style>\n</head><body><p class=a>hi</p></body></html>");
+        assert!(out.contains("<style>.a{color:red}</style>"));
+        assert!(out.contains("<p class=a>hi</p>"));
+        assert_eq!(out.matches("<title>").count(), 1);
+    }
 
     #[test]
     fn fills_placeholders() {

@@ -140,17 +140,19 @@ impl Workspaces {
         let branch = format!("switchboard/{slug}");
         let dir = self.thread_dir(slug);
         tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        // git -C resolves a relative path against the repo, not our cwd.
+        let dir = std::path::absolute(&dir).map_err(|e| e.to_string())?;
         let worktree = dir.join(repo_name).to_string_lossy().to_string();
         let base = repo.base.clone().unwrap_or_else(|| "HEAD".into());
-        let status = Command::new("git")
+        let out = Command::new("git")
             .args(["-C", &repo.path, "worktree", "add", "-B", &branch, &worktree, &base])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .status()
+            .output()
             .await
             .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("git worktree add failed for {repo_name}"));
+        if !out.status.success() {
+            return Err(format!("git worktree add failed for {repo_name}: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
         Ok((worktree, branch))
     }

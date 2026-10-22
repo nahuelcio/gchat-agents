@@ -1,0 +1,149 @@
+<!-- Reference: a data report built to the artifacts skill. Same data the old "walkthrough" template crammed into three paragraphs. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: ops report. Verdict first, KPI strip, then one block per question the on-call asks: is it up, what is failing, what do I do. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --fg: #1a2230; --muted: #5d6878; --line: #dde2e8;
+  --accent: #3b4fd8; --good: #1f8a5b; --warn: #b7791f; --bad: #c2412d;
+  --good-soft: #e3f3eb; --warn-soft: #fbf0dc; --bad-soft: #fbe6e2;
+  --font-display: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f141b; --surface: #161d27; --fg: #e4e9f0; --muted: #94a0b2; --line: #263142;
+    --accent: #8c9cff; --good: #4cc38a; --warn: #e3a94b; --bad: #f07a63;
+    --good-soft: #15302a; --warn-soft: #33281a; --bad-soft: #36201d; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 var(--font-body);
+  padding-block: 24px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 920px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--font-display); margin: 0; text-wrap: balance; line-height: 1.15; }
+h1 { font-size: 1.9rem; font-weight: 800; }
+h2 { font-size: 1.15rem; font-weight: 600; }
+p { margin: 0; }
+.mono, code { font-family: var(--font-mono); font-size: .86em; }
+.meta { color: var(--muted); font-family: var(--font-mono); font-size: .78rem; letter-spacing: .04em; }
+header { display: grid; gap: 10px; }
+.verdict { display: flex; gap: 12px; align-items: flex-start; background: var(--warn-soft); border: 1px solid var(--warn); border-radius: 8px; padding: 12px 14px; }
+.verdict p { min-width: 0; }
+.pill { font: 600 .72rem/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; padding: 5px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill.warn { color: var(--warn); } .pill.good { color: var(--good); } .pill.bad { color: var(--bad); } .pill.muted { color: var(--muted); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 2px; }
+.kpi b { font: 600 1.6rem/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--muted); font-size: .85rem; }
+.kpi .delta { font-family: var(--font-mono); font-size: .78rem; }
+.up-bad { color: var(--bad); } .flat { color: var(--muted); }
+section { display: grid; gap: 12px; }
+.sec-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.src { color: var(--accent); font: .8rem var(--font-mono); text-decoration: none; }
+.src:hover, .src:focus-visible { text-decoration: underline; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+th { font: 600 .7rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+td.n, th.n { text-align: right; }
+tr:last-child td { border-bottom: 0; }
+.bar { position: relative; height: 8px; background: var(--line); border-radius: 4px; min-width: 120px; }
+.bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--good); }
+.bar i.w { background: var(--warn); }
+.patterns { display: grid; gap: 10px; }
+.pat { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; min-width: 0; }
+.pat-top { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.pat-top b { font: 600 1.1rem var(--font-display); font-variant-numeric: tabular-nums; }
+.pat-top .prev { color: var(--muted); font-family: var(--font-mono); font-size: .8rem; }
+.sample { font: .78rem/1.45 var(--font-mono); color: var(--muted); background: var(--bg); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+ol.actions { margin: 0; padding-left: 1.3em; display: grid; gap: 10px; max-width: 70ch; }
+ol.actions b { font-weight: 600; }
+footer { color: var(--muted); font-size: .85rem; display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 14px; max-width: 75ch; }
+</style>
+
+<main>
+  <header>
+    <p class="meta">ns yflow-yoizentest · aks-yoizen · 24 h hasta 21/10 19:50 UTC vs 24 h previas</p>
+    <h1>yFlow UAT Health</h1>
+    <div class="verdict">
+      <span class="pill warn">Watch</span>
+      <p><b>La plataforma está sana, los errores no.</b> Aparecieron dos familias de error nuevas en webapi (KB request conflict y Generate Report), las dos en cero el día anterior, con un volumen de logs 17 % más alto.</p>
+    </div>
+  </header>
+
+  <div class="kpis">
+    <div class="kpi"><span>Pods ready</span><b>7 / 7</b><span class="delta flat">0 reinicios · 0 OOMKilled</span></div>
+    <div class="kpi"><span>Líneas de error 24 h</span><b>2.749</b><span class="delta up-bad">+32 % vs 2.076</span></div>
+    <div class="kpi"><span>p95 webapi (ingress)</span><b>222 ms</b><span class="delta up-bad">vs 169 ms</span></div>
+    <div class="kpi"><span>Alertas en el namespace</span><b>0</b><span class="delta flat">26 firing en otros ns</span></div>
+  </div>
+
+  <section aria-labelledby="mem">
+    <div class="sec-head"><h2 id="mem">Memoria: pico 24 h contra el límite</h2><a class="src" href="https://grafana.local.ysocial.net/explore" target="_blank" rel="noopener">Ver en Grafana ↗</a></div>
+    <div class="box">
+      <table>
+        <thead><tr><th>Workload</th><th class="n">Pico</th><th class="n">Límite</th><th>% del límite</th></tr></thead>
+        <tbody>
+          <tr><td>worker</td><td class="n">143 MB</td><td class="n">200 MB</td><td><div class="bar" title="71,6 %"><i class="w" style="width:71.6%"></i></div></td></tr>
+          <tr><td>intervals-all</td><td class="n">495 MB</td><td class="n">1.024 MB</td><td><div class="bar" title="48,3 %"><i style="width:48.3%"></i></div></td></tr>
+          <tr><td>webapi</td><td class="n">370 MB</td><td class="n">1.500 MB</td><td><div class="bar" title="24,7 %"><i style="width:24.7%"></i></div></td></tr>
+          <tr><td>executor</td><td class="n">195 MB</td><td class="n">1.000 MB</td><td><div class="bar" title="19,5 %"><i style="width:19.5%"></i></div></td></tr>
+          <tr><td>frontend</td><td class="n">6 MB</td><td class="n">500 MB</td><td><div class="bar" title="1,2 %"><i style="width:1.2%"></i></div></td></tr>
+          <tr><td>ingest</td><td class="n">579 MB</td><td class="n">—</td><td><span class="pill bad">Sin límite · 5,8× request</span></td></tr>
+          <tr><td>yagent</td><td class="n">489 MB</td><td class="n">—</td><td><span class="pill bad">Sin límite · 2,4× request</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="meta">CPU: ningún workload tiene límite. Pico: intervals-all 0,565 cores (11× su request), el resto por debajo de 0,08.</p>
+  </section>
+
+  <section aria-labelledby="logs">
+    <div class="sec-head"><h2 id="logs">Logs y errores por app</h2><a class="src" href="https://grafana.local.ysocial.net/explore" target="_blank" rel="noopener">Ver en Grafana ↗</a></div>
+    <div class="box">
+      <table>
+        <thead><tr><th>App</th><th class="n">Líneas 24 h</th><th class="n">Previas</th><th class="n">Errores 24 h</th><th class="n">Previas</th></tr></thead>
+        <tbody>
+          <tr><td>webapi</td><td class="n">54.860</td><td class="n">47.187</td><td class="n up-bad">2.192</td><td class="n">1.510</td></tr>
+          <tr><td>intervals-all</td><td class="n">30.925</td><td class="n">30.488</td><td class="n">548</td><td class="n">548</td></tr>
+          <tr><td>frontend</td><td class="n">13.697</td><td class="n">7.047</td><td class="n">0</td><td class="n">0</td></tr>
+          <tr><td>executor</td><td class="n">7.354</td><td class="n">6.753</td><td class="n">5</td><td class="n">16</td></tr>
+          <tr><td>ingest</td><td class="n">4.750</td><td class="n">1.098</td><td class="n">0</td><td class="n">0</td></tr>
+          <tr><td>yagent</td><td class="n">63</td><td class="n">2.842</td><td class="n">4</td><td class="n">2</td></tr>
+          <tr><td>worker</td><td class="n">39</td><td class="n">24</td><td class="n">0</td><td class="n">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="pat">
+    <div class="sec-head"><h2 id="pat">Top 5 patrones de error</h2><a class="src" href="https://grafana.local.ysocial.net/explore" target="_blank" rel="noopener">Ver en Grafana ↗</a></div>
+    <div class="patterns">
+      <div class="pat"><div class="pat-top"><b>893</b><span class="prev">prev 1.078</span><span class="pill muted">Crónico</span><span>webapi · DELETE /api/intent-projects/undefined → 404</span></div>
+        <div class="sample">{"level":40,"context":"HttpExceptionFilter","msg":"DELETE /api/intent-projects/undefined - 404: Intent project not found"}</div></div>
+      <div class="pat"><div class="pat-top"><b>365</b><span class="prev">prev 0</span><span class="pill bad">Nuevo</span><span>webapi · KB request conflict al rehidratar el proyecto</span></div>
+        <div class="sample">Failed to rehydrate KB/SKB config for project e4efb697-0a1b-444b-a9b7-0ef2cab4fb93 (v6): KB request conflict</div></div>
+      <div class="pat"><div class="pat-top"><b>250</b><span class="prev">prev 250</span><span class="pill muted">Crónico</span><span>intervals-all · reporte no entregado a Azure</span></div>
+        <div class="sample">Report osde wa socios ia agosto_DailyStatisticEventMessages_…zip could not be delivered to any destination [azure]</div></div>
+      <div class="pat"><div class="pat-top"><b>58</b><span class="prev">prev 0</span><span class="pill bad">Nuevo</span><span>webapi · Generate Report Error</span></div>
+        <div class="sample">Generate Report Error: Flow with id 99999999 not found</div></div>
+      <div class="pat"><div class="pat-top"><b>48</b><span class="prev">prev 48</span><span class="pill muted">Crónico</span><span>intervals-all · Redis sin XAUTOCLAIM</span></div>
+        <div class="sample">ERR unknown command `XAUTOCLAIM`</div></div>
+    </div>
+    <p class="meta">Ruido conocido, fuera del conteo: 12 líneas de 401 Invalid credentials en POST /api/auth/login (credenciales de prueba).</p>
+  </section>
+
+  <section aria-labelledby="act">
+    <h2 id="act">Qué mirar</h2>
+    <ol class="actions">
+      <li><b>Frenar el loop de KB en webapi.</b> Reintenta rehidratar el proyecto e4efb697 subiendo versión (v6 a v20) y choca con 409. Revisar si arrancó con el redeploy de hace unas 6 h.</li>
+      <li><b>Cortar los 404 de intent-projects.</b> Son el 35 % de los errores: el frontend llama DELETE sin id. Guard en el cliente y 400 en vez de 404.</li>
+      <li><b>Poner techo de memoria a ingest y yagent.</b> Sin límite no hay cota de OOM. De paso bajar el request de frontend de 300 MB.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <p>Fuentes: Prometheus efqtgsdekqpkwb y Loki cfqtk5774ugowe, solo lectura. HTTP de webapi: 19.562 requests, 4 respuestas 5xx (0,02 %), p99 3,28 s, medido en el ingress nginx.</p>
+    <p>Límites: query_loki_patterns devuelve 404 en este Loki, así que los patrones se agruparon con count_over_time. No hay métricas de aplicación en el namespace.</p>
+  </footer>
+</main>

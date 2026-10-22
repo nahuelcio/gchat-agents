@@ -1303,7 +1303,7 @@ struct ArtifactBody {
     template: Option<String>,
     /// Placeholder map for the template (`TITLE`, `LEAD`, `Q1`, …).
     fields: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Escape hatch only — ignored when `template` is set. Prefer templates.
+    /// Designed page body (style + content); ignored when `template` is set.
     html: Option<String>,
 }
 
@@ -1323,7 +1323,7 @@ async fn post_artifact(State(state): State<Arc<AppState>>, Json(body): Json<Arti
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
-                        "error": format!("{err} — prefer template+fields (walkthrough|compare|quiz|cards)")
+                        "error": err
                     })),
                 )
                     .into_response();

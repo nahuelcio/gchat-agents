@@ -41,6 +41,7 @@ pub struct ContextUsage {
     pub cost_usd: Option<f64>,
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
+    pub tokens_per_sec: Option<f64>,
 }
 
 pub struct PendingAgent {

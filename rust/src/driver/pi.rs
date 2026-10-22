@@ -168,7 +168,8 @@ impl PiDriver {
                         let cost_usd = u.get("costUsd").and_then(|v| v.as_f64());
                         let tokens_in = u.get("tokensIn").and_then(|v| v.as_u64());
                         let tokens_out = u.get("tokensOut").and_then(|v| v.as_u64());
-                        Some(crate::driver::types::ContextUsage { context_tokens, context_window, cost_usd, tokens_in, tokens_out })
+                        let tokens_per_sec = u.get("tokensPerSec").and_then(|v| v.as_f64());
+                        Some(crate::driver::types::ContextUsage { context_tokens, context_window, cost_usd, tokens_in, tokens_out, tokens_per_sec })
                     });
                     return Ok(Some(Some(AgentTurnResult {
                         reply: out["reply"].as_str().unwrap_or_default().to_string(),

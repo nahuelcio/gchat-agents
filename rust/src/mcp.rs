@@ -61,7 +61,7 @@ fn tools() -> Value {
         {"name":"delete_schedule","description":"Delete a schedule.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
         {"name":"create_xlsx","description":"Create an .xlsx in the shared Google Drive folder and return its link. Numbers stay numbers. Calling it again for the same request returns the same file.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"sheets":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"rows":{"type":"array","items":{"type":"array"}}},"required":["name","rows"]}}},"required":["title","sheets"]}},
         {"name":"list_spreadsheets","description":"List the .xlsx files in the shared Google Drive folder.","inputSchema":{"type":"object","properties":{}}},
-        {"name":"create_artifact","description":"Publish a Switchboard-styled HTML artifact teammates view inline. ALWAYS use template+fields (never invent CSS or dark themes). Templates: walkthrough, compare, quiz, cards. After success, put the returned marker in your reply — do not paste HTML.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"Short label above the preview"},"template":{"type":"string","description":"walkthrough | compare | quiz | cards"},"fields":{"type":"object","description":"Placeholder values e.g. TITLE, LEAD, STEP1_TITLE, Q1, Q1_A, Q1_ANSWER (0|1|2), …"}},"required":["title","template","fields"]}},
+        {"name":"create_artifact","description":"Publish an HTML artifact teammates view inline. Pass `html` (a designed page: <style> + content, no <head>; load the artifacts skill first) or `template`+`fields` for a quick walkthrough, compare, quiz or cards. After success, put the returned marker in your reply — do not paste HTML.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"Short label above the preview"},"html":{"type":"string","description":"Full page body: <style> first, then content. Max 400 KB."},"template":{"type":"string","description":"walkthrough | compare | quiz | cards (ignored when html is set)"},"fields":{"type":"object","description":"Placeholder values for template e.g. TITLE, LEAD, STEP1_TITLE, Q1, Q1_A, Q1_ANSWER (0|1|2), …"}},"required":["title"]}},
         {"name":"skill_search","description":"Search installed skills by name or description (case-insensitive substring). Empty query lists all. Use when unsure which skill fits a task.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},
         {"name":"skill_load","description":"Load a skill's full instructions plus its bundled file list. Required before acting on a skill from the catalog or skill_search.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
         {"name":"list_agents","description":"List the specialised agents you can ask, with what each one knows.","inputSchema":{"type":"object","properties":{}}},
@@ -314,18 +314,20 @@ pub async fn run_tool(
         "list_spreadsheets" => Ok(drive_list(&call_admin("/api/drive/spreadsheets", "GET", None, true, &env, client).await?, "No spreadsheets in the Drive folder yet.")),
         "create_artifact" => {
             let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let template = args.get("template").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let html = args.get("html").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let template = if html.is_empty() { args.get("template").and_then(|v| v.as_str()).unwrap_or("").trim() } else { "html" };
             let fields = args.get("fields").cloned().unwrap_or(json!({}));
             if title.is_empty() || template.is_empty() {
-                return Err("title and template are required (walkthrough|compare|quiz|cards)".into());
+                return Err("title and either html or template (walkthrough|compare|quiz|cards) are required".into());
             }
-            if !fields.is_object() {
+            if html.is_empty() && !fields.is_object() {
                 return Err("fields must be an object of placeholder → string".into());
             }
+            let body = if html.is_empty() { json!({ "title": title, "template": template, "fields": fields }) } else { json!({ "title": title, "html": html }) };
             let data = call_admin(
                 "/api/artifacts",
                 "POST",
-                Some(json!({ "title": title, "template": template, "fields": fields })),
+                Some(body),
                 false,
                 &env,
                 client,
