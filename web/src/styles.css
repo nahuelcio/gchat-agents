@@ -1039,6 +1039,7 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 .working { margin: 0 0 0 46px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 32px; }
 .working-agent { display: inline-flex; align-items: center; gap: 6px; }
 .working-agent.upcoming { opacity: 0.55; }
+.work-phase { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--soft); font-size: 13px; }
 .live-progress { margin: 0 0 0 46px; padding: 6px 10px; border: 2px solid var(--soft); border-radius: var(--radius-sm); background: var(--panel); }
 .live-progress > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary); animation: live-pulse 1s ease-in-out infinite; }

@@ -15,6 +15,7 @@ pub fn chunk_text(text: &str, limit: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut rest = text;
     while rest.len() > limit {
+        let limit = rest.floor_char_boundary(limit).max(rest.ceil_char_boundary(1));
         let window = &rest[..limit];
         let cut = window.rfind('\n').filter(|&i| i > 0).unwrap_or(limit);
         chunks.push(rest[..cut].to_string());

@@ -47,13 +47,17 @@ impl TurnQueue {
                 .clone()
         };
         counter.fetch_add(1, Ordering::SeqCst);
+        let _pending = PendingGuard(counter);
         let _guard = tail.lock().await;
-        let result = fn_().await;
-        let left = counter.fetch_sub(1, Ordering::SeqCst);
-        if left == 1 {
-            self.pending.lock().await.remove(key);
-        }
-        result
+        fn_().await
+    }
+}
+
+struct PendingGuard(Arc<AtomicUsize>);
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

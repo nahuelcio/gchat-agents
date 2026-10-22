@@ -378,6 +378,9 @@ pub fn debouncing(thread_key: &str) -> bool {
 pub fn debounce_pending(thread_key: &str) -> Option<(usize, u64)> {
     let guard = BATCHES.lock().unwrap();
     let batch = guard.as_ref()?.get(thread_key)?;
+    if std::time::Instant::now() > batch.due + std::time::Duration::from_secs(5) {
+        return None;
+    }
     let left = batch.due.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
     Some((batch.items.len(), left))
 }

@@ -128,6 +128,34 @@ function ThinkingStream({ text }: { text: string }) {
   );
 }
 
+function WorkPhase({ progress, running, sending, startedAt, live }: { progress: Progress; running: boolean; sending: boolean; startedAt?: number; live: boolean }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const tool = [...progress.tools].reverse().find((t) => t.running);
+  const phase = sending && !running
+    ? "Sending…"
+    : !live
+      ? "Working"
+      : !running
+      ? "Starting…"
+      : tool
+        ? `Running ${tool.text.split(/[\s(]/)[0]}`
+        : progress.thinking
+          ? "Thinking"
+          : "Writing";
+  const secs = startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : undefined;
+  return (
+    <span className="work-phase">
+      <span className="live-dot" aria-hidden />
+      <span>{phase}</span>
+      {secs !== undefined && <span className="muted small">{secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}</span>}
+    </span>
+  );
+}
+
 function LiveProgress({ progress }: { progress: Progress }) {
   if (!progress.thinking && progress.tools.length === 0 && !progress.tps) return null;
   const rate = progress.tps ? ` · ${progress.tps.toFixed(1)} tok/s` : "";
@@ -249,7 +277,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
-  const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog }>();
+  const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog; startedAt?: number }>();
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [listening, setListening] = useState(false);
@@ -492,7 +520,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
       const running = Boolean((view.docs["pi.live"] as { run?: unknown } | undefined)?.run);
       startedAt = running ? (startedAt ?? Date.now()) : undefined;
       log = running ? accumulate(log, progressOf(view, startedAt)) : undefined;
-      setWatched({ running, log });
+      setWatched({ running, log, startedAt });
     });
   }, [activeId, transport]);
   const busy = Boolean(sending || state?.busy || watched?.running);
@@ -970,6 +998,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   <span className="muted small">@{handle} · next</span>
                 </span>
               ))}
+              <WorkPhase progress={progress} running={Boolean(watched?.running)} sending={sending} startedAt={watched?.startedAt} live={Boolean(transport.watch)} />
               {state?.debounce && !watched?.running && <DebounceNote key={state.debounce.count} debounce={state.debounce} />}
               {activeId && (
                 <button

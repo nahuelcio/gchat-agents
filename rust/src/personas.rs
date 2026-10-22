@@ -240,7 +240,7 @@ pub fn room_append(log: Option<&[RoomEntry]>, author: &str, text: &str) -> Vec<R
     let list = log.unwrap_or(&[]);
     let n = list.last().map(|e| e.n).unwrap_or(0) + 1;
     let t = if text.len() > ROOM_CHARS {
-        format!("{}…", &text[..ROOM_CHARS])
+        format!("{}…", &text[..text.floor_char_boundary(ROOM_CHARS)])
     } else {
         text.to_string()
     };
