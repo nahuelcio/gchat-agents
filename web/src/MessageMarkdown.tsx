@@ -3,6 +3,7 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArtifactCard } from "./ArtifactPreview";
+import { gherkinLine, isGherkin } from "./gherkin";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
 
@@ -12,6 +13,31 @@ const BARE_IMAGE =
 const ARTIFACT_MARK = /\[\[artifact:([a-f0-9]{24})\|([^\]]+)\]\]/g;
 
 /** Turn bare image URLs into markdown images so they render inline. */
+/** Quoted values and <params> inside a step stand out from the prose. */
+function stepText(text: string): ReactNode[] {
+  return text.split(/("[^"]*"|<[^>]+>)/).map((part, i) =>
+    i % 2 ? <span key={i} className={part.startsWith("<") ? "gk-param" : "gk-string"}>{part}</span> : part,
+  );
+}
+
+function GherkinBlock({ text }: { text: string }) {
+  return (
+    <pre className="message-pre gherkin">
+      <code>
+        {text.split("\n").map((raw, i) => {
+          const l = gherkinLine(raw);
+          return (
+            <div key={i} className={`gk-${l.kind}`}>
+              {"keyword" in l && <span className="gk-keyword">{l.keyword}</span>}
+              {l.kind === "step" ? stepText(l.text) : l.text || "\u00a0"}
+            </div>
+          );
+        })}
+      </code>
+    </pre>
+  );
+}
+
 function promoteBareImageUrls(text: string): string {
   return text.replace(BARE_IMAGE, (_, lead: string, url: string) => `${lead}![](${url})`);
 }
@@ -45,6 +71,7 @@ const components: Components = {
           <MermaidDiagram source={text} />
         </Suspense>
       );
+    if (isGherkin(lang, text)) return <GherkinBlock text={text} />;
     if (lang || text.includes("\n")) {
       return (
         <pre className="message-pre">

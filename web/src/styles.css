@@ -997,6 +997,15 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
   line-height: 1.45;
 }
 .message-pre code { font: inherit; background: none; border: 0; padding: 0; }
+.gherkin code > div { white-space: pre; }
+.gherkin .gk-heading { font-weight: 600; }
+.gherkin .gk-heading .gk-keyword { color: var(--accent-ink); }
+.gherkin .gk-step .gk-keyword { color: var(--accent); font-weight: 600; }
+.gherkin .gk-tag { color: var(--warn); }
+.gherkin .gk-comment { color: var(--muted); font-style: italic; }
+.gherkin .gk-table { color: var(--ok); }
+.gherkin .gk-string { color: var(--ok); }
+.gherkin .gk-param { color: var(--warn); }
 .message-table-wrap { margin: 0.5em 0; overflow-x: auto; }
 .message-text table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
 .message-text th, .message-text td {
