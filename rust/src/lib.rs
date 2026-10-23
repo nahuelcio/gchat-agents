@@ -77,15 +77,8 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     std::fs::create_dir_all(&config.data_dir).map_err(|e| e.to_string())?;
     crate::usage::init(&config.data_dir);
     std::fs::create_dir_all(&config.workdir).map_err(|e| e.to_string())?;
-    // data/skills = propias (writable), .agents/skills = gestionadas por skills.sh (npx skills update -p), skills = vendor manual.
-    let bundled = config.data_dir.join("bundled-skills");
-    crate::skills::extract_bundled(&bundled)?;
-    crate::skills::set_dirs(vec![
-        config.data_dir.join("skills"),
-        PathBuf::from(".agents/skills"),
-        PathBuf::from("skills"),
-        bundled,
-    ]);
+    crate::skills::extract_bundled(&config.data_dir.join("bundled-skills"))?;
+    crate::skills::set_dirs(crate::skills::dirs_for(&config.data_dir));
 
     let settings = Arc::new(SettingsStore::open(
         config.data_dir.join("config.json"),

@@ -681,6 +681,10 @@ pub async fn handle_rpc_with(msg: &Value, env: &HashMap<String, String>, client:
 
 pub async fn serve_stdio() -> Result<(), String> {
     let env: HashMap<String, String> = std::env::vars().collect();
+    // The MCP subprocess runs in the agent's cwd, so relative skill dirs miss; resolve from DATA_DIR.
+    if let Some(dir) = env.get("DATA_DIR") {
+        crate::skills::set_dirs(crate::skills::dirs_for(std::path::Path::new(dir)));
+    }
     let client = reqwest::Client::new();
     let external = start_external(&env, &client).await;
     let stdin = std::io::stdin();

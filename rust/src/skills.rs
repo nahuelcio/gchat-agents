@@ -33,6 +33,16 @@ fn write_embedded<E: rust_embed::Embed>(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// data/skills = own (writable), .agents/skills = managed by skills.sh, skills = vendored, bundled-skills = shipped.
+pub fn dirs_for(data_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        data_dir.join("skills"),
+        PathBuf::from(".agents/skills"),
+        PathBuf::from("skills"),
+        data_dir.join("bundled-skills"),
+    ]
+}
+
 pub fn set_dirs(dirs: Vec<PathBuf>) {
     *DIRS.write().unwrap() = Some(dirs);
 }
