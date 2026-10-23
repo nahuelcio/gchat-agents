@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { ArtifactCard } from "./ArtifactPreview";
 import { gherkinLine, isGherkin } from "./gherkin";
 
+const CodeBlock = lazy(() => import("./CodeBlock").then((m) => ({ default: m.CodeBlock })));
 const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
 
 const BARE_IMAGE =
@@ -73,11 +74,12 @@ const components: Components = {
       );
     if (isGherkin(lang, text)) return <GherkinBlock text={text} />;
     if (lang || text.includes("\n")) {
-      return (
+      const plain = (
         <pre className="message-pre">
           <code className={className}>{text}</code>
         </pre>
       );
+      return lang ? <Suspense fallback={plain}><CodeBlock text={text} lang={lang} /></Suspense> : plain;
     }
     return <code className="message-code">{children}</code>;
   },

@@ -997,6 +997,15 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
   line-height: 1.45;
 }
 .message-pre code { font: inherit; background: none; border: 0; padding: 0; }
+.message-pre { position: relative; }
+.message-pre .code-lang { position: absolute; top: 4px; right: 8px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); user-select: none; }
+.message-pre .tok-keyword, .message-pre .tok-operatorKeyword { color: var(--accent-ink); font-weight: 600; }
+.message-pre .tok-string, .message-pre .tok-string2 { color: var(--ok); }
+.message-pre .tok-number, .message-pre .tok-bool, .message-pre .tok-atom { color: var(--warn); }
+.message-pre .tok-comment { color: var(--muted); font-style: italic; }
+.message-pre .tok-typeName, .message-pre .tok-className { color: var(--accent); }
+.message-pre .tok-propertyName { color: var(--accent-ink); }
+.message-pre .tok-variableName.tok-definition { color: var(--accent); }
 .gherkin code > div { white-space: pre; }
 .gherkin .gk-heading { font-weight: 600; }
 .gherkin .gk-heading .gk-keyword { color: var(--accent-ink); }
