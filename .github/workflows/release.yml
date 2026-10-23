@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+# Commit + tag pushed together build the same SHA twice; only the tag run may cancel the branch run.
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/tags/') }}
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
