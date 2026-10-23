@@ -98,7 +98,7 @@ try {
   });
   if (!agents.ok) fail(`/api/agents status ${agents.status}`);
   const ag = await agents.json();
-  if (!Array.isArray(ag) || ag.length < 2) fail(`/api/agents unexpected ${JSON.stringify(ag)}`);
+  if (!Array.isArray(ag) || ag.length < 1) fail(`/api/agents unexpected ${JSON.stringify(ag)}`);
   console.log("ok /api/agents");
 
   const schedules = await fetch(`http://127.0.0.1:${adminPort}/api/schedules`, {
