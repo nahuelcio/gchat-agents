@@ -420,6 +420,12 @@ const harness = await Harness.open(
   },
   ctx,
 );
+// A storage error closes the Harness for every conversation; exit so pi_sidecar respawns it and resume() recovers.
+void harness.closed.then((end) => {
+  if (end.reason !== "failed") return;
+  console.error("harness failed, restarting:", end.error);
+  process.exit(1);
+});
 await loadThreadIndex();
 harness.resume();
 
