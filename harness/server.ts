@@ -16,6 +16,7 @@ import { toolCallStreamFixer } from "./tool-call-stream.ts";
 import { PiPackages, toolContext } from "./pi-packages.ts";
 import { insights, type VersionMark } from "./insights.ts";
 import { engramDigest } from "./engram.ts";
+import { repairDocs } from "./repair-docs.ts";
 import { ThreadView, type ThreadViewPrincipal } from "./thread-view.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -56,6 +57,7 @@ const ThreadIndex = defineDoc<{ threads: Record<string, string>; requests: Recor
   version: 1,
   scope: "session",
   initial: () => ({ threads: {}, requests: {} }),
+  checkpointWhen: () => false,
 });
 const saved: { threads: Record<string, string>; requests: Record<string, string> } = { threads: {}, requests: {} };
 const threads = saved.threads;
@@ -406,6 +408,9 @@ registry.install(codemode);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
 await loadPiPackages().catch((e) => console.error("pi packages unavailable:", e instanceof Error ? e.message : e));
 
+if (existsSync(join(dataDir, "harness.sqlite"))) {
+  for (const r of repairDocs(join(dataDir, "harness.sqlite"))) console.error("repaired harness document:", r);
+}
 const harness = await Harness.open(
   await openNodeSqliteStorage(join(dataDir, "harness.sqlite")),
   {
