@@ -62,7 +62,7 @@ Templates you never edited are updated automatically when a new version ships; e
 
 A skill is a `SKILL.md` with step-by-step instructions that an agent loads when a task matches. Bundled:
 
-`deep-research` · `fact-check` · `browser-automation` · `ui-polish` · `test-plan` · `tdd` · `code-review` · `diagnosing-bugs` · `codebase-design` · `improve-codebase-architecture` · `domain-modeling` · `grill-with-docs` · `security-audit` · `incident-response` · `sql-review` · `api-design` · `data-analysis` · `product-spec` · `competitive-analysis` · `prompt-engineering` · `meeting-notes` · `release-notes` · `writing-for-agents` · `teach` · `retro` · `artifacts` · `skill-creator`
+`deep-research` · `fact-check` · `browser-automation` · `ui-polish` · `test-plan` · `tdd` · `code-review` · `diagnosing-bugs` · `codebase-design` · `improve-codebase-architecture` · `domain-modeling` · `grilling` · `security-audit` · `incident-response` · `sql-review` · `api-design` · `data-analysis` · `product-spec` · `competitive-analysis` · `prompt-engineering` · `meeting-notes` · `release-notes` · `writing-for-agents` · `teach` · `retro` · `artifacts` · `skill-creator`
 
 Add your own under `data/skills/<name>/SKILL.md`, or create and improve them with AI in **Agents**.
 

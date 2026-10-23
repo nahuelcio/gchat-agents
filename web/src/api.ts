@@ -37,7 +37,7 @@ export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "context7",
 
 export const DEFAULT_HOST_SKILLS = [
   "artifacts",
-  "grill-with-docs",
+  "grilling",
   "domain-modeling",
   "tdd",
   "diagnosing-bugs",

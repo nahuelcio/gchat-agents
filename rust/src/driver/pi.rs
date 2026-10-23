@@ -28,7 +28,7 @@ pub const DEFAULT_HOST_MCPS: &[&str] =
 
 pub const DEFAULT_HOST_SKILLS: &[&str] = &[
     "artifacts",
-    "grill-with-docs",
+    "grilling",
     "domain-modeling",
     "tdd",
     "diagnosing-bugs",
