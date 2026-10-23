@@ -389,7 +389,7 @@ async fn images_are_stored_shown_and_passed_to_the_agent() {
     let (status, _) = post_json(
         admin,
         "/api/team/send",
-        json!({ "thread": "file1", "name": "Ana", "text": "x", "attachments": [{ "contentType": "text/html", "data": "aGk=", "name": "x.html" }] }),
+        json!({ "thread": "file1", "name": "Ana", "text": "x", "attachments": [{ "contentType": "text/plain", "data": "aGk=", "name": "x.txt" }] }),
     )
     .await;
     assert_eq!(status, 200);

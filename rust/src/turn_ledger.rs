@@ -138,7 +138,8 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
         settings: None,
         timeout_ms: 0,
         // recover() runs before the sidecar is spawned; wait for it to come up instead of failing on connect.
-        retry_ms: 60_000,
+        // Tests run without a sidecar, so there is nothing to wait for.
+        retry_ms: if cfg!(test) { 0 } else { 60_000 },
     };
     let record = deps.store.get(&e.thread_key);
     let key = match &e.persona {

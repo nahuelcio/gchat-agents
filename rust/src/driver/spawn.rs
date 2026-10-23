@@ -391,7 +391,7 @@ fn npm_shim_target(shim: &Path) -> Option<std::path::PathBuf> {
     }
     let text = std::fs::read_to_string(shim).ok()?;
     let rel = text.rsplit("\"%dp0%\\").next()?.split('"').next()?;
-    let target = shim.parent()?.join(rel);
+    let target = rel.split('\\').fold(shim.parent()?.to_path_buf(), |p, part| p.join(part));
     target.is_file().then_some(target)
 }
 
