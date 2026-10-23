@@ -1700,7 +1700,7 @@ function ThreadContextPanel({
   );
 }
 
-/** Owner's share panel: the team link, copy, open, rotate. */
+/** Owner's share panel: the team link, copy, rotate. */
 export function SharePanel({ link, setLink, notify }: { link?: string; setLink: (l: string) => void; notify: (t: string, e?: boolean) => void }) {
   if (!link) return <p className="muted small pad">Sharing needs a public tunnel: pick one in Settings › Public tunnel and restart.</p>;
   return (
@@ -1710,9 +1710,6 @@ export function SharePanel({ link, setLink, notify }: { link?: string; setLink: 
         <button className="btn small" onClick={() => navigator.clipboard.writeText(link).then(() => notify("Team chat link copied"), () => notify("Copy failed", true))}>
           Copy invite link
         </button>
-        <a className="btn small" href={link} target="_blank" rel="noreferrer">
-          Preview as guest
-        </a>
         <button
           className="btn small ghost"
           onClick={() => {
