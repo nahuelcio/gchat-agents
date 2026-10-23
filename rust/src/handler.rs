@@ -664,6 +664,16 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
     if !addressed.is_empty() && !has_question(&req.thread_key) && record.as_ref().and_then(|r| r.pending_questions.as_ref()).is_none()
     {
         let first: Vec<Persona> = addressed.into_iter().cloned().collect();
+        if options.parallel_room && first.len() >= 2 {
+            // Fan-out: each mentioned agent answers on its own, concurrently.
+            let rounds = first
+                .iter()
+                .map(|p| persona_round(req, deps, std::slice::from_ref(p), &personas, PersonaOpts::default()));
+            for r in futures::future::join_all(rounds).await {
+                r?;
+            }
+            return Ok(true);
+        }
         return persona_round(req, deps, &first, &personas, PersonaOpts::default()).await;
     }
 
@@ -1064,6 +1074,8 @@ async fn persona_round(
                         continue;
                     }
                 }
+                // Re-read: concurrent rounds may have saved other agents since this turn started.
+                let record = deps.store.get(&req.thread_key);
                 let mut persona_sessions = record
                     .as_ref()
                     .and_then(|r| r.persona_sessions.clone())
@@ -2045,6 +2057,16 @@ mod tests {
         personas: Vec<Persona>,
         members: Option<Vec<&str>>,
     ) -> Arc<HandlerDeps> {
+        room_deps_with(dir, driver, personas, members, false).await
+    }
+
+    async fn room_deps_with(
+        dir: &std::path::Path,
+        driver: Arc<dyn AgentDriver>,
+        personas: Vec<Persona>,
+        members: Option<Vec<&str>>,
+        parallel_room: bool,
+    ) -> Arc<HandlerDeps> {
         let store = Arc::new(SessionStore::open(dir.join("sessions.json")));
         if let Some(names) = members {
             let list: Vec<RoomMember> = names
@@ -2087,7 +2109,7 @@ mod tests {
                 context_footer: ContextFooter::Never,
                 auto_compact_at: 0,
                 debounce_ms: 0,
-                parallel_room: false,
+                parallel_room,
                 default_model: None,
                 default_driver: crate::config::AgentDriverKind::Pi,
                 default_models: Default::default(),
@@ -2240,6 +2262,47 @@ mod tests {
         assert!(posts.len() >= 2);
         assert!(posts.last().unwrap().1.text.contains("answered"));
         cancel_question("spaces/x/threads/q");
+    }
+
+    #[tokio::test]
+    async fn parallel_room_fans_out_to_every_mentioned_agent() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "qa" => "qa review".into(),
+            "dev" => "dev review".into(),
+            _ => "host".into(),
+        }));
+        let d = room_deps_with(
+            dir.path(),
+            driver.clone(),
+            vec![persona("qa", None), persona("dev", None)],
+            Some(vec!["qa", "dev"]),
+            true,
+        )
+        .await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "@qa @dev review all".into(),
+                sender: Some("Ana".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: Some(captured.clone()),
+                reply_sink: None,
+                request_id: None,
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let replies = captured.lock().await.clone();
+        assert!(replies.iter().any(|r| r.contains("*@qa*") && r.contains("qa review")));
+        assert!(replies.iter().any(|r| r.contains("*@dev*") && r.contains("dev review")));
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(!calls.iter().any(|c| c.text.contains("[Discussion with")));
     }
 
     #[tokio::test]
