@@ -1,0 +1,319 @@
+<!doctype html>
+<!--
+  Produced by the html-artifacts skill (https://github.com/dogum/html-artifacts)
+  Prompt: "Explain how a quarter-car model computes IRI from a road profile"
+  Single self-contained file. No build step, no network at view time.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>How a quarter-car model computes IRI</title>
+<style>
+:root {
+  --bg: #fafaf7; --surface: #fff; --ink: #1a1a1f; --ink-soft: #555560;
+  --rule: #e7e5df; --accent: #8b5cf6; --road: #44443a;
+  --serif: Charter, "Iowan Old Style", "Source Serif 4", ui-serif, Georgia, serif;
+  --sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#0e0e12; --surface:#16161c; --ink:#f1f1f4; --ink-soft:#a8a8b3; --rule:#2a2a32; --road:#aaaa9a; }
+}
+:root[data-theme="dark"] { --bg:#0e0e12; --surface:#16161c; --ink:#f1f1f4; --ink-soft:#a8a8b3; --rule:#2a2a32; --road:#aaaa9a; }
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--ink); margin: 0; }
+body { font: 17px/1.55 var(--serif); }
+.layout { max-width: 1100px; margin: 3rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 2.5rem; }
+@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+.crumb { color: var(--ink-soft); font: 13px/1 var(--sans); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 1em; }
+h1 { font-size: 2.1rem; line-height: 1.15; letter-spacing: -.01em; margin: 0 0 .4em; }
+.tldr { color: var(--ink-soft); font-size: 1.05rem; margin: 0 0 2em; padding-left: 1em; border-left: 3px solid var(--accent); }
+h2 { font-size: 1.3rem; margin: 2.5em 0 .6em; }
+p { margin: .8em 0; }
+em.k { font-style: normal; background: rgba(139, 92, 246, 0.12); padding: 0 .3em; border-radius: 2px; cursor: help; border-bottom: 1px dotted var(--accent); }
+figure.demo { margin: 1.5em 0 2em; padding: 1.25em; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; }
+.scene { width: 100%; height: 220px; background: linear-gradient(to bottom, transparent 0, transparent 70%, rgba(139, 92, 246, 0.04) 100%); border-bottom: 1px solid var(--rule); margin-bottom: 1em; }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .5em 1.2em; margin-bottom: 1em; font: 13px/1.4 var(--sans); }
+.controls label { display: flex; flex-direction: column; gap: .3em; }
+.controls .lbl { color: var(--ink-soft); display: flex; justify-content: space-between; }
+.controls input[type=range] { width: 100%; accent-color: var(--accent); }
+.controls .btnrow { grid-column: 1 / -1; display: flex; gap: .5em; }
+.controls button { font: 13px var(--sans); padding: .45em .9em; border: 1px solid var(--rule); background: var(--bg); color: var(--ink); border-radius: 3px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+.controls button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+.readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; padding: 1em; background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; font: var(--sans); }
+.readout .stat { text-align: center; }
+.readout .stat .num { font: 600 1.4rem var(--mono); display: block; color: var(--accent); }
+.readout .stat .lbl { font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .05em; margin-top: .3em; }
+table.compare { width: 100%; border-collapse: collapse; margin: 1em 0 2em; font-size: .95rem; }
+table.compare th, table.compare td { padding: .55em .75em; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+table.compare th { font: 600 13px var(--sans); color: var(--ink-soft); text-transform: uppercase; letter-spacing: .05em; }
+table.compare td:first-child { color: var(--ink-soft); }
+aside.glossary { font: 14px/1.5 var(--sans); color: var(--ink-soft); position: sticky; top: 2rem; align-self: start; }
+aside.glossary h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink); margin: 0 0 .8em; padding-bottom: .4em; border-bottom: 1px solid var(--rule); }
+aside.glossary dt { font-weight: 600; color: var(--ink); margin-top: .9em; }
+aside.glossary dd { margin: .15em 0 0; }
+.legend { display: flex; gap: 1.2em; font: 12px var(--sans); color: var(--ink-soft); margin-bottom: .5em; }
+.legend .sw { display: inline-block; width: 12px; height: 12px; vertical-align: middle; margin-right: .35em; border-radius: 2px; }
+:focus-visible { outline: 2px solid var(--accent, #8b5cf6); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<main>
+  <div class="crumb">Research & Learning · concept explainer</div>
+  <h1>How a quarter-car model computes IRI</h1>
+  <p class="tldr">IRI is just the suspension's relative travel rate, integrated over distance, when a standardized two-mass car drives over your road profile at 80&nbsp;km/h. The simulation below is the standard <em>golden car</em> running live — drag the bump amplitude up and watch IRI climb.</p>
+
+  <h2>The trick: don't measure the road, measure how a car reacts to it</h2>
+  <p>A road profile is just elevation vs. distance. Two roads can have the same RMS roughness but feel completely different to drive — one rattles your teeth, the other lulls you to sleep. The reason is that a vehicle's suspension is a <em class="k" title="A linear filter shaped by the masses, springs, and damper of the suspension. It rejects very-low-frequency content (long grade) and very-high-frequency content (texture), and resonates on bumps in the 1–10&nbsp;Hz band.">filter</em>: it cares about wavelengths that excite its sprung-mass and axle resonances, and ignores wavelengths outside that band.</p>
+
+  <p>So instead of computing roughness from the profile directly, you simulate driving a <em>standardized</em> car over the profile and measure how much its suspension worked. That's IRI. The standardization matters: everyone in the world uses the same fictional vehicle (the "golden car") with the same parameters, so two engineers running the same profile through their own code get the same number.</p>
+
+  <figure class="demo">
+    <svg class="scene" viewBox="0 0 800 220" preserveAspectRatio="xMidYMid meet" id="scene">
+      <!-- Road -->
+      <path id="road" d="" stroke="var(--road)" stroke-width="2" fill="none"/>
+      <!-- Wheel -->
+      <circle id="wheel" cx="200" cy="160" r="22" stroke="var(--ink)" stroke-width="2" fill="none"/>
+      <line id="spoke" x1="200" y1="138" x2="200" y2="182" stroke="var(--ink)" stroke-width="1.5"/>
+      <!-- Suspension (spring + damper) -->
+      <path id="spring" d="" stroke="var(--accent)" stroke-width="2" fill="none"/>
+      <line id="damper" x1="0" y1="0" x2="0" y2="0" stroke="var(--accent)" stroke-width="2"/>
+      <!-- Body -->
+      <rect id="body" x="160" y="60" width="80" height="38" rx="4" stroke="var(--ink)" stroke-width="2" fill="var(--surface)"/>
+      <!-- Distance ticks at the bottom -->
+      <g id="ticks" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-soft)"></g>
+    </svg>
+
+    <div class="legend">
+      <span><span class="sw" style="background:var(--ink);"></span>sprung mass &amp; wheel</span>
+      <span><span class="sw" style="background:var(--accent);"></span>suspension</span>
+      <span><span class="sw" style="background:var(--road);"></span>road profile</span>
+    </div>
+
+    <div class="controls">
+      <label>
+        <span class="lbl">Bump amplitude <output id="ampOut">15 mm</output></span>
+        <input type="range" id="amp" min="0" max="50" step="1" value="15"/>
+      </label>
+      <label>
+        <span class="lbl">Bump wavelength <output id="wavOut">2.5 m</output></span>
+        <input type="range" id="wav" min="0.5" max="10" step="0.1" value="2.5"/>
+      </label>
+      <label>
+        <span class="lbl">Roughness mix <output id="mixOut">30%</output></span>
+        <input type="range" id="mix" min="0" max="100" step="1" value="30"/>
+      </label>
+      <div class="btnrow">
+        <button class="primary" id="play">▶ Play</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="readout">
+      <div class="stat"><span class="num" id="iri">0.00</span><span class="lbl">IRI&nbsp;(m/km)</span></div>
+      <div class="stat"><span class="num" id="dist">0</span><span class="lbl">Distance&nbsp;(m)</span></div>
+      <div class="stat"><span class="num" id="rating">—</span><span class="lbl">Surface class</span></div>
+    </div>
+  </figure>
+
+  <p>The simulation above runs the standard golden-car ODE with parameters $k_1 = 63.3$, $k_2 = 653$, $\mu = 0.15$, $c = 6.0$ (Sayers' normalized form), at 80&nbsp;km/h, integrated with a 1&nbsp;ms timestep. The IRI readout is the running average of <code>|ż_s − ż_u|</code> divided by distance traveled — exactly what the standard defines.</p>
+
+  <h2>Versus measuring the profile directly</h2>
+  <table class="compare">
+    <thead>
+      <tr><th></th><th>RMS of profile</th><th>IRI (quarter-car)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>What it measures</td><td>Statistical roughness of the road surface</td><td>Suspension work the road forces a car to do</td></tr>
+      <tr><td>Sensitive to wavelength?</td><td>No — all wavelengths weighted equally</td><td>Yes — band-pass shaped by golden car dynamics</td></tr>
+      <tr><td>Two roads with same answer feel…</td><td>…sometimes very different to drive</td><td>…similar to drive, by construction</td></tr>
+      <tr><td>Standardized?</td><td>Depends on profile sample interval</td><td>Yes — fixed vehicle, fixed speed, fixed band</td></tr>
+      <tr><td>Used by</td><td>Internal QC, profile validation</td><td>World Bank, FHWA, every DOT, contract specs</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Where you'll meet it</h2>
+  <p>Pavement contracts ("must deliver IRI &lt; 1.5&nbsp;m/km on completion"), pavement management systems prioritizing rehab, ride-quality acceptance criteria, and — relevantly to heavy-truck testing — establishing whether a test course represents the operating environment. The ASTM E950 / E1926 family of standards specifies how to compute it from a measured profile; HDM-4 uses it as the input to its rolling-resistance and vehicle-operating-cost models.</p>
+</main>
+
+<aside class="glossary">
+  <h3>Glossary</h3>
+  <dl>
+    <dt>Sprung mass</dt>
+    <dd>The vehicle body — everything supported by the suspension.</dd>
+    <dt>Unsprung mass</dt>
+    <dd>The wheel and axle — between the suspension and the road.</dd>
+    <dt>Golden car</dt>
+    <dd>The standardized two-mass quarter-car used worldwide for IRI. Always the same parameters; that's the whole point.</dd>
+    <dt>Suspension stroke rate</dt>
+    <dd><code>ż_s − ż_u</code>. The relative velocity of body vs. wheel — what IRI integrates.</dd>
+    <dt>80 km/h</dt>
+    <dd>The fixed simulation speed for IRI. The choice locks the band-pass shape; running at a different speed would give a different number.</dd>
+    <dt>m/km</dt>
+    <dd>IRI's unit. Suspension travel (meters) per kilometer driven. New highway is ~1; rough rural road is ~5; airport runway is ~0.5.</dd>
+  </dl>
+</aside>
+
+</div>
+
+<script>
+// ─── Quarter-car simulation (Sayers golden car) ──────────────────
+const K1 = 63.3, K2 = 653.0, MU_MS = 0.15, C = 6.0;
+const V_MS = 80 / 3.6;          // 80 km/h
+const DT = 0.001;               // 1 ms
+const STEPS_PER_FRAME = 16;     // ~16 ms of sim per render frame
+const SCENE_W = 800, SCENE_H = 220;
+const BODY_Y_REST = 79, WHEEL_Y_REST = 160;
+const X_CAR = 400;              // car stays centered, road moves under it
+
+let state, sumStroke, distM, running, rafId;
+
+function reset() {
+  state = [0, 0, 0, 0];   // [zs, zsd, zu, zud]
+  sumStroke = 0;
+  distM = 0;
+  running = false;
+  cancelAnimationFrame(rafId);
+  document.getElementById('play').textContent = '▶ Play';
+  drawAll(0);
+  updateReadout();
+}
+
+function roadElevation(xMeters) {
+  const amp = +document.getElementById('amp').value / 1000;        // mm → m
+  const wav = +document.getElementById('wav').value;
+  const mix = +document.getElementById('mix').value / 100;
+  // Primary sinusoid + small secondary at sub-multiple wavelength + low-freq broadband
+  const main = Math.sin(2 * Math.PI * xMeters / wav);
+  const secondary = 0.4 * Math.sin(2 * Math.PI * xMeters / (wav * 0.31));
+  const broad = (Math.sin(xMeters * 1.7) + Math.sin(xMeters * 4.3) + Math.sin(xMeters * 11.1)) / 3;
+  return amp * ((1 - mix) * (main + secondary) / 1.4 + mix * broad);
+}
+
+function step(dt) {
+  const [zs, zsd, zu, zud] = state;
+  const h = roadElevation(distM);
+  const zsdd = -K1 * (zs - zu) - C * (zsd - zud);
+  const zudd = (K1 * (zs - zu) + C * (zsd - zud) - K2 * (zu - h)) / MU_MS;
+  state = [zs + zsd*dt, zsd + zsdd*dt, zu + zud*dt, zud + zudd*dt];
+  sumStroke += Math.abs(state[1] - state[3]) * dt;
+  distM += V_MS * dt;
+}
+
+// ─── Rendering ────────────────────────────────────────────────────
+const SCALE = 800;              // visual: 1 m of suspension = 800 px
+const ROAD_PX_PER_M = 80;       // visual: 1 m of road = 80 px
+
+function drawRoad() {
+  const path = [];
+  // Sample road from x = distM - 5 m to distM + 5 m
+  for (let i = -5; i <= 5; i += 0.05) {
+    const xWorld = distM + i;
+    const yWorld = roadElevation(xWorld);
+    const xPx = X_CAR + i * ROAD_PX_PER_M;
+    const yPx = WHEEL_Y_REST + 25 - yWorld * SCALE;
+    path.push(`${i === -5 ? 'M' : 'L'} ${xPx.toFixed(1)} ${yPx.toFixed(2)}`);
+  }
+  document.getElementById('road').setAttribute('d', path.join(' '));
+}
+
+function drawTicks() {
+  let html = '';
+  const start = Math.floor(distM - 4);
+  for (let m = start; m <= distM + 4; m++) {
+    const xPx = X_CAR + (m - distM) * ROAD_PX_PER_M;
+    if (xPx > 30 && xPx < SCENE_W - 30) {
+      html += `<line x1="${xPx}" y1="200" x2="${xPx}" y2="206" stroke="currentColor" stroke-opacity=".3"/>`;
+      if (m % 5 === 0) html += `<text x="${xPx}" y="216" text-anchor="middle">${m} m</text>`;
+    }
+  }
+  document.getElementById('ticks').innerHTML = html;
+}
+
+function drawCar() {
+  const zs = state[0], zu = state[2];
+  const wheelY = WHEEL_Y_REST - zu * SCALE;
+  const bodyY = BODY_Y_REST - zs * SCALE;
+  document.getElementById('wheel').setAttribute('cy', wheelY);
+  document.getElementById('spoke').setAttribute('y1', wheelY - 22);
+  document.getElementById('spoke').setAttribute('y2', wheelY + 22);
+  document.getElementById('body').setAttribute('y', bodyY - 38);
+
+  // Spring as a zigzag between body bottom and wheel top
+  const x1 = X_CAR - 12, x2 = X_CAR + 12;
+  const yTop = bodyY, yBot = wheelY - 22;
+  const segs = 6;
+  let d = `M ${x1} ${yTop}`;
+  for (let i = 1; i <= segs; i++) {
+    const y = yTop + (yBot - yTop) * (i / segs);
+    const x = i % 2 ? x2 : x1;
+    d += ` L ${x} ${y}`;
+  }
+  document.getElementById('spring').setAttribute('d', d);
+
+  // Damper as a parallel vertical line offset to one side
+  document.getElementById('damper').setAttribute('x1', X_CAR + 18);
+  document.getElementById('damper').setAttribute('x2', X_CAR + 18);
+  document.getElementById('damper').setAttribute('y1', yTop);
+  document.getElementById('damper').setAttribute('y2', yBot);
+}
+
+function drawAll() {
+  drawRoad();
+  drawTicks();
+  drawCar();
+}
+
+function updateReadout() {
+  const iri = distM > 1 ? (sumStroke / V_MS) / (distM / 1000) : 0;
+  document.getElementById('iri').textContent = iri.toFixed(2);
+  document.getElementById('dist').textContent = distM.toFixed(0);
+
+  let cls = '—';
+  if (distM > 5) {
+    if (iri < 1.5) cls = 'highway';
+    else if (iri < 2.5) cls = 'good';
+    else if (iri < 4) cls = 'rough';
+    else if (iri < 6) cls = 'poor';
+    else cls = 'unpaved';
+  }
+  document.getElementById('rating').textContent = cls;
+}
+
+// ─── Animation loop ───────────────────────────────────────────────
+function tick() {
+  for (let i = 0; i < STEPS_PER_FRAME; i++) step(DT);
+  drawAll();
+  updateReadout();
+  if (running) rafId = requestAnimationFrame(tick);
+}
+
+// ─── Wire up ──────────────────────────────────────────────────────
+document.getElementById('play').addEventListener('click', () => {
+  running = !running;
+  document.getElementById('play').textContent = running ? '❚❚ Pause' : '▶ Play';
+  if (running) rafId = requestAnimationFrame(tick);
+  else cancelAnimationFrame(rafId);
+});
+document.getElementById('reset').addEventListener('click', reset);
+
+['amp', 'wav', 'mix'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    const out = document.getElementById(id + 'Out');
+    if (id === 'amp') out.textContent = el.value + ' mm';
+    else if (id === 'wav') out.textContent = (+el.value).toFixed(1) + ' m';
+    else out.textContent = el.value + '%';
+    if (!running) drawAll();
+  });
+});
+
+reset();
+drawAll();
+</script>
+</body>
+</html>

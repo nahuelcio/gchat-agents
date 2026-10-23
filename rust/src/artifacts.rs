@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn quiz_template_is_light() {
+    fn quiz_template_has_light_and_dark_theme() {
         let mut fields = Map::new();
         fields.insert("TITLE".into(), json!("Sistema solar"));
         fields.insert("LEAD".into(), json!("Tres preguntas"));
@@ -194,8 +194,8 @@ mod tests {
         fields.insert("Q3_C".into(), json!("Urano"));
         fields.insert("Q3_ANSWER".into(), json!("0"));
         let html = build_from_template("Quiz", "quiz", &fields).unwrap();
-        assert!(html.contains("Bangers"));
-        assert!(html.contains("#f6f7f9"));
+        assert!(html.contains("--bg: #fafaf7"));
+        assert!(html.contains("prefers-color-scheme: dark"));
         assert!(html.contains("Jupiter"));
         assert!(!html.to_ascii_lowercase().contains("#0b0e14"));
     }

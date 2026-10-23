@@ -8,15 +8,47 @@ You publish **artifacts**: self-contained HTML pages that open in the side pane 
 
 ## When
 
-- A report, health check, comparison or plan with tables, numbers and sections
-- An explainer, walkthrough, demo, mock UI or small interactive tool
-- Anything that would be a wall of markdown in chat
+Reach for an artifact when any of these hold:
+
+- **Comparison.** Two or more options the reader must weigh. Side by side beats stacked.
+- **Spatial information.** Diffs, call graphs, module maps, flowcharts, timelines, before/after.
+- **Interaction matters.** Parameter tuning, state machines, simulations: things the reader needs to feel.
+- **Reference material.** Navigated non-linearly: tabs, collapsibles, jump links.
+- **Color or hierarchy carries meaning.** Severity, status, data series.
+- **Data.** More than a dozen numbers, a trend, a distribution.
+- **One-off editor.** The reader manipulates something (triage, flags, a prompt) and needs the result back as text.
+- **It will be shared.** A report to a team, a spec, a post-mortem.
+- **Length.** Anything that would be a wall of markdown in chat.
 
 ## When not
 
-- Short answers, lists, or a single Mermaid diagram (use markdown / ```mermaid)
-- Spreadsheets (use `create_xlsx`)
-- Editing the repo (use coding tools)
+- Conversational replies or a few sentences; short lists or a single Mermaid diagram (use markdown / ```mermaid)
+- Code, config, commands or a diff the user will apply
+- Fast iteration on something disposable
+- Spreadsheets (use `create_xlsx`); editing the repo (use coding tools)
+
+If unsure, ask yourself: *will the reader do anything with this beyond reading it once?* If not, markdown.
+
+## References
+
+Read the matching file before drafting; read two if the request spans categories.
+
+| If the request is about… | Read… |
+|---|---|
+| Option comparisons, implementation plans, exploring directions | `references/exploration-and-planning.md` |
+| Annotated diffs, PR writeups, code review, module maps | `references/code-review-and-pr.md` |
+| Design tokens, component sheets, mockups, interaction prototypes | `references/design-and-prototypes.md` |
+| Inline SVG figures, flowcharts, architecture diagrams | `references/diagrams-and-illustrations.md` |
+| Charts, dashboards, sortable/filterable tables, metrics | `references/data-and-charts.md` and `references/examples/04-status-report.html` |
+| Status reports, post-mortems, explainers, learning material | `references/reports-and-research.md` |
+| Slide decks, arrow-key presentations | `references/decks.md` |
+| One-off editors: triage boards, flag toggles, prompt tuners | `references/custom-editors.md` |
+| Baseline CSS and the list of AI-look tells to avoid | `references/matching-your-style.md` |
+| Accessibility and print checklist | `references/accessibility-and-print.md` |
+
+Finished pages to study, all within the contract below: `references/examples/` has `01-sse-comparison`, `02-iri-explainer`, `03-triage-editor`, `04-status-report`, `05-flowchart`, `06-deck`, `07-code-review`, `08-design-tokens`, `09-postmortem` (`.html`). Open the one closest to the request for structure, not to copy its palette.
+
+These references come from [dogum/html-artifacts](https://github.com/dogum/html-artifacts) (Apache-2.0), adapted to this page contract. Where they conflict with the contract below, the contract wins: no external scripts, no storage dependence. Editors must export back to text; clipboard access can fail in the iframe, so always also show the export in a selectable `<textarea>`.
 
 ## How to publish
 
@@ -69,7 +101,7 @@ Every color is defined on bare `:root` first and only redefined in the dark bloc
 
 **Charts.** One scale for marks, ticks and labels; labels name values the chart actually reaches; chart text uses theme tokens; leave room in the `viewBox` for the outer labels; every shape has an explicit fill.
 
-**Data goes in tables, not prose.** Never pack figures into paragraphs. Numbers per item belong in a table with aligned columns; comparisons get "now / previous" columns; percentages of a limit get a small bar. Long URLs go in `href` behind a short label like "Ver en Grafana ↗", never printed. For a data report, read `references/example-report.html` first and follow its structure.
+**Data goes in tables, not prose.** Never pack figures into paragraphs. Numbers per item belong in a table with aligned columns; comparisons get "now / previous" columns; percentages of a limit get a small bar. Long URLs go in `href` behind a short label like "Ver en Grafana ↗", never printed. For a data report, read `references/examples/04-status-report.html` first and follow its structure.
 
 **Content.** Real data only, never lorem ipsum. Every number comes from something you ran or read; when a source is available, link it (for example a Grafana Explore deeplink) next to the number. If a query failed, the page says so instead of inventing a value. Include at least one detail only this subject has: its real units, thresholds, names.
 

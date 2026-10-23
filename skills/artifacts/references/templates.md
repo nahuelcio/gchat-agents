@@ -1,6 +1,6 @@
 # Artifact templates
 
-Pass `template` + `fields` to `create_artifact`. The server fills Switchboard CSS (Bangers, `#f6f7f9` surface, `#7107e7` accents). **Do not invent HTML.**
+Pass `template` + `fields` to `create_artifact`. The server fills a neutral light/dark theme. **Do not invent HTML.**
 
 | template | Use for |
 |---|---|
