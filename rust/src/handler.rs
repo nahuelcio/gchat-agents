@@ -9,7 +9,7 @@ use crate::personas::{
     active_personas, add_hint, addressed_personas, asked_personas, consult_open, consult_topics,
     dialogue_open, dialogue_pass, host_preamble, is_pass, mentioned_personas, mentions_bot,
     persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update,
-    strip_self_prefix, clear_stop, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
+    strip_self_prefix, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
 };
 pub use crate::personas::BOT_NAME;
 use crate::workspace::slug_for;
@@ -332,7 +332,7 @@ pub async fn handle_event(auth_header: Option<&str>, event: ChatEvent, deps: Arc
 }
 
 pub(crate) async fn steered(req: &TurnRequest, deps: &HandlerDeps) -> bool {
-    if command_of(&req.text).is_some() || !deps.queue.busy(&req.thread_key).await {
+    if command_of(&req.text).is_some() || persona_lane(req, deps) || !deps.queue.busy(&req.thread_key).await {
         return false;
     }
     let Some(session) = deps.store.get(&req.thread_key).and_then(|r| r.session_ref) else {
@@ -491,65 +491,116 @@ pub struct TurnRequest {
     pub request_id: Option<String>,
 }
 
+/// In a parallel room, a message for agents skips the host's thread queue: each agent has its own lane.
+fn persona_lane(req: &TurnRequest, deps: &HandlerDeps) -> bool {
+    let options = (deps.options)();
+    if !options.parallel_room || command_of(&req.text).is_some() || has_question(&req.thread_key) {
+        return false;
+    }
+    let record = deps.store.get(&req.thread_key);
+    if record.as_ref().and_then(|r| r.pending_questions.as_ref()).is_some() {
+        return false;
+    }
+    let personas = active_personas(&options.personas, record.as_ref().and_then(|r| r.members.as_deref()));
+    !addressed_personas(&req.text, &personas).is_empty()
+}
+
+/// Steers a message into an agent's running session. False when the agent is idle or steer is unavailable.
+async fn steer_persona(req: &TurnRequest, deps: &HandlerDeps, persona: &Persona) -> bool {
+    if !speaking(&req.thread_key).contains(&format!("@{}", persona.name)) {
+        return false;
+    }
+    let Some(session) = deps.store.get(&req.thread_key).and_then(|r| r.persona_sessions).and_then(|m| m.get(&persona.name).cloned()) else {
+        return false;
+    };
+    let key = format!("{}#{}", req.thread_key, persona.name);
+    let request_id = req.request_id.as_ref().map(|r| format!("{r}#{}#steer", persona.name)).unwrap_or_else(|| format!("{key}:steer:{}", uuid::Uuid::new_v4()));
+    let text = match &req.sender {
+        Some(s) => format!("{s}: {}", req.text),
+        None => req.text.clone(),
+    };
+    let result = match deps.driver.steer(&key, &session, &request_id, &text).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!("persona steer failed, queueing instead: {e}");
+            return false;
+        }
+    };
+    note(deps, "turn_steer", &req.thread_key, text.chars().take(80).collect::<String>(), format!("@{}", persona.name)).await;
+    if let crate::driver::types::SteerResult::Answered(out) = result {
+        let reply = strip_self_prefix(&out.reply, persona);
+        if !is_pass(&reply) {
+            deliver_reply(req, deps, &reply, Some(&persona.name), None).await;
+        }
+    }
+    true
+}
+
 pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Result<bool, String> {
     let key = req.thread_key.clone();
     if req.reply_via_chat {
         crate::gate::remember_route(&key, &req.space_name, req.thread.clone());
     }
-    deps.queue
-        .run(&key, || async {
-            clear_stop(&req.thread_key);
-            if command_of(&req.text).is_some() {
-                let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
-                deliver_reply(&req, &deps, &reply, None, None).await;
-                return Ok(true);
+    let lane_free = persona_lane(&req, &deps);
+    let queue = deps.queue.clone();
+    let turn = move || async move {
+        if command_of(&req.text).is_some() {
+            let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
+            deliver_reply(&req, &deps, &reply, None, None).await;
+            return Ok(true);
+        }
+        offer_repo(&req, &deps).await;
+        if let Some(scheduler) = deps.scheduler.get() {
+            let mut jobs = scheduler.jobs_for_text(&req.text, &req.space_name);
+            jobs.extend(scheduler.jobs_for_text(&req.text, &req.thread_key));
+            let notes = fire_jobs(&deps, jobs, "a message matched").await;
+            if !notes.is_empty() {
+                deliver_reply(&req, &deps, &notes.join("\n"), None, None).await;
             }
-            offer_repo(&req, &deps).await;
-            if let Some(scheduler) = deps.scheduler.get() {
-                let mut jobs = scheduler.jobs_for_text(&req.text, &req.space_name);
-                jobs.extend(scheduler.jobs_for_text(&req.text, &req.thread_key));
-                let notes = fire_jobs(&deps, jobs, "a message matched").await;
-                if !notes.is_empty() {
-                    deliver_reply(&req, &deps, &notes.join("\n"), None, None).await;
-                }
-            }
-            let members = deps
-                .store
-                .get(&req.thread_key)
-                .as_ref()
-                .and_then(|r| r.members.clone());
-            let personas = active_personas(&(deps.options)().personas, members.as_deref());
-            if !personas.is_empty() {
-                let room_n = room_log(
-                    &deps,
-                    &req.thread_key,
-                    &req.space_name,
-                    req.sender.as_deref().unwrap_or("someone"),
-                    &req.text,
-                )
-                .await;
-                req.room_n = Some(room_n);
-            }
-            let parallel = (deps.options)().parallel_room;
-            let result = if parallel {
-                let jump = optional_jump(&req, &deps, false);
-                let (result, _) = tokio::join!(agent_turn(&req, &deps), optional_round(&req, &deps, jump));
-                result
-            } else {
-                agent_turn(&req, &deps).await
-            };
-            let (kind, detail) = match &result {
-                Ok(_) => ("turn_ok", req.sender.clone().unwrap_or_default()),
-                Err(e) => ("turn_fail", e.clone()),
-            };
-            note(&deps, kind, &req.thread_key, req.text.chars().take(80).collect::<String>(), detail).await;
-            if !parallel {
-                let jump = optional_jump(&req, &deps, true);
-                optional_round(&req, &deps, jump).await;
-            }
+        }
+        let members = deps
+            .store
+            .get(&req.thread_key)
+            .as_ref()
+            .and_then(|r| r.members.clone());
+        let personas = active_personas(&(deps.options)().personas, members.as_deref());
+        if !personas.is_empty() {
+            let room_n = room_log(
+                &deps,
+                &req.thread_key,
+                &req.space_name,
+                req.sender.as_deref().unwrap_or("someone"),
+                &req.text,
+            )
+            .await;
+            req.room_n = Some(room_n);
+        }
+        let parallel = (deps.options)().parallel_room;
+        let result = if parallel {
+            let jump = optional_jump(&req, &deps, false);
+            let (result, _) = tokio::join!(agent_turn(&req, &deps), optional_round(&req, &deps, jump));
             result
-        })
-        .await
+        } else {
+            agent_turn(&req, &deps).await
+        };
+        let (kind, detail) = match &result {
+            Ok(_) => ("turn_ok", req.sender.clone().unwrap_or_default()),
+            Err(e) => ("turn_fail", e.clone()),
+        };
+        note(&deps, kind, &req.thread_key, req.text.chars().take(80).collect::<String>(), detail).await;
+        if !parallel {
+            let jump = optional_jump(&req, &deps, true);
+            optional_round(&req, &deps, jump).await;
+        }
+        result
+    };
+    // Agent lanes serialize on persona_lock inside persona_round; only host turns take the thread queue.
+    if lane_free {
+        turn().await
+    } else {
+        queue.run(&key, turn).await
+    }
 }
 
 fn optional_jump(req: &TurnRequest, deps: &HandlerDeps, after_turn: bool) -> Vec<Persona> {
@@ -664,22 +715,21 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
     if !addressed.is_empty() && !has_question(&req.thread_key) && record.as_ref().and_then(|r| r.pending_questions.as_ref()).is_none()
     {
         let first: Vec<Persona> = addressed.into_iter().cloned().collect();
-        if options.parallel_room && first.len() >= 2 {
-            // Fan-out: each mentioned agent answers on its own, concurrently.
-            let rounds = first
-                .iter()
-                .map(|p| persona_round(req, deps, std::slice::from_ref(p), &personas, PersonaOpts::default()));
+        if options.parallel_room {
+            // Fan-out: each mentioned agent answers on its own lane; a busy one is steered or waits its turn.
+            let rounds = first.iter().map(|p| async {
+                if steer_persona(req, deps, p).await {
+                    return Ok(true);
+                }
+                persona_round(req, deps, std::slice::from_ref(p), &personas, PersonaOpts::default()).await
+            });
             let results = futures::future::join_all(rounds).await;
-            // Every round has seen the stop by now; clear it once so the next turn starts clean.
-            clear_stop(&req.thread_key);
             for r in results {
                 r?;
             }
             return Ok(true);
         }
-        let result = persona_round(req, deps, &first, &personas, PersonaOpts::default()).await;
-        clear_stop(&req.thread_key);
-        return result;
+        return persona_round(req, deps, &first, &personas, PersonaOpts::default()).await;
     }
 
     let parked = take_question(&req.thread_key);
@@ -927,7 +977,6 @@ pub async fn resume_agent(mut req: TurnRequest, deps: Arc<HandlerDeps>, agent: &
             let Some(p) = personas.iter().find(|p| p.name.eq_ignore_ascii_case(agent)).cloned() else {
                 return Ok(false);
             };
-            clear_stop(&req.thread_key);
             // ponytail: the paused text is repeated because a first-turn pause never got a session to resume.
             req.text = if was.is_empty() { RESUME_PROMPT.to_string() } else { format!("{RESUME_PROMPT}\n\nYou were working on:\n{was}") };
             req.sender = None;
@@ -946,6 +995,7 @@ async fn persona_round(
     if first.is_empty() {
         return Ok(true);
     }
+    let since = crate::personas::stop_mark();
     let dialogue = !opts.optional && !opts.ask && (first.len() >= 2 || opts.consult);
     let max_hops = if dialogue { MAX_DIALOGUE_HOPS } else { MAX_HOPS };
     let peers: Vec<&Persona> = if dialogue {
@@ -1000,10 +1050,10 @@ async fn persona_round(
     let upcoming_round = Upcoming::new(&req.thread_key);
     while idx < queue.len() && hops_done < max_hops + first.len() {
         upcoming_round.set(queue[idx + 1..].iter().map(|q| q.persona.name.clone()).collect());
-        if opts.optional && crate::personas::stop_requested(&req.thread_key) {
+        if opts.optional && crate::personas::stop_requested(&req.thread_key, since) {
             break;
         }
-        if crate::personas::stop_requested(&req.thread_key) {
+        if crate::personas::stop_requested(&req.thread_key, since) {
             let left: Vec<_> = queue[idx..].iter().map(|q| format!("@{}", q.persona.name)).collect();
             deliver_reply(
                 req,
@@ -1017,7 +1067,7 @@ async fn persona_round(
         }
         let item = queue[idx].clone();
         idx += 1;
-        if crate::personas::agent_stopped(&req.thread_key, &item.persona.name) {
+        if crate::personas::agent_stopped(&req.thread_key, &item.persona.name, since) {
             continue;
         }
         let record = deps.store.get(&req.thread_key);
@@ -1109,47 +1159,25 @@ async fn persona_round(
                         continue;
                     }
                 }
-                // Re-read: concurrent rounds may have saved other agents since this turn started.
-                let record = deps.store.get(&req.thread_key);
-                let mut persona_sessions = record
-                    .as_ref()
-                    .and_then(|r| r.persona_sessions.clone())
-                    .unwrap_or_default();
                 crate::usage::note(&req.thread_key, &item.persona.name, out.session_ref.as_deref(), out.usage.as_ref());
-                if let Some(s) = out.session_ref {
-                    persona_sessions.insert(item.persona.name.clone(), s);
-                }
-                let mut persona_roster = record
-                    .as_ref()
-                    .and_then(|r| r.persona_roster.clone())
-                    .unwrap_or_default();
-                persona_roster.insert(item.persona.name.clone(), names);
-                let mut persona_usage = record
-                    .as_ref()
-                    .and_then(|r| r.persona_usage.clone())
-                    .unwrap_or_default();
-                let prev = persona_usage.get(&item.persona.name).cloned();
-                persona_usage.insert(
-                    item.persona.name.clone(),
-                    crate::session::persona_usage_after(prev.as_ref(), out.usage.as_ref(), item.text.len(), reply.len()),
-                );
+                // One atomic edit: concurrent rounds save other agents on the same record.
+                let name = item.persona.name.clone();
                 let _ = deps
                     .store
-                    .update(
-                        &req.thread_key,
-                        &req.space_name,
-                        SessionPatch {
-                            persona_sessions: Some(Some(persona_sessions)),
-                            persona_roster: Some(Some(persona_roster)),
-                            persona_usage: Some(Some(persona_usage)),
-                            ..Default::default()
-                        },
-                    )
+                    .modify(&req.thread_key, &req.space_name, |r| {
+                        if let Some(s) = out.session_ref {
+                            r.persona_sessions.get_or_insert_with(Default::default).insert(name.clone(), s);
+                        }
+                        r.persona_roster.get_or_insert_with(Default::default).insert(name.clone(), names);
+                        let usage = r.persona_usage.get_or_insert_with(Default::default);
+                        let next = crate::session::persona_usage_after(usage.get(&name), out.usage.as_ref(), item.text.len(), reply.len());
+                        usage.insert(name, next);
+                    })
                     .await;
                 deliver_reply(req, deps, &reply, Some(&item.persona.name), None).await;
                 reply
             }
-            Err(_) if crate::personas::agent_stopped(&req.thread_key, &item.persona.name) => {
+            Err(_) if crate::personas::agent_stopped(&req.thread_key, &item.persona.name, since) => {
                 // A deliberate stop or pause aborted the run: not a failure.
                 crate::personas::note_paused_text(&req.thread_key, &item.persona.name, &item.text);
                 continue;
@@ -1311,40 +1339,24 @@ async fn host_continue(req: &TurnRequest, deps: &HandlerDeps, text: &str) -> Opt
 }
 
 async fn room_log(deps: &HandlerDeps, thread_key: &str, space: &str, author: &str, text: &str) -> u64 {
-    let record = deps.store.get(thread_key);
-    let next = room_append(record.as_ref().and_then(|r| r.room.as_deref()), author, text);
-    let n = next.last().map(|e| e.n).unwrap_or(0);
-    let _ = deps
+    let n = deps
         .store
-        .update(
-            thread_key,
-            space,
-            SessionPatch {
-                room: Some(Some(next)),
-                ..Default::default()
-            },
-        )
+        .modify(thread_key, space, |r| {
+            let next = room_append(r.room.as_deref(), author, text);
+            let n = next.last().map(|e| e.n).unwrap_or(0);
+            r.room = Some(next);
+            n
+        })
         .await;
-    n
+    n.unwrap_or(0)
 }
 
 async fn mark_seen(deps: &HandlerDeps, thread_key: &str, space: &str, who: &str, n: u64) {
-    let record = deps.store.get(thread_key);
-    let mut seen = record
-        .as_ref()
-        .and_then(|r| r.room_seen.clone())
-        .unwrap_or_default();
-    seen.insert(who.to_string(), n);
     let _ = deps
         .store
-        .update(
-            thread_key,
-            space,
-            SessionPatch {
-                room_seen: Some(Some(seen)),
-                ..Default::default()
-            },
-        )
+        .modify(thread_key, space, |r| {
+            r.room_seen.get_or_insert_with(Default::default).insert(who.to_string(), n);
+        })
         .await;
 }
 
@@ -2352,7 +2364,6 @@ mod tests {
         process_message(stop_req(thread, "@qa @dev review all", captured.clone()), d).await.unwrap();
         let replies = captured.lock().await.clone();
         assert!(!replies.iter().any(|r| r.contains("failed")), "{replies:?}");
-        assert!(!crate::personas::stop_requested(thread), "cleared once the rounds finish");
     }
 
     #[tokio::test]
@@ -3069,5 +3080,158 @@ Beto: yo tambien");
         assert_eq!(replies.len(), 1);
         assert!(replies[0].contains("Echo:"));
         assert!(!replies[0].contains("*@qa*"));
+    }
+
+    /// Blocks `qa`'s first run until released; records runs and steers.
+    struct GateDriver {
+        release: Arc<tokio::sync::Notify>,
+        steer_ok: bool,
+        calls: Mutex<Vec<AgentTurnInput>>,
+        steers: Mutex<Vec<(String, String, String)>>,
+    }
+
+    #[async_trait]
+    impl AgentDriver for GateDriver {
+        async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
+            let first_qa = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(input.clone());
+                input.thread_key.ends_with("#qa") && calls.iter().filter(|c| c.thread_key.ends_with("#qa")).count() == 1
+            };
+            if first_qa {
+                self.release.notified().await;
+            }
+            let agent = input.thread_key.rsplit_once('#').map(|(_, a)| a.to_string()).unwrap_or_else(|| "host".into());
+            Ok(AgentTurnResult { reply: format!("{agent} done"), session_ref: Some(format!("s-{agent}")), usage: None, pending: None })
+        }
+
+        async fn steer(&self, thread_key: &str, session_ref: &str, _request_id: &str, text: &str) -> Result<Option<crate::driver::types::SteerResult>, String> {
+            self.steers.lock().unwrap().push((thread_key.into(), session_ref.into(), text.into()));
+            Ok(self.steer_ok.then_some(crate::driver::types::SteerResult::Joined))
+        }
+    }
+
+    fn gate(steer_ok: bool) -> Arc<GateDriver> {
+        Arc::new(GateDriver { release: Arc::new(tokio::sync::Notify::new()), steer_ok, calls: Mutex::new(Vec::new()), steers: Mutex::new(Vec::new()) })
+    }
+
+    async fn qa_running(driver: &GateDriver) {
+        for _ in 0..200 {
+            if driver.calls.lock().unwrap().iter().any(|c| c.thread_key.ends_with("#qa")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("qa never started");
+    }
+
+    async fn lane_deps(dir: &std::path::Path, driver: Arc<GateDriver>, thread: &str) -> Arc<HandlerDeps> {
+        let d = room_deps_with(dir, driver, vec![persona("qa", None), persona("dev", None)], None, true).await;
+        let sessions: std::collections::HashMap<String, String> = [("qa".to_string(), "s-qa".to_string())].into();
+        d.store.update(thread, "spaces/team", SessionPatch { persona_sessions: Some(Some(sessions)), ..Default::default() }).await.unwrap();
+        d
+    }
+
+    /// `qa` blocks until released, then fails the way an aborted run does.
+    struct AbortedQa {
+        release: Arc<tokio::sync::Notify>,
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl AgentDriver for AbortedQa {
+        async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
+            if input.thread_key.ends_with("#qa") {
+                self.started.notify_one();
+                self.release.notified().await;
+                return Err("aborted".into());
+            }
+            Ok(AgentTurnResult { reply: "dev done".into(), session_ref: None, usage: None, pending: None })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_survives_a_message_that_arrives_right_after_it() {
+        let thread = "team/stop-then-message";
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(AbortedQa { release: Arc::new(tokio::sync::Notify::new()), started: Arc::new(tokio::sync::Notify::new()) });
+        let d = room_deps_with(dir.path(), driver.clone(), vec![persona("qa", None), persona("dev", None)], None, true).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let first = tokio::spawn(process_message(stop_req(thread, "@qa long task", captured.clone()), d.clone()));
+        driver.started.notified().await;
+        crate::personas::request_stop(thread);
+        process_message(stop_req(thread, "@dev quick one", captured.clone()), d.clone()).await.unwrap();
+        driver.release.notify_one();
+        first.await.unwrap().unwrap();
+        let replies = captured.lock().await.clone();
+        assert!(!replies.iter().any(|r| r.contains("failed")), "stop was lost: {replies:?}");
+    }
+
+    #[tokio::test]
+    async fn an_idle_agent_starts_while_another_is_still_working() {
+        let thread = "team/lanes-idle";
+        let dir = tempdir().unwrap();
+        let driver = gate(false);
+        let d = lane_deps(dir.path(), driver.clone(), thread).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let first = tokio::spawn(process_message(stop_req(thread, "@qa long task", captured.clone()), d.clone()));
+        qa_running(&driver).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), process_message(stop_req(thread, "@dev quick one", captured.clone()), d.clone()))
+            .await
+            .expect("dev waited on qa")
+            .unwrap();
+        assert!(captured.lock().await.iter().any(|r| r.contains("dev done")));
+        driver.release.notify_one();
+        first.await.unwrap().unwrap();
+        let sessions = d.store.get(thread).and_then(|r| r.persona_sessions).unwrap();
+        assert_eq!(sessions.get("qa").map(String::as_str), Some("s-qa"));
+        assert_eq!(sessions.get("dev").map(String::as_str), Some("s-dev"));
+    }
+
+    #[tokio::test]
+    async fn a_busy_agent_is_steered_on_its_own_session_never_the_host() {
+        let thread = "team/lanes-steer";
+        let dir = tempdir().unwrap();
+        let driver = gate(true);
+        let d = lane_deps(dir.path(), driver.clone(), thread).await;
+        d.store.update(thread, "spaces/team", SessionPatch { session_ref: Some(Some("s-host".into())), ..Default::default() }).await.unwrap();
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let first = tokio::spawn(process_message(stop_req(thread, "@qa long task", captured.clone()), d.clone()));
+        qa_running(&driver).await;
+        let mut req = stop_req(thread, "@qa also check login", captured.clone());
+        req.sender = Some("Ana".into());
+        assert!(!steered(&req, &d).await, "host must not take a persona mention");
+        tokio::time::timeout(std::time::Duration::from_secs(2), process_message(req, d.clone())).await.expect("steer waited").unwrap();
+        let steers = driver.steers.lock().unwrap().clone();
+        assert_eq!(steers.len(), 1, "{steers:?}");
+        assert_eq!((steers[0].0.as_str(), steers[0].1.as_str()), (format!("{thread}#qa").as_str(), "s-qa"));
+        assert!(steers[0].2.contains("also check login"));
+        driver.release.notify_one();
+        first.await.unwrap().unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert_eq!(calls.iter().filter(|c| c.thread_key.ends_with("#qa")).count(), 1);
+        assert!(!calls.iter().any(|c| c.thread_key == thread));
+    }
+
+    #[tokio::test]
+    async fn a_busy_agent_without_steer_runs_the_message_next() {
+        let thread = "team/lanes-queue";
+        let dir = tempdir().unwrap();
+        let driver = gate(false);
+        let d = lane_deps(dir.path(), driver.clone(), thread).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let first = tokio::spawn(process_message(stop_req(thread, "@qa long task", captured.clone()), d.clone()));
+        qa_running(&driver).await;
+        let second = tokio::spawn(process_message(stop_req(thread, "@qa also check login", captured.clone()), d.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!second.is_finished(), "queued behind qa's running turn");
+        driver.release.notify_one();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        let qa: Vec<_> = calls.iter().filter(|c| c.thread_key.ends_with("#qa")).collect();
+        assert_eq!(qa.len(), 2);
+        assert!(qa[1].text.contains("also check login"));
+        assert!(!calls.iter().any(|c| c.thread_key == thread));
     }
 }

@@ -22,22 +22,31 @@ pub fn is_pass(reply: &str) -> bool {
     cleaned == PASS || reply.trim().is_empty()
 }
 
-static STOPPED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+/// Stop requests by key, stamped with a sequence number. A stop applies to work started before it,
+/// so a later message never has to clear it and cannot swallow it.
+static STOPPED: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> = std::sync::Mutex::new(None);
+static STOP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn stopped() -> std::sync::MutexGuard<'static, Option<std::collections::HashSet<String>>> {
+fn stopped() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<String, u64>>> {
     let mut g = STOPPED.lock().unwrap();
     if g.is_none() {
-        *g = Some(std::collections::HashSet::new());
+        *g = Some(std::collections::HashMap::new());
     }
     g
 }
 
-pub fn request_stop(thread_key: &str) {
-    stopped().as_mut().unwrap().insert(thread_key.to_string());
+/// Take before starting work; pass to `stop_requested`/`agent_stopped` while it runs.
+pub fn stop_mark() -> u64 {
+    STOP_SEQ.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-pub fn stop_requested(thread_key: &str) -> bool {
-    stopped().as_ref().unwrap().contains(thread_key)
+pub fn request_stop(thread_key: &str) {
+    let seq = STOP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    stopped().as_mut().unwrap().insert(thread_key.to_string(), seq);
+}
+
+pub fn stop_requested(thread_key: &str, since: u64) -> bool {
+    stopped().as_ref().unwrap().get(thread_key).is_some_and(|&seq| seq > since)
 }
 
 fn agent_stop_key(thread_key: &str, agent: &str) -> String {
@@ -49,14 +58,8 @@ pub fn request_agent_stop(thread_key: &str, agent: &str) {
     request_stop(&agent_stop_key(thread_key, agent));
 }
 
-pub fn agent_stopped(thread_key: &str, agent: &str) -> bool {
-    stop_requested(thread_key) || stop_requested(&agent_stop_key(thread_key, agent))
-}
-
-/// Clears the thread stop and every per-agent stop under it.
-pub fn clear_stop(thread_key: &str) {
-    let prefix = format!("{thread_key}#");
-    stopped().as_mut().unwrap().retain(|k| k != thread_key && !k.starts_with(&prefix));
+pub fn agent_stopped(thread_key: &str, agent: &str, since: u64) -> bool {
+    stop_requested(thread_key, since) || stop_requested(&agent_stop_key(thread_key, agent), since)
 }
 
 /// Paused agents: (thread, agent as requested, text it was working on).
@@ -523,18 +526,19 @@ pub fn human_asked_for(room: Option<&[RoomEntry]>, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn agent_stop_is_scoped_and_clear_resets_everything() {
+    fn agent_stop_is_scoped_and_only_hits_work_started_before_it() {
         let t = "team/stop-scope";
+        let before = super::stop_mark();
         super::request_agent_stop(t, "Qa");
-        assert!(super::agent_stopped(t, "qa"));
-        assert!(!super::agent_stopped(t, "dev"));
-        assert!(!super::stop_requested(t));
+        assert!(super::agent_stopped(t, "qa", before));
+        assert!(!super::agent_stopped(t, "dev", before));
+        assert!(!super::stop_requested(t, before));
         super::request_stop(t);
-        assert!(super::agent_stopped(t, "dev"));
-        assert!(super::stop_requested(t), "reading the flag must not consume it");
-        super::clear_stop(t);
-        assert!(!super::stop_requested(t));
-        assert!(!super::agent_stopped(t, "qa"));
+        assert!(super::agent_stopped(t, "dev", before));
+        assert!(super::stop_requested(t, before), "reading the flag must not consume it");
+        let after = super::stop_mark();
+        assert!(!super::stop_requested(t, after), "work started later is not stopped");
+        assert!(!super::agent_stopped(t, "qa", after));
     }
 
     #[test]

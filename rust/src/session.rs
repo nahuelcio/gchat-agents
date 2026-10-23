@@ -155,15 +155,24 @@ impl SessionStore {
     }
 
     pub async fn update(&self, thread_key: &str, space: &str, patch: SessionPatch) -> Result<(), String> {
-        let mut next = self.get(thread_key).unwrap_or(SessionRecord {
-            space: space.to_string(),
-            updated_at: String::new(),
-            ..Default::default()
-        });
-        patch.apply(&mut next);
-        next.space = space.to_string();
-        next.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        self.set(thread_key, next).await
+        self.modify(thread_key, space, |r| patch.apply(r)).await
+    }
+
+    /// Read-modify-write of one record under the entries lock, so concurrent rounds never clobber each other.
+    pub async fn modify<T>(&self, thread_key: &str, space: &str, f: impl FnOnce(&mut SessionRecord) -> T) -> Result<T, String> {
+        let out = {
+            let mut entries = self.entries.lock().unwrap();
+            let next = entries.entry(thread_key.to_string()).or_insert_with(|| SessionRecord {
+                space: space.to_string(),
+                updated_at: String::new(),
+                ..Default::default()
+            });
+            let out = f(next);
+            next.space = space.to_string();
+            next.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            out
+        };
+        self.persist().await.map(|_| out)
     }
 
     pub async fn set(&self, thread_key: &str, record: SessionRecord) -> Result<(), String> {
@@ -331,5 +340,29 @@ mod tests {
         let rec = again.get("spaces/x/threads/y").unwrap();
         assert_eq!(rec.session_ref.as_deref(), Some("ses_1"));
         assert_eq!(rec.space, "spaces/x");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_modifies_keep_every_write() {
+        let dir = tempdir().unwrap();
+        let store = std::sync::Arc::new(SessionStore::open(dir.path().join("sessions.json")));
+        let tasks: Vec<_> = (0..40)
+            .map(|i| {
+                let store = store.clone();
+                tokio::spawn(async move {
+                    store
+                        .modify("t", "s", |r| {
+                            r.persona_sessions.get_or_insert_with(HashMap::new).insert(format!("p{i}"), format!("ses{i}"));
+                        })
+                        .await
+                        .unwrap();
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(store.get("t").unwrap().persona_sessions.unwrap().len(), 40);
+        assert_eq!(SessionStore::open(dir.path().join("sessions.json")).get("t").unwrap().persona_sessions.unwrap().len(), 40);
     }
 }
