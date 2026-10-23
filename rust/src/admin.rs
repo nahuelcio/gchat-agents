@@ -75,6 +75,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/send", post(post_team_send))
         .route("/api/team/steer", post(post_team_steer))
         .route("/api/team/stop", post(post_team_stop))
+        .route("/api/team/resume", post(post_team_resume))
         .route("/api/team/archive", post(post_team_archive))
         .route("/api/team/delete", post(post_team_delete))
         .route("/api/team/members", post(post_team_members))
@@ -1180,6 +1181,9 @@ async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<Te
 pub struct TeamThreadBody {
     pub thread: Option<String>,
     archived: Option<bool>,
+    /// Stop (or pause) only this agent; none = every agent of the thread.
+    agent: Option<String>,
+    pause: Option<bool>,
 }
 
 pub async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
@@ -1188,13 +1192,46 @@ pub async fn post_team_stop(Json(body): Json<TeamThreadBody>) -> Response {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
     }
     let key = format!("{TEAM_PREFIX}{thread}");
-    crate::personas::request_stop(&key);
-    let _ = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{}/abort", crate::pi_sidecar::port()))
-        .json(&json!({ "thread": key }))
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
+    match body.agent.as_deref().map(|a| a.trim_start_matches('@')).filter(|a| !a.is_empty()) {
+        Some(agent) => {
+            if body.pause.unwrap_or(false) {
+                crate::personas::mark_paused(&key, agent);
+            }
+            crate::personas::request_agent_stop(&key, agent);
+            crate::pi_sidecar::abort(&format!("{key}#{agent}")).await;
+        }
+        None => {
+            crate::personas::request_stop(&key);
+            crate::pi_sidecar::abort(&key).await;
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn post_team_resume(State(state): State<Arc<AppState>>, Json(body): Json<TeamThreadBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    let agent = body.agent.unwrap_or_default();
+    if !thread_id_ok(&thread) || agent.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "thread and agent are required" }))).into_response();
+    }
+    let req = crate::handler::TurnRequest {
+        thread_key: format!("{TEAM_PREFIX}{thread}"),
+        space_name: "team-chat".into(),
+        text: String::new(),
+        sender: None,
+        reply_via_chat: false,
+        thread: None,
+        room_n: None,
+        captured_replies: None,
+        reply_sink: Some(state.transcripts.clone()),
+        request_id: Some(uuid::Uuid::new_v4().to_string()),
+    };
+    let deps = state.handler.clone();
+    tokio::spawn(async move {
+        if let Err(err) = crate::handler::resume_agent(req, deps, agent.trim_start_matches('@')).await {
+            tracing::error!(%err, "resume failed");
+        }
+    });
     Json(json!({ "ok": true })).into_response()
 }
 

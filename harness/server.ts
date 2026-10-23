@@ -17,6 +17,7 @@ import { PiPackages, toolContext } from "./pi-packages.ts";
 import { insights, type VersionMark } from "./insights.ts";
 import { engramDigest } from "./engram.ts";
 import { repairDocs } from "./repair-docs.ts";
+import { abortTargets } from "./abort-match.ts";
 import { ThreadView, type ThreadViewPrincipal } from "./thread-view.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -763,7 +764,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/tools") return send(res, 200, mcpTools.map((t) => ({ name: t.tool.name, group: t.group })));
     if (req.method === "POST" && req.url === "/abort") {
       const { thread, conversationId } = JSON.parse(await read(req)) as { thread?: string; conversationId?: string };
-      const ids = thread ? Object.entries(threads).filter(([, key]) => key === thread).map(([id]) => id) : conversationId ? [conversationId] : [];
+      const ids = thread ? abortTargets(threads, thread) : conversationId ? [conversationId] : [];
       let aborted = 0;
       for (const id of ids) {
         try {

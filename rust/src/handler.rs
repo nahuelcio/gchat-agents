@@ -9,7 +9,7 @@ use crate::personas::{
     active_personas, add_hint, addressed_personas, asked_personas, consult_open, consult_topics,
     dialogue_open, dialogue_pass, host_preamble, is_pass, mentioned_personas, mentions_bot,
     persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update,
-    strip_self_prefix, take_stop, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
+    strip_self_prefix, clear_stop, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
 };
 pub use crate::personas::BOT_NAME;
 use crate::workspace::slug_for;
@@ -498,7 +498,7 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
     }
     deps.queue
         .run(&key, || async {
-            take_stop(&req.thread_key);
+            clear_stop(&req.thread_key);
             if command_of(&req.text).is_some() {
                 let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
                 deliver_reply(&req, &deps, &reply, None, None).await;
@@ -669,12 +669,17 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
             let rounds = first
                 .iter()
                 .map(|p| persona_round(req, deps, std::slice::from_ref(p), &personas, PersonaOpts::default()));
-            for r in futures::future::join_all(rounds).await {
+            let results = futures::future::join_all(rounds).await;
+            // Every round has seen the stop by now; clear it once so the next turn starts clean.
+            clear_stop(&req.thread_key);
+            for r in results {
                 r?;
             }
             return Ok(true);
         }
-        return persona_round(req, deps, &first, &personas, PersonaOpts::default()).await;
+        let result = persona_round(req, deps, &first, &personas, PersonaOpts::default()).await;
+        clear_stop(&req.thread_key);
+        return result;
     }
 
     let parked = take_question(&req.thread_key);
@@ -904,6 +909,33 @@ struct PersonaOpts {
     consult: bool,
 }
 
+pub const RESUME_PROMPT: &str = "Continue where you left off; you were paused.";
+
+/// Reruns a paused agent's turn on its own persona session.
+pub async fn resume_agent(mut req: TurnRequest, deps: Arc<HandlerDeps>, agent: &str) -> Result<bool, String> {
+    let Some(was) = crate::personas::take_paused(&req.thread_key, agent) else {
+        return Ok(false);
+    };
+    let key = req.thread_key.clone();
+    let deps2 = deps.clone();
+    deps.queue
+        .run(&key, || async move {
+            let deps = deps2;
+            let record = deps.store.get(&req.thread_key);
+            let options = (deps.options)();
+            let personas = active_personas(&options.personas, record.as_ref().and_then(|r| r.members.as_deref()));
+            let Some(p) = personas.iter().find(|p| p.name.eq_ignore_ascii_case(agent)).cloned() else {
+                return Ok(false);
+            };
+            clear_stop(&req.thread_key);
+            // ponytail: the paused text is repeated because a first-turn pause never got a session to resume.
+            req.text = if was.is_empty() { RESUME_PROMPT.to_string() } else { format!("{RESUME_PROMPT}\n\nYou were working on:\n{was}") };
+            req.sender = None;
+            persona_round(&req, &deps, std::slice::from_ref(&p), &personas, PersonaOpts::default()).await
+        })
+        .await
+}
+
 async fn persona_round(
     req: &TurnRequest,
     deps: &HandlerDeps,
@@ -971,7 +1003,7 @@ async fn persona_round(
         if opts.optional && crate::personas::stop_requested(&req.thread_key) {
             break;
         }
-        if take_stop(&req.thread_key) {
+        if crate::personas::stop_requested(&req.thread_key) {
             let left: Vec<_> = queue[idx..].iter().map(|q| format!("@{}", q.persona.name)).collect();
             deliver_reply(
                 req,
@@ -985,6 +1017,9 @@ async fn persona_round(
         }
         let item = queue[idx].clone();
         idx += 1;
+        if crate::personas::agent_stopped(&req.thread_key, &item.persona.name) {
+            continue;
+        }
         let record = deps.store.get(&req.thread_key);
         let session_ref = record
             .as_ref()
@@ -1113,6 +1148,11 @@ async fn persona_round(
                     .await;
                 deliver_reply(req, deps, &reply, Some(&item.persona.name), None).await;
                 reply
+            }
+            Err(_) if crate::personas::agent_stopped(&req.thread_key, &item.persona.name) => {
+                // A deliberate stop or pause aborted the run: not a failure.
+                crate::personas::note_paused_text(&req.thread_key, &item.persona.name, &item.text);
+                continue;
             }
             Err(err) => {
                 deliver_reply(
@@ -1322,7 +1362,8 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
         "help" => Ok("Commands: /help /clear [@agent] /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
         "stop" => {
             request_stop(&req.thread_key);
-            Ok("Stopping after the current agent finishes.".into())
+            crate::pi_sidecar::abort(&req.thread_key).await;
+            Ok("Stopped the running agents.".into())
         }
         "compact" => compact(&req.thread_key, &req.space_name, deps).await,
         "clear" => clear_command(&args, req, deps).await,
@@ -2262,6 +2303,87 @@ mod tests {
         assert!(posts.len() >= 2);
         assert!(posts.last().unwrap().1.text.contains("answered"));
         cancel_question("spaces/x/threads/q");
+    }
+
+    type Step = Box<dyn Fn(&AgentTurnInput) -> Result<String, String> + Send + Sync>;
+
+    struct StepDriver {
+        step: Step,
+        calls: Mutex<Vec<AgentTurnInput>>,
+    }
+
+    #[async_trait]
+    impl AgentDriver for StepDriver {
+        async fn run_turn(&self, input: AgentTurnInput) -> Result<AgentTurnResult, String> {
+            self.calls.lock().unwrap().push(input.clone());
+            let reply = (self.step)(&input)?;
+            Ok(AgentTurnResult { reply, session_ref: None, usage: None, pending: None })
+        }
+    }
+
+    fn stop_req(thread: &str, text: &str, captured: Arc<tokio::sync::Mutex<Vec<String>>>) -> TurnRequest {
+        TurnRequest {
+            thread_key: thread.into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: None,
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: Some(captured),
+            reply_sink: None,
+            request_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stopping_all_reaches_every_parallel_round_without_failure_posts() {
+        let thread = "team/stop-all";
+        let driver = Arc::new(StepDriver {
+            step: Box::new(move |_| {
+                crate::personas::request_stop(thread);
+                Err("aborted".into())
+            }),
+            calls: Mutex::new(Vec::new()),
+        });
+        let dir = tempdir().unwrap();
+        let d = room_deps_with(dir.path(), driver.clone(), vec![persona("qa", None), persona("dev", None)], None, true).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(stop_req(thread, "@qa @dev review all", captured.clone()), d).await.unwrap();
+        let replies = captured.lock().await.clone();
+        assert!(!replies.iter().any(|r| r.contains("failed")), "{replies:?}");
+        assert!(!crate::personas::stop_requested(thread), "cleared once the rounds finish");
+    }
+
+    #[tokio::test]
+    async fn pausing_one_agent_keeps_the_others_and_resume_continues_it() {
+        let thread = "team/pause-one";
+        let driver = Arc::new(StepDriver {
+            step: Box::new(move |input| {
+                if input.thread_key.ends_with("#qa") && !input.text.contains("Continue where you left off") {
+                    crate::personas::mark_paused(thread, "qa");
+                    crate::personas::request_agent_stop(thread, "qa");
+                    return Err("aborted".into());
+                }
+                Ok(format!("{} done", input.thread_key))
+            }),
+            calls: Mutex::new(Vec::new()),
+        });
+        let dir = tempdir().unwrap();
+        let d = room_deps_with(dir.path(), driver.clone(), vec![persona("qa", None), persona("dev", None)], None, true).await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(stop_req(thread, "@qa @dev review all", captured.clone()), d.clone()).await.unwrap();
+        let replies = captured.lock().await.clone();
+        assert!(replies.iter().any(|r| r.contains("#dev done")), "{replies:?}");
+        assert!(!replies.iter().any(|r| r.contains("failed")), "{replies:?}");
+        assert_eq!(crate::personas::paused(thread), vec!["qa".to_string()]);
+
+        resume_agent(stop_req(thread, "", captured.clone()), d, "qa").await.unwrap();
+        let last = driver.calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last.thread_key, format!("{thread}#qa"));
+        assert!(last.text.contains("Continue where you left off") && last.text.contains("review all"), "{}", last.text);
+        assert!(crate::personas::paused(thread).is_empty());
+        assert!(captured.lock().await.iter().any(|r| r.contains("#qa done")));
     }
 
     #[tokio::test]

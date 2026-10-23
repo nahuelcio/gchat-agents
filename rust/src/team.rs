@@ -41,6 +41,7 @@ pub struct TeamThreadState {
     pub kicked: Vec<String>,
     pub answering: Vec<String>,
     pub upcoming: Vec<String>,
+    pub paused: Vec<String>,
     pub presence: Vec<Presence>,
     pub runs: Vec<AgentRun>,
     pub debounce: Option<Debounce>,
@@ -556,6 +557,7 @@ pub async fn team_thread(
             .into_iter()
             .filter(|n| !talking.iter().any(|t| t.trim_start_matches('@').eq_ignore_ascii_case(n)))
             .collect(),
+        paused: crate::personas::paused(&thread_key),
         presence: presence(
             &effective_members(record.as_ref(), &options.personas),
             &talking,

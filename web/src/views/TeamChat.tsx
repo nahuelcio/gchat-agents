@@ -652,11 +652,25 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     setStopping(true);
     transport
       .stopAgents(thread)
-      .then(() => notify("Stop sent. The current step finishes, then nobody else answers."))
+      .then(() => notify("Stopped every agent in this thread."))
       .catch((e) => {
         setStopping(false);
         notify(`Couldn't stop: ${e instanceof Error ? e.message : String(e)}`, true);
       });
+  }
+
+  function stopAgent(thread: string, agent: string, pause: boolean) {
+    transport
+      .stopAgents(thread, agent, pause)
+      .then(() => notify(pause ? `Paused @${agent}.` : `Stopped @${agent}.`))
+      .catch((e) => notify(`Couldn't ${pause ? "pause" : "stop"} @${agent}: ${e instanceof Error ? e.message : String(e)}`, true));
+  }
+
+  function resumeAgent(thread: string, agent: string) {
+    transport
+      .resumeAgent?.(thread, agent)
+      .then(() => notify(`Resuming @${agent}.`))
+      .catch((e) => notify(`Couldn't resume @${agent}: ${e instanceof Error ? e.message : String(e)}`, true));
   }
 
   function toggleThreads(open: boolean) {
@@ -989,6 +1003,18 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                       busy
                     />
                     <span className="muted small">{host ? BOT_NAME : `@${handle}`}</span>
+                    {activeId && !host && (
+                      <>
+                        <button className="btn linkish small" onClick={() => stopAgent(activeId, handle, false)} title={`Stop only @${handle}`}>
+                          Stop
+                        </button>
+                        {transport.resumeAgent && (
+                          <button className="btn linkish small" onClick={() => stopAgent(activeId, handle, true)} title={`Pause @${handle}; resume continues where it left off`}>
+                            Pause
+                          </button>
+                        )}
+                      </>
+                    )}
                   </span>
                 );
               })}
@@ -1008,9 +1034,22 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                   aria-busy={stopping}
                   title="Stops the running reply and skips the rest of the hand-off"
                 >
-                  {stopping ? "Stopping…" : "Stop"}
+                  {stopping ? "Stopping…" : "Stop all"}
                 </button>
               )}
+            </div>
+          )}
+          {activeId && transport.resumeAgent && (state?.paused?.length ?? 0) > 0 && (
+            <div className="working" role="status">
+              {state!.paused!.map((handle) => (
+                <span key={`paused-${handle}`} className="working-agent upcoming">
+                  <AgentBlob name={handle} avatar={avatarOf(catalog, handle)} size={28} />
+                  <span className="muted small">@{handle} · paused</span>
+                  <button className="btn linkish small" onClick={() => resumeAgent(activeId, handle)}>
+                    Resume
+                  </button>
+                </span>
+              ))}
             </div>
           )}
           {working && queued.length > 0 && (

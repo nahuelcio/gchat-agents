@@ -40,8 +40,52 @@ pub fn stop_requested(thread_key: &str) -> bool {
     stopped().as_ref().unwrap().contains(thread_key)
 }
 
-pub fn take_stop(thread_key: &str) -> bool {
-    stopped().as_mut().unwrap().remove(thread_key)
+fn agent_stop_key(thread_key: &str, agent: &str) -> String {
+    format!("{thread_key}#{}", agent.to_lowercase())
+}
+
+/// Stop one agent of a thread; the others keep going.
+pub fn request_agent_stop(thread_key: &str, agent: &str) {
+    request_stop(&agent_stop_key(thread_key, agent));
+}
+
+pub fn agent_stopped(thread_key: &str, agent: &str) -> bool {
+    stop_requested(thread_key) || stop_requested(&agent_stop_key(thread_key, agent))
+}
+
+/// Clears the thread stop and every per-agent stop under it.
+pub fn clear_stop(thread_key: &str) {
+    let prefix = format!("{thread_key}#");
+    stopped().as_mut().unwrap().retain(|k| k != thread_key && !k.starts_with(&prefix));
+}
+
+/// Paused agents: (thread, agent as requested, text it was working on).
+static PAUSED: std::sync::Mutex<Vec<(String, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn mark_paused(thread_key: &str, agent: &str) {
+    let mut list = PAUSED.lock().unwrap();
+    if !list.iter().any(|(k, a, _)| k == thread_key && a.eq_ignore_ascii_case(agent)) {
+        list.push((thread_key.to_string(), agent.to_string(), String::new()));
+    }
+}
+
+/// Records what a paused agent was doing; a no-op for agents that were not paused.
+pub fn note_paused_text(thread_key: &str, agent: &str, text: &str) {
+    for (k, a, t) in PAUSED.lock().unwrap().iter_mut() {
+        if k == thread_key && a.eq_ignore_ascii_case(agent) {
+            *t = text.to_string();
+        }
+    }
+}
+
+pub fn paused(thread_key: &str) -> Vec<String> {
+    PAUSED.lock().unwrap().iter().filter(|(k, _, _)| k == thread_key).map(|(_, a, _)| a.clone()).collect()
+}
+
+pub fn take_paused(thread_key: &str, agent: &str) -> Option<String> {
+    let mut list = PAUSED.lock().unwrap();
+    let i = list.iter().position(|(k, a, _)| k == thread_key && a.eq_ignore_ascii_case(agent))?;
+    Some(list.remove(i).2)
 }
 
 fn mention_boundary_ok(text: &str, end: usize) -> bool {
@@ -478,6 +522,33 @@ pub fn human_asked_for(room: Option<&[RoomEntry]>, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_stop_is_scoped_and_clear_resets_everything() {
+        let t = "team/stop-scope";
+        super::request_agent_stop(t, "Qa");
+        assert!(super::agent_stopped(t, "qa"));
+        assert!(!super::agent_stopped(t, "dev"));
+        assert!(!super::stop_requested(t));
+        super::request_stop(t);
+        assert!(super::agent_stopped(t, "dev"));
+        assert!(super::stop_requested(t), "reading the flag must not consume it");
+        super::clear_stop(t);
+        assert!(!super::stop_requested(t));
+        assert!(!super::agent_stopped(t, "qa"));
+    }
+
+    #[test]
+    fn pause_remembers_the_work_until_taken() {
+        let t = "team/pause-mem";
+        super::mark_paused(t, "Qa");
+        super::note_paused_text(t, "qa", "review all");
+        super::note_paused_text(t, "dev", "ignored: dev was not paused");
+        assert_eq!(super::paused(t), vec!["Qa".to_string()]);
+        assert_eq!(super::take_paused(t, "QA").as_deref(), Some("review all"));
+        assert!(super::paused(t).is_empty());
+        assert_eq!(super::take_paused(t, "qa"), None);
+    }
+
     use super::*;
 
     fn p(name: &str) -> Persona {

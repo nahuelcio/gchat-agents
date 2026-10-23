@@ -685,6 +685,8 @@ export interface TeamThreadState {
   kicked?: string[];
   answering?: string[];
   upcoming?: string[];
+  /** Agents paused mid-turn; resume continues them on their own session. */
+  paused?: string[];
   presence?: Presence[];
   runs?: AgentRun[];
   debounce?: { count: number; msLeft: number } | null;
@@ -734,7 +736,9 @@ export interface TeamTransport {
   /** Absolute or same-origin URL for a saved attachment id. */
   mediaUrl: (id: string) => string;
   /** Stops agents talking among themselves in this thread after the current turn. */
-  stopAgents: (id: string) => Promise<unknown>;
+  /** No agent = stop every agent of the thread. */
+  stopAgents: (id: string, agent?: string, pause?: boolean) => Promise<unknown>;
+  resumeAgent?: (id: string, agent: string) => Promise<unknown>;
   watch?: (id: string, onView: (view: ThreadViewState) => void) => () => void;
   /** Owner only: add or remove a room member. */
   members?: (id: string, op: "add" | "remove", member: MemberChange) => Promise<{ members: RoomMember[] }>;
@@ -755,7 +759,8 @@ export const ownerTransport: TeamTransport = {
     ),
   mediaUrl: (id) => `/api/media/${id}`,
   watch: watchThreadView,
-  stopAgents: (id) => call("/api/team/stop", { thread: id }),
+  stopAgents: (id, agent, pause) => call("/api/team/stop", { thread: id, agent, pause }),
+  resumeAgent: (id, agent) => call("/api/team/resume", { thread: id, agent }),
   members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),
 };
 
@@ -779,6 +784,6 @@ export function guestTransport(token: string): TeamTransport {
     agents: () => req("/play/api/agents"),
     personas: () => req("/play/api/personas"),
     mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,
-    stopAgents: (id) => req("/play/api/stop", { thread: id }),
+    stopAgents: (id, agent, pause) => req("/play/api/stop", { thread: id, agent, pause }),
   };
 }

@@ -106,6 +106,16 @@ pub async fn call(method: reqwest::Method, path: &str, body: Option<serde_json::
     }
 }
 
+/// Aborts the sidecar runs of a thread key; `<thread>#<Agent>` aborts only that agent.
+pub async fn abort(thread_key: &str) {
+    let _ = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/abort", port()))
+        .json(&serde_json::json!({ "thread": thread_key }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+}
+
 pub fn reload() {
     tokio::spawn(async {
         let _ = reqwest::Client::new()
