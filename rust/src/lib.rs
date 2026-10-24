@@ -212,7 +212,11 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     };
                     let _ = crate::handler::process_message(req, handler.clone()).await;
                 }
-                let sent = crate::team::team_send(handler, transcripts.clone(), &thread, &job.prompt, "webhook", None, &[], None).await;
+                if let Some(agent) = job.prompt.strip_prefix('@').and_then(|rest| rest.split_whitespace().next()) {
+                    let member = crate::team::TeamMemberInput::Agent { persona: agent.to_string() };
+                    let _ = crate::team::apply_member_op(&handler, &thread_key, "add", member).await;
+                }
+                let sent = crate::team::team_send(handler,transcripts.clone(), &thread, &job.prompt, "webhook", None, &[], None).await;
                 return match sent {
                     Ok(_) => {
                         activity.record("trigger_ok", &thread_key, name, "").await;

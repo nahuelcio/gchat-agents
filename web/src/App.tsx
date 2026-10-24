@@ -142,10 +142,14 @@ function OwnerApp() {
       () => setGate("open"),
       (e: Error) => setGate(/sign in/i.test(e.message) ? "login" : "open"),
     );
-    api.settings().then(setSettings, (e: Error) => notify(e.message, true));
-    api.share().then((r) => setShareLink(r.link), () => {});
     return () => removeEventListener("hashchange", onHash);
   }, [notify]);
+
+  useEffect(() => {
+    if (gate !== "open") return;
+    api.settings().then(setSettings, (e: Error) => notify(e.message, true));
+    api.share().then((r) => setShareLink(r.link), () => {});
+  }, [gate, notify]);
 
   useEffect(() => {
     if (gate !== "open") return;

@@ -195,6 +195,9 @@ pub async fn call_admin(
         "POST" => client.post(&url),
         _ => client.put(&url),
     };
+    if let Some(token) = env.get("SWITCHBOARD_ADMIN_TOKEN").cloned().or_else(|| std::env::var("SWITCHBOARD_ADMIN_TOKEN").ok()) {
+        req = req.header(crate::share::INTERNAL_HEADER, token);
+    }
     if let Some(mut b) = body {
         if thread {
             if let Some(tk) = thread_key {

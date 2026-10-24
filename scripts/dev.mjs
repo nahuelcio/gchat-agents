@@ -39,7 +39,7 @@ async function waitForAdmin(backend, ms = 300_000) {
     }
     try {
       const res = await fetch(url);
-      if (res.ok) {
+      if (res.ok || res.status === 401) {
         console.info(" ready");
         return;
       }

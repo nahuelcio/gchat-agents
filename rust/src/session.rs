@@ -139,6 +139,8 @@ pub struct FlowCursor {
     pub step: usize,
     #[serde(default)]
     pub hold: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 pub struct SessionStore {

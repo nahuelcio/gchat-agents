@@ -559,7 +559,7 @@ fn spend_notice(req: &TurnRequest, deps: &HandlerDeps) -> Option<(String, bool)>
     Some((text, status.level == crate::usage::SpendLevel::Stop))
 }
 
-fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcripts::TranscriptStore>>, deps: Arc<HandlerDeps>) {
+fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcripts::TranscriptStore>>, deps: Arc<HandlerDeps>, approved: bool) {
     tokio::spawn(async move {
         let Some(settings) = crate::settings::global().map(|s| s.get()) else { return };
         let Some(cursor) = deps.store.get(&thread_key).and_then(|r| r.flow) else { return };
@@ -568,7 +568,7 @@ fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcri
         }
         let Some(flow) = settings.flows.iter().find(|f| f.id == cursor.id).cloned() else { return };
         let Some(step) = flow.steps.get(cursor.step).cloned() else { return };
-        if step.approve {
+        if step.approve && !approved {
             let _ = deps
                 .store
                 .update(&thread_key, &space, SessionPatch { flow: Some(Some(FlowCursor { hold: true, ..cursor.clone() })), ..Default::default() })
@@ -583,6 +583,7 @@ fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcri
             let thread2 = thread_key.clone();
             let id = cursor.id.clone();
             let step_i = cursor.step;
+            let task = cursor.task.clone();
             tokio::spawn(async move {
                 let ok = rx.await.unwrap_or(false);
                 if !ok {
@@ -594,14 +595,17 @@ fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcri
                 }
                 let _ = deps2
                     .store
-                    .update(&thread2, &space2, SessionPatch { flow: Some(Some(FlowCursor { id, step: step_i, hold: false })), ..Default::default() })
+                    .update(&thread2, &space2, SessionPatch { flow: Some(Some(FlowCursor { id, step: step_i, hold: false, task })), ..Default::default() })
                     .await;
-                kick_flow(thread2, space2, sink2, deps2);
+                kick_flow(thread2, space2, sink2, deps2, true);
             });
             return;
         }
+        let task = cursor.task.as_deref().map(|t| format!("
+
+Task: {t}")).unwrap_or_default();
         let text = format!(
-            "@{} You are step {} of the flow \"{}\". Continue from the conversation. Do not @mention the next step; the flow does that.",
+            "@{} You are step {} of the flow \"{}\". Continue from the conversation. Do not @mention the next step; the flow does that.{task}",
             step.agent,
             cursor.step + 1,
             flow.name
@@ -645,9 +649,9 @@ async fn follow_flow(req: &TurnRequest, sink: &Arc<crate::transcripts::Transcrip
         FlowMove::Next { step, .. } => {
             let _ = deps
                 .store
-                .update(&req.thread_key, &req.space_name, SessionPatch { flow: Some(Some(FlowCursor { id: cursor.id, step, hold: false })), ..Default::default() })
+                .update(&req.thread_key, &req.space_name, SessionPatch { flow: Some(Some(FlowCursor { id: cursor.id, step, hold: false, task: cursor.task })), ..Default::default() })
                 .await;
-            kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps);
+            kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps, false);
         }
     }
 }
@@ -665,7 +669,7 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
             let started = cmd == "flow" && !reply.starts_with("Command failed");
             deliver_reply(&req, &deps, &reply, None, None).await;
             if started {
-                kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps.clone());
+                kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps.clone(), false);
             }
             return Ok(true);
         }
@@ -1518,12 +1522,15 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
             if flow.steps.is_empty() {
                 return Err(format!("flow {id} has no steps"));
             }
+            for step in &flow.steps {
+                crate::team::apply_member_op(deps, &req.thread_key, "add", crate::team::TeamMemberInput::Agent { persona: step.agent.clone() }).await?;
+            }
             deps.store
                 .update(
                     &req.thread_key,
                     &req.space_name,
                     SessionPatch {
-                        flow: Some(Some(FlowCursor { id: flow.id.clone(), step: 0, hold: false })),
+                        flow: Some(Some(FlowCursor { id: flow.id.clone(), step: 0, hold: false, task: Some(args[1..].join(" ")).filter(|t| !t.trim().is_empty()) })),
                         ..Default::default()
                     },
                 )

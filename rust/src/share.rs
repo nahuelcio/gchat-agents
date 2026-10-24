@@ -250,10 +250,33 @@ pub fn clear_cookie() -> String {
 }
 
 /// No users yet: the local panel stays open as admin. Once someone creates a user, a session is required.
+pub const INTERNAL_HEADER: &str = "x-switchboard-internal";
+
+pub fn internal_token(data_dir: &Path) -> String {
+    let path = data_dir.join("internal-token");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let existing = existing.trim();
+        if existing.len() >= 32 {
+            return existing.to_string();
+        }
+    }
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    let _ = std::fs::write(&path, &token);
+    token
+}
+
 pub fn resolve_actor(data_dir: &Path, headers: &axum::http::HeaderMap) -> Option<Actor> {
     let store = UserStore::open(data_dir.join("users.json"));
     if store.is_empty() {
         return Some(Actor { name: "local".into(), role: "admin".into() });
+    }
+    if let Some(sent) = headers.get(INTERNAL_HEADER).and_then(|v| v.to_str().ok()) {
+        let expected = internal_token(data_dir);
+        if Sha256::digest(sent.as_bytes()) == Sha256::digest(expected.as_bytes()) {
+            return Some(Actor { name: "agent".into(), role: "admin".into() });
+        }
     }
     store.actor_for_token(cookie_token(headers).as_deref())
 }

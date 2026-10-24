@@ -1592,23 +1592,30 @@ function SpendCard({ settings, save }: ViewProps) {
 function FlowsCard({ settings, save }: ViewProps) {
   const flows = settings.flows ?? [];
   const agents = (settings.personas ?? []).map((p) => p.name);
+  const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [steps, setSteps] = useState<{ agent: string; approve: boolean }[]>([]);
   const setStep = (i: number, patch: Partial<{ agent: string; approve: boolean }>) =>
     setSteps((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const id = editing ?? slug;
+  const reset = () => {
+    setEditing(null);
+    setName("");
+    setSteps([]);
+  };
   return (
     <details className="card" open>
       <summary className="card-title">
         <h2>Flows</h2>
-        <p className="muted small">A chain of agents that pass the work along, one after the other. Run it in a thread with <code>/flow name</code>.</p>
+        <p className="muted small">A chain of agents that pass the work along, one after the other. Run it in a thread with <code>/flow name your task</code>.</p>
       </summary>
       {flows.length === 0 ? (
         <p className="muted small">No flows yet.</p>
       ) : (
         <ul className="auto-list">
           {flows.map((f) => (
-            <li key={f.id}>
+            <li key={f.id} className={editing === f.id ? "on" : ""}>
               <div className="grow">
                 <strong>{f.name}</strong> <code className="small">/flow {f.id}</code>
                 <div className="chips">
@@ -1617,7 +1624,8 @@ function FlowsCard({ settings, save }: ViewProps) {
                   ))}
                 </div>
               </div>
-              <button type="button" className="btn small ghost" onClick={() => void save({ flows: flows.filter((x) => x.id !== f.id) }, "Flow removed")}>Remove</button>
+              <button type="button" className="btn small" onClick={() => { setEditing(f.id); setName(f.name); setSteps(f.steps.map((s) => ({ agent: s.agent, approve: Boolean(s.approve) }))); }}>Edit</button>
+              <button type="button" className="btn small ghost" onClick={() => { if (editing === f.id) reset(); void save({ flows: flows.filter((x) => x.id !== f.id) }, "Flow removed"); }}>Remove</button>
             </li>
           ))}
         </ul>
@@ -1626,13 +1634,10 @@ function FlowsCard({ settings, save }: ViewProps) {
         className="auto-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void save({ flows: [...flows.filter((f) => f.id !== id), { id, name, steps }] }, "Flow saved").then(() => {
-            setName("");
-            setSteps([]);
-          });
+          void save({ flows: [...flows.filter((f) => f.id !== id), { id, name, steps }] }, editing ? "Flow updated" : "Flow saved").then(reset);
         }}
       >
-        <h3>New flow</h3>
+        <h3>{editing ? `Edit flow /${editing}` : "New flow"}</h3>
         <label className="field">
           <span>Name</span>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Feature end to end" required />
@@ -1643,6 +1648,7 @@ function FlowsCard({ settings, save }: ViewProps) {
             <div key={i} className="row auto-step">
               <span className="muted">{i + 1}.</span>
               <select value={s.agent} onChange={(e) => setStep(i, { agent: e.target.value })}>
+                {!agents.includes(s.agent) && <option value={s.agent}>{s.agent}</option>}
                 {agents.map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
               <label className="row small">
@@ -1657,7 +1663,8 @@ function FlowsCard({ settings, save }: ViewProps) {
           </div>
         </div>
         <div className="row">
-          <button className="btn primary" type="submit" disabled={!id || steps.length === 0}>Save flow</button>
+          <button className="btn primary" type="submit" disabled={!id || steps.length === 0}>{editing ? "Save changes" : "Save flow"}</button>
+          {editing && <button type="button" className="btn" onClick={reset}>Cancel</button>}
         </div>
       </form>
     </details>
@@ -1687,9 +1694,12 @@ function UsersCard() {
   );
 }
 
+type TriggerRow = { id: string; name: string; agent: string; prompt: string; secret: string; repo?: string };
+
 function TriggersCard({ settings }: ViewProps) {
   const agents = (settings.personas ?? []).map((p) => p.name);
-  const [rows, setRows] = useState<{ id: string; name: string; agent: string; prompt: string; secret: string; repo?: string }[]>([]);
+  const [rows, setRows] = useState<TriggerRow[]>([]);
+  const [editing, setEditing] = useState<TriggerRow | null>(null);
   const [name, setName] = useState("");
   const [agent, setAgent] = useState(agents[0] ?? "");
   const [prompt, setPrompt] = useState("");
@@ -1697,6 +1707,20 @@ function TriggersCard({ settings }: ViewProps) {
   const [error, setError] = useState("");
   useEffect(() => { api.triggers().then((r) => setRows(r.triggers), (e: Error) => setError(e.message)); }, []);
   const copy = (text: string) => void navigator.clipboard.writeText(text);
+  const reset = () => {
+    setEditing(null);
+    setName("");
+    setAgent(agents[0] ?? "");
+    setPrompt("");
+    setRepo("");
+  };
+  const edit = (t: TriggerRow) => {
+    setEditing(t);
+    setName(t.name);
+    setAgent(t.agent);
+    setPrompt(t.prompt);
+    setRepo(t.repo ?? "");
+  };
   return (
     <details className="card" open>
       <summary className="card-title">
@@ -1709,7 +1733,7 @@ function TriggersCard({ settings }: ViewProps) {
       ) : (
         <ul className="auto-list">
           {rows.map((t) => (
-            <li key={t.id}>
+            <li key={t.id} className={editing?.id === t.id ? "on" : ""}>
               <div className="grow">
                 <strong>{t.name}</strong> <span className="muted small">→ @{t.agent}{t.repo ? ` in ${t.repo}` : ""}</span>
                 <div className="row small">
@@ -1718,7 +1742,8 @@ function TriggersCard({ settings }: ViewProps) {
                   <button type="button" className="btn small ghost" onClick={() => copy(t.secret)}>Copy secret</button>
                 </div>
               </div>
-              <button type="button" className="btn small ghost" onClick={() => void api.deleteTrigger(t.id).then(() => setRows((list) => list.filter((x) => x.id !== t.id)))}>Remove</button>
+              <button type="button" className="btn small" onClick={() => edit(t)}>Edit</button>
+              <button type="button" className="btn small ghost" onClick={() => void api.deleteTrigger(t.id).then(() => { if (editing?.id === t.id) reset(); setRows((list) => list.filter((x) => x.id !== t.id)); })}>Remove</button>
             </li>
           ))}
         </ul>
@@ -1727,18 +1752,17 @@ function TriggersCard({ settings }: ViewProps) {
         className="auto-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void api.saveTrigger({ name, agent, prompt, repo: repo || undefined }).then(
+          void api.saveTrigger({ id: editing?.id, secret: editing?.secret, name, agent, prompt, repo: repo || undefined }).then(
             (saved) => {
-              setRows((list) => [...list, { ...saved, name, agent, prompt, repo }]);
-              setName("");
-              setPrompt("");
-              setRepo("");
+              const row = { ...saved, name, agent, prompt, repo };
+              setRows((list) => (editing ? list.map((x) => (x.id === editing.id ? row : x)) : [...list, row]));
+              reset();
             },
             (err: Error) => setError(err.message),
           );
         }}
       >
-        <h3>New trigger</h3>
+        <h3>{editing ? `Edit ${editing.name}` : "New trigger"}</h3>
         <div className="row">
           <label className="field grow">
             <span>Name</span>
@@ -1747,6 +1771,7 @@ function TriggersCard({ settings }: ViewProps) {
           <label className="field grow">
             <span>Agent</span>
             <select value={agent} onChange={(e) => setAgent(e.target.value)} required>
+              {agent && !agents.includes(agent) && <option value={agent}>{agent}</option>}
               {agents.map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </label>
@@ -1759,9 +1784,10 @@ function TriggersCard({ settings }: ViewProps) {
           <span>What should the agent do?</span>
           <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Investigate this alert and propose a fix." required />
         </label>
-        <p className="muted small">The service signs each request with the secret: header <code>X-Switchboard-Signature: sha256=&lt;hmac of the body&gt;</code>.</p>
+        <p className="muted small">The service signs each request with the secret: header <code>X-Switchboard-Signature: sha256=&lt;hmac of the body&gt;</code>. Editing keeps the same URL and secret.</p>
         <div className="row">
-          <button className="btn primary" type="submit">Create trigger</button>
+          <button className="btn primary" type="submit">{editing ? "Save changes" : "Create trigger"}</button>
+          {editing && <button type="button" className="btn" onClick={reset}>Cancel</button>}
         </div>
       </form>
     </details>
@@ -1770,13 +1796,33 @@ function TriggersCard({ settings }: ViewProps) {
 
 function DocsCard() {
   const [project, setProject] = useState("switchboard");
+  const [paths, setPaths] = useState<string[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
   const [kind, setKind] = useState("doc");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [listed, setListed] = useState("");
   const [error, setError] = useState("");
-  const list = () => api.docs(project).then((r) => setListed(r.text), (err: Error) => setError(err.message));
+  const list = () =>
+    api.docs(project).then(
+      (r) => setPaths(r.text.split("\n").map((l) => l.trim()).filter((l) => l.endsWith(".md"))),
+      (err: Error) => setError(err.message),
+    );
   useEffect(() => { void list(); }, []);
+  const reset = () => {
+    setEditing(null);
+    setKind("doc");
+    setTitle("");
+    setBody("");
+  };
+  const edit = (path: string) =>
+    api.queryDocs(project, "read", "", path).then((r) => {
+      const heading = r.text.match(/^#\s+(.+)$/m)?.[1]?.trim();
+      setEditing(path);
+      setKind(path.includes("/") ? path.split("/")[0] : "doc");
+      setTitle(heading ?? path.replace(/^.*\//, "").replace(/\.md$/, "").replace(/-/g, " "));
+      setBody(r.text);
+    }, (err: Error) => setError(err.message));
+  const remove = (path: string) => api.deleteDoc(project, path).then(list, (err: Error) => setError(err.message));
   return (
     <details className="card" open>
       <summary className="card-title">
@@ -1786,21 +1832,34 @@ function DocsCard() {
       {error && <p className="error">{error}</p>}
       <label className="field">
         <span>Project</span>
-        <input value={project} onChange={(e) => setProject(e.target.value)} onBlur={() => void list()} />
+        <input value={project} onChange={(e) => setProject(e.target.value)} onBlur={() => { reset(); void list(); }} />
       </label>
-      {listed ? <pre className="logs">{listed}</pre> : <p className="muted small">No docs in this project yet.</p>}
+      {paths.length === 0 ? (
+        <p className="muted small">No docs in this project yet.</p>
+      ) : (
+        <ul className="auto-list">
+          {paths.map((p) => (
+            <li key={p} className={editing === p ? "on" : ""}>
+              <div className="grow"><code>{p}</code></div>
+              <button type="button" className="btn small" onClick={() => void edit(p)}>Edit</button>
+              <button type="button" className="btn small ghost" onClick={() => { if (editing === p) reset(); void remove(p); }}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
       <form
         className="auto-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void api.saveDoc(project, kind, title, body).then(() => {
-            setTitle("");
-            setBody("");
-            return list();
+          const previous = editing;
+          void api.saveDoc(project, kind, title, body).then(async (r) => {
+            if (previous && previous !== r.path) await api.deleteDoc(project, previous);
+            reset();
+            await list();
           }, (err: Error) => setError(err.message));
         }}
       >
-        <h3>New doc</h3>
+        <h3>{editing ? `Edit ${editing}` : "New doc"}</h3>
         <div className="row">
           <label className="field grow">
             <span>Title</span>
@@ -1820,7 +1879,8 @@ function DocsCard() {
           <textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)} required />
         </label>
         <div className="row">
-          <button className="btn primary" type="submit">Save doc</button>
+          <button className="btn primary" type="submit">{editing ? "Save changes" : "Save doc"}</button>
+          {editing && <button type="button" className="btn" onClick={reset}>Cancel</button>}
         </div>
       </form>
     </details>

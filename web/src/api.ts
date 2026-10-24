@@ -541,7 +541,7 @@ export const api = {
   docs: (project = "") => call<{ text: string }>(`/api/docs${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   saveDoc: (project: string, kind: string, title: string, body: string) => call<{ path: string }>("/api/docs", { project, kind, title, body }),
   queryDocs: (project: string, action: string, query = "", path = "") => call<{ text: string }>("/api/docs/query", { project, action, query, path }),
-  deleteDoc: (path: string) => call("/api/docs/delete", { path }),
+  deleteDoc: (project: string, path: string) => call("/api/docs/delete", { project, path }),
   schedules: () => call<Job[]>("/api/schedules"),
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
     call<Job[]>("/api/schedules", job),

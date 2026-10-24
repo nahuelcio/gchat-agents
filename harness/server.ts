@@ -353,7 +353,7 @@ async function approved(conversationId: string, name: string, args: Record<strin
   if (!admin || !need || need.kind === "shell") return;
   const res = await fetch(`${admin}/api/gate`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-switchboard-internal": process.env.SWITCHBOARD_ADMIN_TOKEN ?? "" },
     body: JSON.stringify({ thread: threads[conversationId] ?? "", tool: name, ...need }),
   });
   const out = (await res.json().catch(() => ({}))) as { approve?: boolean };
