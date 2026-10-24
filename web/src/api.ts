@@ -25,6 +25,10 @@ export interface Settings {
   parallelRoom?: boolean;
   tunnel: TunnelMode;
   approvals?: ApprovalMode;
+  agentApprovals?: Record<string, ApprovalMode>;
+  repoApprovals?: Record<string, ApprovalMode>;
+  spend?: { dailyUsd?: number; perAgentUsd?: number; perThreadUsd?: number };
+  flows?: { id: string; name: string; steps: { agent: string; approve?: boolean }[] }[];
   googleDriveFolderId?: string | null;
   mcpServers?: McpServer[];
   personas: Persona[];
@@ -60,6 +64,7 @@ export interface Persona {
   name: string;
   prompt: string;
   model?: string;
+  effort?: string;
   listen?: "mentions" | "all";
   respondTo?: "anyone" | "people";
   skills?: string[];
@@ -280,6 +285,8 @@ export interface PiPackage {
   tools: string[];
   skills: string[];
   providers: { id: string; name: string; models: string[]; error?: string }[];
+  commands?: { name: string; description: string }[];
+  uiHooks?: string[];
   ignored: string[];
   error?: string;
 }
@@ -521,6 +528,20 @@ export const api = {
   health: () => call<Health>("/api/health"),
   share: (thread?: string) => call<{ link: string }>(`/api/share${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`),
   rotateShare: () => call<{ link: string }>("/api/share/rotate", {}),
+  me: () => call<{ name: string; role: string; authRequired: boolean }>("/api/me"),
+  login: (name: string, password: string) => call("/api/login", { name, password }),
+  logout: () => call("/api/logout", {}),
+  users: () => call<{ users: { name: string; role: string }[] }>("/api/users"),
+  addUser: (name: string, password: string, role: string) => call<{ users: { name: string; role: string }[] }>("/api/users", { name, password, role }),
+  removeUser: (name: string) => call<{ users: { name: string; role: string }[] }>("/api/users/delete", { name }),
+  triggers: () => call<{ triggers: { id: string; name: string; agent: string; prompt: string; secret: string; repo?: string }[] }>("/api/triggers"),
+  saveTrigger: (body: { id?: string; name: string; agent: string; prompt: string; repo?: string; secret?: string }) =>
+    call<{ id: string; secret: string }>("/api/triggers", { id: body.id ?? "", secret: body.secret ?? "", ...body }),
+  deleteTrigger: (id: string) => call("/api/triggers/delete", { id }),
+  docs: (project = "") => call<{ text: string }>(`/api/docs${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+  saveDoc: (project: string, kind: string, title: string, body: string) => call<{ path: string }>("/api/docs", { project, kind, title, body }),
+  queryDocs: (project: string, action: string, query = "", path = "") => call<{ text: string }>("/api/docs/query", { project, action, query, path }),
+  deleteDoc: (path: string) => call("/api/docs/delete", { path }),
   schedules: () => call<Job[]>("/api/schedules"),
   addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
     call<Job[]>("/api/schedules", job),
@@ -744,6 +765,15 @@ export interface TeamTransport {
   watch?: (id: string, onView: (view: ThreadViewState) => void) => () => void;
   /** Owner only: add or remove a room member. */
   members?: (id: string, op: "add" | "remove", member: MemberChange) => Promise<{ members: RoomMember[] }>;
+  rewrite?: (id: string, name: string, text?: string) => Promise<unknown>;
+  fork?: (id: string, index: number) => Promise<{ thread: string }>;
+  exportMd?: (id: string) => Promise<{ markdown: string }>;
+  summarize?: (id: string) => Promise<{ id: string }>;
+  feedback?: (id: string, index: number, vote: "up" | "down", reason?: string) => Promise<unknown>;
+  diff?: (id: string) => Promise<{ files: { path: string; patch: string }[] }>;
+  openPr?: (id: string, title?: string) => Promise<{ url: string }>;
+  packageCommands?: () => Promise<{ name: string; description: string }[]>;
+  runPackageCommand?: (name: string, args: string) => Promise<{ text: string }>;
 }
 
 export const ownerTransport: TeamTransport = {
@@ -764,6 +794,15 @@ export const ownerTransport: TeamTransport = {
   stopAgents: (id, agent, pause) => call("/api/team/stop", { thread: id, agent, pause }),
   resumeAgent: (id, agent) => call("/api/team/resume", { thread: id, agent }),
   members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),
+  rewrite: (id, name, text) => call("/api/team/rewrite", { thread: id, name, ...(text != null ? { text, edit: true } : {}) }),
+  fork: (id, index) => call("/api/team/fork", { thread: id, index }),
+  exportMd: (id) => call(`/api/team/export?thread=${encodeURIComponent(id)}`),
+  summarize: (id) => call("/api/team/summarize", { thread: id }),
+  feedback: (id, index, vote, reason) => call("/api/evals/feedback", { thread: id, index, vote, reason }),
+  diff: (id) => call(`/api/team/diff?thread=${encodeURIComponent(id)}`),
+  openPr: (id, title) => call("/api/team/pr", { thread: id, title }),
+  packageCommands: () => call<PiPackage[]>("/api/pi/packages").then((list) => list.flatMap((p) => p.commands ?? [])),
+  runPackageCommand: (name, args) => call("/api/pi/packages/command", { name, args }),
 };
 
 export function guestTransport(token: string): TeamTransport {
@@ -787,5 +826,10 @@ export function guestTransport(token: string): TeamTransport {
     personas: () => req("/play/api/personas"),
     mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,
     stopAgents: (id, agent, pause) => req("/play/api/stop", { thread: id, agent, pause }),
+    rewrite: (id, name, text) => req("/play/api/rewrite", { thread: id, name, ...(text != null ? { text, edit: true } : {}) }),
+    fork: (id, index) => req("/play/api/fork", { thread: id, index }),
+    exportMd: (id) => req(`/play/api/export?thread=${encodeURIComponent(id)}`),
+    summarize: (id) => req("/play/api/summarize", { thread: id }),
+    feedback: (id, index, vote, reason) => req("/play/api/feedback", { thread: id, index, vote, reason }),
   };
 }

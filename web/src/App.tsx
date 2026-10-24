@@ -112,6 +112,10 @@ function OwnerApp() {
   const [settings, setSettings] = useState<Settings>();
   const [toast, setToast] = useState<{ text: string; error?: boolean }>();
   const [navOpen, setNavOpen] = useState(rememberNavOpen);
+  const [gate, setGate] = useState<"check" | "open" | "login">("check");
+  const [loginName, setLoginName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
   useJobAlerts();
 
   const notify = useCallback((text: string, error = false) => {
@@ -134,10 +138,45 @@ function OwnerApp() {
       setHash(location.hash);
     };
     addEventListener("hashchange", onHash);
+    api.me().then(
+      () => setGate("open"),
+      (e: Error) => setGate(/sign in/i.test(e.message) ? "login" : "open"),
+    );
     api.settings().then(setSettings, (e: Error) => notify(e.message, true));
     api.share().then((r) => setShareLink(r.link), () => {});
     return () => removeEventListener("hashchange", onHash);
   }, [notify]);
+
+  useEffect(() => {
+    if (gate !== "open") return;
+    const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        dispatchEvent(new Event("switchboard:search"));
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        location.hash = "#team";
+        dispatchEvent(new Event("switchboard:new-thread"));
+        return;
+      }
+      if (e.altKey && e.key === "ArrowUp") {
+        e.preventDefault();
+        dispatchEvent(new Event("switchboard:prev-thread"));
+        return;
+      }
+      if (e.altKey && e.key === "ArrowDown") {
+        e.preventDefault();
+        dispatchEvent(new Event("switchboard:next-thread"));
+        return;
+      }
+      if (e.key === "Escape" && !typing) dispatchEvent(new CustomEvent("switchboard:stop", { detail: e.target }));
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [gate]);
 
   const save = useCallback(
     async (patch: Partial<Settings>, ok = "Saved") => {
@@ -150,6 +189,28 @@ function OwnerApp() {
     },
     [notify],
   );
+
+  if (gate === "check") return <div className="skeleton" aria-busy="true" />;
+  if (gate === "login") {
+    return (
+      <form
+        className="login-gate"
+        onSubmit={(e) => {
+          e.preventDefault();
+          api.login(loginName, loginPassword).then(
+            () => setGate("open"),
+            (err: Error) => setLoginError(err.message),
+          );
+        }}
+      >
+        <h1>Switchboard</h1>
+        <label>Name<input value={loginName} onChange={(e) => setLoginName(e.target.value)} autoComplete="username" /></label>
+        <label>Password<input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} autoComplete="current-password" /></label>
+        {loginError && <p className="error">{loginError}</p>}
+        <button className="btn primary" type="submit">Sign in</button>
+      </form>
+    );
+  }
 
   const model = settings?.models.pi;
   const props = settings && { settings, save, setSettings, notify };

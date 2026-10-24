@@ -20,7 +20,7 @@ use crate::schedules::{describe_cron, job_name, JobPatch, NewJob};
 use crate::settings::SettingsPatch;
 use crate::state::AppState;
 use crate::static_files::serve_static;
-use crate::team::{team_delete, team_members, team_send, team_steer, team_thread, thread_id_ok, TeamMemberInput};
+use crate::team::{team_delete, team_fork, team_members, team_rewrite, team_send, team_steer, team_thread, thread_id_ok, TeamMemberInput};
 use crate::workspace::slug_for;
 
 pub fn admin_router(state: Arc<AppState>) -> Router {
@@ -52,6 +52,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/evals/run", post(post_evals_run))
         .route("/api/evals/runs/delete", post(post_evals_run_delete))
         .route("/api/evals/judge", post(post_evals_judge))
+        .route("/api/evals/feedback", post(post_evals_feedback))
         .route("/api/pi/packages", get(get_pi_packages))
         .route("/api/pi/search", get(get_pi_search))
         .route("/api/pi/packages/install", post(post_pi_install))
@@ -60,6 +61,17 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/schedules/suggest", post(post_schedules_suggest))
         .route("/api/share", get(get_share))
         .route("/api/share/rotate", post(post_share_rotate))
+        .route("/api/login", post(post_login))
+        .route("/api/logout", post(post_logout))
+        .route("/api/me", get(get_me))
+        .route("/api/users", get(get_users).post(post_users))
+        .route("/api/users/delete", post(post_users_delete))
+        .route("/api/triggers", get(get_triggers).post(post_triggers))
+        .route("/api/triggers/delete", post(post_triggers_delete))
+        .route("/api/docs", get(get_docs).post(post_docs))
+        .route("/api/docs/query", post(post_docs_query))
+        .route("/api/docs/delete", post(post_docs_delete))
+        .route("/api/pi/packages/command", post(post_pi_command))
         .route("/api/google", get(get_google))
         .route("/api/google/key", post(post_google_key))
         .route("/api/google/key/delete", post(post_google_clear))
@@ -73,6 +85,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/threads", get(get_team_threads))
         .route("/api/team/thread", get(get_team_thread))
         .route("/api/team/send", post(post_team_send))
+        .route("/api/team/rewrite", post(post_team_rewrite))
+        .route("/api/team/fork", post(post_team_fork))
+        .route("/api/team/export", get(get_team_export))
+        .route("/api/team/summarize", post(post_team_summarize))
+        .route("/api/team/diff", get(get_team_diff))
+        .route("/api/team/pr", post(post_team_pr))
         .route("/api/team/steer", post(post_team_steer))
         .route("/api/team/stop", post(post_team_stop))
         .route("/api/team/resume", post(post_team_resume))
@@ -126,6 +144,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/drive/spreadsheets", get(get_drive_spreadsheets))
         .fallback(admin_fallback)
         .layer(axum::extract::DefaultBodyLimit::max(crate::team::UPLOAD_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), require_actor))
         .layer(axum::middleware::from_fn(require_local_host))
         .layer(CompressionLayer::new())
         .layer(RequestDecompressionLayer::new())
@@ -141,6 +160,21 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
 async fn require_local_host(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     if !host_ok(req.headers()) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden host" }))).into_response();
+    }
+    next.run(req).await
+}
+
+async fn require_actor(State(state): State<Arc<AppState>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path().to_string();
+    let method = req.method().as_str().to_string();
+    let actor = crate::share::resolve_actor(&state.data_dir, req.headers());
+    if actor.is_none() && path != "/api/login" && path != "/api/logout" {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "sign in required", "authRequired": true }))).into_response();
+    }
+    if let Some(actor) = &actor {
+        if !crate::share::role_allows(&actor.role, &method, &path) {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "this role cannot do that" }))).into_response();
+        }
     }
     next.run(req).await
 }
@@ -570,7 +604,7 @@ async fn post_insights_analyze(State(state): State<Arc<AppState>>, Json(b): Json
     }
 }
 
-fn evals(state: &AppState) -> Arc<crate::evals::EvalStore> {
+pub(crate) fn evals(state: &AppState) -> Arc<crate::evals::EvalStore> {
     static STORE: std::sync::OnceLock<Arc<crate::evals::EvalStore>> = std::sync::OnceLock::new();
     STORE.get_or_init(|| Arc::new(crate::evals::EvalStore::open(state.data_dir.join("evals.json")))).clone()
 }
@@ -680,11 +714,23 @@ struct GateBody {
     kind: String,
 }
 
+fn approval_for(state: &AppState, thread: &str) -> crate::settings::ApprovalMode {
+    let settings = state.settings.get();
+    let record = state.handler.store.get(thread);
+    let repo = record.as_ref().and_then(|r| r.repo.as_deref()).unwrap_or("");
+    let repo_mode = settings.repo_approvals.iter().find(|(k, _)| k.eq_ignore_ascii_case(repo)).map(|(_, m)| *m);
+    let agent_mode = crate::handler::speaking(thread).into_iter().find_map(|name| {
+        let key = name.trim_start_matches('@');
+        settings.agent_approvals.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, m)| *m)
+    });
+    crate::gate::effective_mode(settings.approvals, agent_mode, repo_mode)
+}
+
 async fn post_gate(State(state): State<Arc<AppState>>, Json(body): Json<GateBody>) -> Response {
-    if !crate::gate::needs_gate(state.settings.get().approvals, &body.kind) {
+    let thread = body.thread.clone().unwrap_or_default();
+    if !crate::gate::needs_gate(approval_for(&state, &thread), &body.kind) {
         return Json(json!({ "approve": true })).into_response();
     }
-    let thread = body.thread.unwrap_or_default();
     let (info, rx) = crate::gate::open(&thread, &body.tool, &body.detail, &body.kind);
     let summary = crate::gate::summary(&info);
     crate::handler::note(&state.handler, "approval_pending", &thread, format!("{} needs approval ({})", info.tool, info.id), info.detail.clone()).await;
@@ -713,13 +759,17 @@ struct DecideBody {
     approve: Option<bool>,
 }
 
-async fn post_approvals_decide(State(state): State<Arc<AppState>>, Json(body): Json<DecideBody>) -> Response {
+async fn post_approvals_decide(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<DecideBody>) -> Response {
     let (Some(id), Some(approve)) = (body.id, body.approve) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "id and approve are required" }))).into_response();
     };
+    let actor = crate::share::resolve_actor(&state.data_dir, &headers).map(|a| a.name).unwrap_or_else(|| "local".into());
     if id.starts_with('g') {
         return match crate::gate::decide(&id, approve) {
-            Some(info) => Json(json!({ "id": info.id, "name": info.tool, "approved": approve })).into_response(),
+            Some(info) => {
+                state.activity.record("approval_decided", &info.thread_key, &info.tool, format!("{} by {actor}", if approve { "approved" } else { "denied" })).await;
+                Json(json!({ "id": info.id, "name": info.tool, "approved": approve, "by": actor })).into_response()
+            }
             None => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("no pending approval {id}") }))).into_response(),
         };
     }
@@ -1139,10 +1189,12 @@ struct TeamSendBody {
     reply_to: Option<crate::transcripts::Quote>,
 }
 
-async fn post_team_send(State(state): State<Arc<AppState>>, Json(body): Json<TeamSendBody>) -> Response {
+async fn post_team_send(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<TeamSendBody>) -> Response {
     let thread = body.thread.unwrap_or_default();
     let text = body.text.unwrap_or_default();
     let name = body.name.unwrap_or_else(|| "Owner".into());
+    let actor = crate::share::resolve_actor(&state.data_dir, &headers).map(|a| a.name).unwrap_or_else(|| "local".into());
+    state.activity.record("team_send", &format!("{TEAM_PREFIX}{thread}"), &name, format!("by {actor}")).await;
     match team_send(
         state.handler.clone(),
         state.transcripts.clone(),
@@ -1167,6 +1219,262 @@ struct TeamSteerBody {
     name: Option<String>,
     #[serde(rename = "replyTo")]
     reply_to: Option<crate::transcripts::Quote>,
+}
+
+#[derive(Deserialize)]
+struct RewriteBody {
+    thread: Option<String>,
+    name: Option<String>,
+    text: Option<String>,
+    #[serde(default)]
+    edit: bool,
+}
+
+async fn post_team_rewrite(State(state): State<Arc<AppState>>, Json(body): Json<RewriteBody>) -> Response {
+    let name: String = body.name.unwrap_or_else(|| "Owner".into()).chars().take(40).collect();
+    let replacement = if body.edit { Some(body.text.unwrap_or_default()) } else { None };
+    match team_rewrite(state.handler.clone(), state.transcripts.clone(), body.thread.as_deref().unwrap_or(""), &name, replacement.as_deref()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ForkBody {
+    thread: Option<String>,
+    index: Option<usize>,
+}
+
+async fn post_team_fork(State(state): State<Arc<AppState>>, Json(body): Json<ForkBody>) -> Response {
+    match team_fork(state.handler.clone(), state.transcripts.clone(), body.thread.as_deref().unwrap_or(""), body.index.unwrap_or(0)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_team_export(State(state): State<Arc<AppState>>, Query(q): Query<ThreadQuery>) -> Response {
+    let thread = q.thread.unwrap_or_default();
+    if !thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let messages = state.transcripts.get(&key);
+    let title = state.handler.store.get(&key).and_then(|r| r.title).unwrap_or_else(|| thread.clone());
+    Json(json!({ "markdown": crate::transcripts::to_markdown(&title, &messages) })).into_response()
+}
+
+async fn post_team_summarize(State(state): State<Arc<AppState>>, Json(body): Json<TeamThreadBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    if !thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let messages = state.transcripts.get(&key);
+    let title = state.handler.store.get(&key).and_then(|r| r.title).unwrap_or_else(|| format!("Summary {thread}"));
+    let summary = crate::transcripts::summarize(&messages);
+    let html = match crate::artifacts::summary_html(&title.chars().take(80).collect::<String>(), &summary) {
+        Ok(h) => h,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    };
+    let name = format!("{}.html", title.chars().take(40).collect::<String>());
+    match state.media.save(html.as_bytes(), "text/html", Some(&name)).await {
+        Ok(saved) => {
+            let marker = crate::artifacts::marker(&saved.id, title.trim());
+            let _ = state.transcripts.append(&key, vec![crate::team::bot_line(&marker)]).await;
+            Json(json!({ "id": saved.id, "marker": marker })).into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_team_diff(State(state): State<Arc<AppState>>, Query(q): Query<ThreadQuery>) -> Response {
+    let thread = q.thread.unwrap_or_default();
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let Some(dir) = state.handler.store.get(&key).and_then(|r| r.worktree) else {
+        return Json(json!({ "files": [] })).into_response();
+    };
+    Json(json!({ "files": state.workspaces.diffs_in(&dir).await })).into_response()
+}
+
+#[derive(Deserialize)]
+struct PrBody {
+    thread: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+}
+
+async fn post_team_pr(State(state): State<Arc<AppState>>, Json(body): Json<PrBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let Some(dir) = state.handler.store.get(&key).and_then(|r| r.worktree) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "this thread has no worktree" }))).into_response();
+    };
+    let title = body.title.unwrap_or_else(|| format!("switchboard {thread}"));
+    let text = body.body.unwrap_or_default();
+    match crate::workspace::open_pull_request(&dir, &title, &text, &state.data_dir).await {
+        Ok(url) => Json(json!({ "url": url })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct FeedbackBody {
+    thread: Option<String>,
+    index: Option<usize>,
+    vote: Option<String>,
+    reason: Option<String>,
+}
+
+async fn post_evals_feedback(State(state): State<Arc<AppState>>, Json(body): Json<FeedbackBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    let key = format!("{TEAM_PREFIX}{thread}");
+    let messages = state.transcripts.get(&key);
+    let index = body.index.unwrap_or(usize::MAX);
+    let Some(reply) = messages.get(index).filter(|m| m.bot) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "that reply is not in the thread" }))).into_response();
+    };
+    let prompt = messages[..index].iter().rev().find(|m| !m.bot).map(|m| m.text.clone()).unwrap_or_else(|| "(no user message)".into());
+    let agent = crate::personas::last_bot_agent(&reply.text, &reply.author).unwrap_or_else(|| reply.author.clone());
+    match evals(&state).add_feedback(&prompt, &reply.text, body.vote.as_deref().unwrap_or("down"), body.reason.as_deref(), &agent).await {
+        Ok(case) => Json(case).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    name: Option<String>,
+    password: Option<String>,
+    role: Option<String>,
+}
+
+fn users(state: &AppState) -> crate::share::UserStore {
+    crate::share::UserStore::open(state.data_dir.join("users.json"))
+}
+
+async fn get_me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    match crate::share::resolve_actor(&state.data_dir, &headers) {
+        Some(actor) => Json(json!({ "name": actor.name, "role": actor.role, "authRequired": !users(&state).is_empty() })).into_response(),
+        None => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "sign in required", "authRequired": true }))).into_response(),
+    }
+}
+
+async fn post_login(State(state): State<Arc<AppState>>, Json(body): Json<LoginBody>) -> Response {
+    let store = users(&state);
+    if store.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "create the first user before signing in" }))).into_response();
+    }
+    match store.login(body.name.as_deref().unwrap_or(""), body.password.as_deref().unwrap_or("")) {
+        Ok(token) => {
+            let mut res = Json(json!({ "ok": true })).into_response();
+            if let Ok(value) = HeaderValue::from_str(&crate::share::session_cookie(&token)) {
+                res.headers_mut().insert(axum::http::header::SET_COOKIE, value);
+            }
+            res
+        }
+        Err(err) => (StatusCode::UNAUTHORIZED, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Some(token) = crate::share::cookie_token(&headers) {
+        users(&state).logout(&token);
+    }
+    let mut res = Json(json!({ "ok": true })).into_response();
+    if let Ok(value) = HeaderValue::from_str(&crate::share::clear_cookie()) {
+        res.headers_mut().insert(axum::http::header::SET_COOKIE, value);
+    }
+    res
+}
+
+async fn get_users(State(state): State<Arc<AppState>>) -> Response {
+    let list: Vec<_> = users(&state).list().into_iter().map(|(name, role)| json!({ "name": name, "role": role })).collect();
+    Json(json!({ "users": list })).into_response()
+}
+
+async fn post_users(State(state): State<Arc<AppState>>, Json(body): Json<LoginBody>) -> Response {
+    match users(&state).add(body.name.as_deref().unwrap_or(""), body.password.as_deref().unwrap_or(""), body.role.as_deref().unwrap_or("operator")) {
+        Ok(()) => get_users(State(state)).await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_users_delete(State(state): State<Arc<AppState>>, Json(body): Json<LoginBody>) -> Response {
+    match users(&state).remove(body.name.as_deref().unwrap_or("")) {
+        Ok(()) => get_users(State(state)).await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn get_triggers(State(state): State<Arc<AppState>>) -> Response {
+    Json(json!({ "triggers": state.triggers.list() })).into_response()
+}
+
+async fn post_triggers(State(state): State<Arc<AppState>>, Json(body): Json<crate::schedules::EventTrigger>) -> Response {
+    match state.triggers.upsert(body).await {
+        Ok(t) => Json(t).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_triggers_delete(State(state): State<Arc<AppState>>, Json(body): Json<IdBody>) -> Response {
+    match state.triggers.delete(&body.id).await {
+        Ok(()) => get_triggers(State(state)).await,
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DocBody {
+    project: Option<String>,
+    kind: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+    action: Option<String>,
+    query: Option<String>,
+    path: Option<String>,
+}
+
+async fn get_docs(State(state): State<Arc<AppState>>, Query(q): Query<DocBody>) -> Response {
+    match crate::mcp::query_docs(&state.data_dir, q.project.as_deref().unwrap_or(""), "list", "", "") {
+        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_docs(State(state): State<Arc<AppState>>, Json(body): Json<DocBody>) -> Response {
+    match crate::mcp::save_doc(&state.data_dir, body.project.as_deref().unwrap_or(""), body.kind.as_deref().unwrap_or("doc"), body.title.as_deref().unwrap_or(""), body.body.as_deref().unwrap_or("")) {
+        Ok(path) => Json(json!({ "path": path })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_docs_query(State(state): State<Arc<AppState>>, Json(body): Json<DocBody>) -> Response {
+    match crate::mcp::query_docs(&state.data_dir, body.project.as_deref().unwrap_or(""), body.action.as_deref().unwrap_or("search"), body.query.as_deref().unwrap_or(""), body.path.as_deref().unwrap_or("")) {
+        Ok(text) => Json(json!({ "text": text })).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_docs_delete(State(state): State<Arc<AppState>>, Json(body): Json<DocBody>) -> Response {
+    let rel = body.path.unwrap_or_default();
+    if rel.contains("..") {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad path" }))).into_response();
+    }
+    match crate::mcp::docs_dir(&state.data_dir, body.project.as_deref().unwrap_or("")) {
+        Ok(dir) => {
+            let file = dir.join(&rel);
+            if file.starts_with(&dir) {
+                let _ = std::fs::remove_file(file);
+            }
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+async fn post_pi_command(Json(body): Json<Value>) -> Response {
+    harness_reply(crate::pi_sidecar::call(reqwest::Method::POST, "/packages/command", Some(body)).await)
 }
 
 async fn post_team_steer(State(state): State<Arc<AppState>>, Json(body): Json<TeamSteerBody>) -> Response {

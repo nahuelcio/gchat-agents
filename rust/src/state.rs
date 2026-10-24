@@ -7,7 +7,7 @@ use crate::google::GoogleConnection;
 use crate::handler::HandlerDeps;
 use crate::health::Health;
 use crate::media::MediaStore;
-use crate::schedules::{ScheduleStore, Scheduler};
+use crate::schedules::{ScheduleStore, Scheduler, TriggerStore};
 use crate::settings::SettingsStore;
 use crate::share::ShareToken;
 use crate::transcripts::TranscriptStore;
@@ -22,6 +22,7 @@ pub struct AppState {
     pub settings: Arc<SettingsStore>,
     pub health: Arc<Mutex<Health>>,
     pub schedules: Arc<ScheduleStore>,
+    pub triggers: Arc<TriggerStore>,
     pub scheduler: Arc<Scheduler>,
     pub share: Arc<Mutex<ShareToken>>,
     pub transcripts: Arc<TranscriptStore>,

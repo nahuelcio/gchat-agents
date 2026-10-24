@@ -219,4 +219,4 @@ Works: DMs and space mentions, thread-per-session, durable turns, team chat with
 
 Works too: approvals with Chat cards, attachments, usage and cost, MCP health checks, pi.dev packages, agent export/import.
 
-Not yet: multi-select question cards, pi package commands and UI hooks.
+Not yet: multi-select question cards. Pi package commands and UI hooks (`registerCommand`, `on`) are captured on install and runnable from chat.

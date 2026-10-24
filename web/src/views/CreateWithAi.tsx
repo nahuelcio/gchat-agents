@@ -18,6 +18,7 @@ import {
 } from "../api";
 import { hashQuery, type ViewProps } from "../App";
 import { CodeEditor } from "../LazyCodeEditor";
+import { AgentModelField } from "../AgentModelField";
 
 type Kind = "agent" | "skill";
 
@@ -1052,16 +1053,15 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                       autoFocus={!editingAgent}
                     />
                   </label>
-                  <label className="field">
-                    <span>Model (optional)</span>
-                    <input
-                      className="mono"
-                      value={agentDraft.model ?? ""}
-                      onChange={(e) => setAgentDraft({ ...agentDraft, model: e.target.value })}
-                      placeholder="e.g. haiku — empty = default Pi"
-                    />
-                  </label>
+                  <span />
                 </div>
+                <AgentModelField
+                  model={agentDraft.model || undefined}
+                  effort={agentDraft.effort}
+                  defaultModel={settings.models.pi}
+                  defaultEffort={settings.effort}
+                  onChange={(next) => setAgentDraft({ ...agentDraft, ...next })}
+                />
                 <div className="row create-ai-pair">
                   <label className="field">
                     <span>Listens</span>

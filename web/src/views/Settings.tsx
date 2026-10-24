@@ -53,8 +53,10 @@ const APPROVAL_OPTIONS: { value: ApprovalMode; label: string; hint: string }[] =
 const TABS = [
   { id: "runtime", label: "Runtime", hint: "Default Pi model and provider keys." },
   { id: "tools", label: "Tools", hint: "Custom MCP servers for agents and skill packs." },
-  { id: "chat", label: "Chat", hint: "Google Chat, spaces and how context shows up." },
-  { id: "connections", label: "Connections", hint: "Tunnel, Google Drive / Calendar / Gmail, and Azure DevOps repos." },
+  { id: "chat", label: "Chat", hint: "How replies are batched and how context shows up." },
+  { id: "safety", label: "Safety", hint: "Approvals, spend limits and who can use the app." },
+  { id: "automation", label: "Automation", hint: "Multi-agent flows, event triggers and project docs." },
+  { id: "connections", label: "Connections", hint: "Tunnel, Google Chat, Drive / Calendar / Gmail, and Azure DevOps repos." },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -96,17 +98,30 @@ export function SettingsView(props: ViewProps) {
       {tab === "tools" && <PiPackagesCard {...props} />}
       {tab === "chat" && (
         <>
-          <ApprovalsCard {...props} />
           <BatchingCard {...props} />
           <RoomRepliesCard {...props} />
           <ContextCard {...props} />
-          <GoogleChatCard {...props} />
-          <SpacesCard {...props} />
+        </>
+      )}
+      {tab === "safety" && (
+        <>
+          <ApprovalsCard {...props} />
+          <SpendCard {...props} />
+          <UsersCard />
+        </>
+      )}
+      {tab === "automation" && (
+        <>
+          <FlowsCard {...props} />
+          <TriggersCard {...props} />
+          <DocsCard />
         </>
       )}
       {tab === "connections" && (
         <>
           <TunnelCard {...props} />
+          <GoogleChatCard {...props} />
+          <SpacesCard {...props} />
           <DriveCard {...props} />
           <GoogleWorkspaceMcpCard
             title="Google Calendar"
@@ -541,7 +556,7 @@ function PiPackagesCard({ notify }: ViewProps) {
       <summary className="card-title">
         <h2>pi.dev packages</h2>
         <p className="muted small">
-          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a> or a GitHub repo. Their tools become a tool group (pi-…) you can give to agents, bundled skills land in your skills, and a model provider shows up in the model picker. UI, commands and event hooks are ignored.
+          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a> or a GitHub repo. Their tools become a tool group (pi-…) you can give to agents, bundled skills land in your skills, a model provider shows up in the model picker, and commands show up in the chat / menu. UI hooks run when a turn finishes.
         </p>
       </summary>
       <form
@@ -574,6 +589,8 @@ function PiPackagesCard({ notify }: ViewProps) {
             {p.providers.length > 0 && <div className="muted small">models: {p.providers.flatMap((provider) => provider.models).join(", ")}</div>}
             {p.providers.some((provider) => provider.error) && <div className="small mcp-error">{p.providers.flatMap((provider) => (provider.error ? [provider.error] : [])).join(" ")}</div>}
             {p.skills.length > 0 && <div className="muted small">skills: {p.skills.join(", ")}</div>}
+            {!!p.commands?.length && <div className="muted small">commands: {p.commands.map((c) => `/${c.name}`).join(", ")}</div>}
+            {!!p.uiHooks?.length && <div className="muted small">hooks: {p.uiHooks.join(", ")}</div>}
             {p.ignored.length > 0 && <div className="muted small">ignored: {p.ignored.join(", ")}</div>}
             {p.error && <div className="small mcp-error">{p.error}</div>}
           </div>
@@ -1163,6 +1180,41 @@ function ApprovalsCard({ settings, save }: ViewProps) {
         </fieldset>
         <span className="muted small">{current.hint}</span>
       </div>
+      <p className="muted small">Overrides win over the global level: an agent override first, then the repo, then this setting.</p>
+      {settings.personas.map((p) => (
+        <label key={p.name} className="field">
+          <span>@{p.name}</span>
+          <select
+            value={settings.agentApprovals?.[p.name] ?? ""}
+            onChange={(e) => {
+              const agentApprovals = { ...settings.agentApprovals };
+              if (!e.target.value) delete agentApprovals[p.name];
+              else agentApprovals[p.name] = e.target.value as ApprovalMode;
+              void save({ agentApprovals }, `@${p.name} approvals`);
+            }}
+          >
+            <option value="">Use global</option>
+            {APPROVAL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+      ))}
+      {Object.keys(settings.repos).map((repo) => (
+        <label key={repo} className="field">
+          <span>{repo}</span>
+          <select
+            value={settings.repoApprovals?.[repo] ?? ""}
+            onChange={(e) => {
+              const repoApprovals = { ...settings.repoApprovals };
+              if (!e.target.value) delete repoApprovals[repo];
+              else repoApprovals[repo] = e.target.value as ApprovalMode;
+              void save({ repoApprovals }, `${repo} approvals`);
+            }}
+          >
+            <option value="">Use global</option>
+            {APPROVAL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+      ))}
     </details>
   );
 }
@@ -1511,6 +1563,266 @@ function SpacesCard({ settings, save }: ViewProps) {
           <input id="space-new" className="mono pill-input" value={space} onChange={(e) => setSpace(e.target.value)} placeholder="Add spaces/XXXX + Enter" required />
         </form>
       </div>
+    </details>
+  );
+}
+
+function capField(label: string, value: number | undefined, onChange: (n?: number) => void) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type="number" min={0} step="0.01" value={value ?? ""} placeholder="No cap" onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))} />
+    </label>
+  );
+}
+
+function SpendCard({ settings, save }: ViewProps) {
+  const spend = settings.spend ?? {};
+  const set = (patch: Partial<NonNullable<Settings["spend"]>>) => void save({ spend: { ...spend, ...patch } }, "Spend caps saved");
+  return (
+    <details className="card" open>
+      <summary className="card-title"><h2>Spend caps</h2><p className="muted small">Warn at 80% of today's cap and stop at 100%. /spend-continue lets that thread go on.</p></summary>
+      {capField("Per day (USD)", spend.dailyUsd, (dailyUsd) => set({ dailyUsd }))}
+      {capField("Per agent today (USD)", spend.perAgentUsd, (perAgentUsd) => set({ perAgentUsd }))}
+      {capField("Per thread today (USD)", spend.perThreadUsd, (perThreadUsd) => set({ perThreadUsd }))}
+    </details>
+  );
+}
+
+function FlowsCard({ settings, save }: ViewProps) {
+  const flows = settings.flows ?? [];
+  const agents = (settings.personas ?? []).map((p) => p.name);
+  const [name, setName] = useState("");
+  const [steps, setSteps] = useState<{ agent: string; approve: boolean }[]>([]);
+  const setStep = (i: number, patch: Partial<{ agent: string; approve: boolean }>) =>
+    setSteps((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Flows</h2>
+        <p className="muted small">A chain of agents that pass the work along, one after the other. Run it in a thread with <code>/flow name</code>.</p>
+      </summary>
+      {flows.length === 0 ? (
+        <p className="muted small">No flows yet.</p>
+      ) : (
+        <ul className="auto-list">
+          {flows.map((f) => (
+            <li key={f.id}>
+              <div className="grow">
+                <strong>{f.name}</strong> <code className="small">/flow {f.id}</code>
+                <div className="chips">
+                  {f.steps.map((s, i) => (
+                    <span key={i} className="pill">{i + 1}. {s.agent}{s.approve ? " · asks first" : ""}</span>
+                  ))}
+                </div>
+              </div>
+              <button type="button" className="btn small ghost" onClick={() => void save({ flows: flows.filter((x) => x.id !== f.id) }, "Flow removed")}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="auto-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save({ flows: [...flows.filter((f) => f.id !== id), { id, name, steps }] }, "Flow saved").then(() => {
+            setName("");
+            setSteps([]);
+          });
+        }}
+      >
+        <h3>New flow</h3>
+        <label className="field">
+          <span>Name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Feature end to end" required />
+        </label>
+        <div className="field">
+          <span>Steps</span>
+          {steps.map((s, i) => (
+            <div key={i} className="row auto-step">
+              <span className="muted">{i + 1}.</span>
+              <select value={s.agent} onChange={(e) => setStep(i, { agent: e.target.value })}>
+                {agents.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <label className="row small">
+                <input type="checkbox" checked={s.approve} onChange={(e) => setStep(i, { approve: e.target.checked })} />
+                Wait for my OK before this step
+              </label>
+              <button type="button" className="btn small ghost" onClick={() => setSteps((list) => list.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          ))}
+          <div>
+            <button type="button" className="btn small" disabled={agents.length === 0} onClick={() => setSteps((list) => [...list, { agent: agents[0], approve: false }])}>+ Add step</button>
+          </div>
+        </div>
+        <div className="row">
+          <button className="btn primary" type="submit" disabled={!id || steps.length === 0}>Save flow</button>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+function UsersCard() {
+  const [users, setUsers] = useState<{ name: string; role: string }[]>([]);
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("operator");
+  const [error, setError] = useState("");
+  const load = () => api.users().then((r) => setUsers(r.users), (e: Error) => setError(e.message));
+  useEffect(() => { void load(); }, []);
+  return (
+    <details className="card">
+      <summary className="card-title"><h2>Users</h2><p className="muted small">Empty means this machine stays open. The first user turns on sign-in for everyone, including localhost.</p></summary>
+      {error && <p className="error">{error}</p>}
+      <ul>{users.map((u) => <li key={u.name}>{u.name} · {u.role} <button type="button" className="btn small ghost" onClick={() => void api.removeUser(u.name).then((r) => setUsers(r.users), (e: Error) => setError(e.message))}>Remove</button></li>)}</ul>
+      <form onSubmit={(e) => { e.preventDefault(); void api.addUser(name, password, role).then((r) => { setUsers(r.users); setName(""); setPassword(""); }, (err: Error) => setError(err.message)); }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" required />
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (8+)" required />
+        <select value={role} onChange={(e) => setRole(e.target.value)}><option value="admin">admin</option><option value="operator">operator</option><option value="guest">guest</option></select>
+        <button className="btn small" type="submit">Add user</button>
+      </form>
+    </details>
+  );
+}
+
+function TriggersCard({ settings }: ViewProps) {
+  const agents = (settings.personas ?? []).map((p) => p.name);
+  const [rows, setRows] = useState<{ id: string; name: string; agent: string; prompt: string; secret: string; repo?: string }[]>([]);
+  const [name, setName] = useState("");
+  const [agent, setAgent] = useState(agents[0] ?? "");
+  const [prompt, setPrompt] = useState("");
+  const [repo, setRepo] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => { api.triggers().then((r) => setRows(r.triggers), (e: Error) => setError(e.message)); }, []);
+  const copy = (text: string) => void navigator.clipboard.writeText(text);
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Event triggers</h2>
+        <p className="muted small">Let another service start a thread. When it calls the trigger URL, the agent gets your prompt plus what the service sent.</p>
+      </summary>
+      {error && <p className="error">{error}</p>}
+      {rows.length === 0 ? (
+        <p className="muted small">No triggers yet.</p>
+      ) : (
+        <ul className="auto-list">
+          {rows.map((t) => (
+            <li key={t.id}>
+              <div className="grow">
+                <strong>{t.name}</strong> <span className="muted small">→ @{t.agent}{t.repo ? ` in ${t.repo}` : ""}</span>
+                <div className="row small">
+                  <code>/hooks/{t.id}</code>
+                  <button type="button" className="btn small ghost" onClick={() => copy(`/hooks/${t.id}`)}>Copy URL</button>
+                  <button type="button" className="btn small ghost" onClick={() => copy(t.secret)}>Copy secret</button>
+                </div>
+              </div>
+              <button type="button" className="btn small ghost" onClick={() => void api.deleteTrigger(t.id).then(() => setRows((list) => list.filter((x) => x.id !== t.id)))}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="auto-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void api.saveTrigger({ name, agent, prompt, repo: repo || undefined }).then(
+            (saved) => {
+              setRows((list) => [...list, { ...saved, name, agent, prompt, repo }]);
+              setName("");
+              setPrompt("");
+              setRepo("");
+            },
+            (err: Error) => setError(err.message),
+          );
+        }}
+      >
+        <h3>New trigger</h3>
+        <div className="row">
+          <label className="field grow">
+            <span>Name</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Sentry alert" required />
+          </label>
+          <label className="field grow">
+            <span>Agent</span>
+            <select value={agent} onChange={(e) => setAgent(e.target.value)} required>
+              {agents.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </label>
+          <label className="field grow">
+            <span>Repo (optional)</span>
+            <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="switchboard" />
+          </label>
+        </div>
+        <label className="field">
+          <span>What should the agent do?</span>
+          <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Investigate this alert and propose a fix." required />
+        </label>
+        <p className="muted small">The service signs each request with the secret: header <code>X-Switchboard-Signature: sha256=&lt;hmac of the body&gt;</code>.</p>
+        <div className="row">
+          <button className="btn primary" type="submit">Create trigger</button>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+function DocsCard() {
+  const [project, setProject] = useState("switchboard");
+  const [kind, setKind] = useState("doc");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [listed, setListed] = useState("");
+  const [error, setError] = useState("");
+  const list = () => api.docs(project).then((r) => setListed(r.text), (err: Error) => setError(err.message));
+  useEffect(() => { void list(); }, []);
+  return (
+    <details className="card" open>
+      <summary className="card-title">
+        <h2>Project docs</h2>
+        <p className="muted small">Notes the agents can look up while they work: decisions (ADRs), runbooks or any other doc.</p>
+      </summary>
+      {error && <p className="error">{error}</p>}
+      <label className="field">
+        <span>Project</span>
+        <input value={project} onChange={(e) => setProject(e.target.value)} onBlur={() => void list()} />
+      </label>
+      {listed ? <pre className="logs">{listed}</pre> : <p className="muted small">No docs in this project yet.</p>}
+      <form
+        className="auto-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void api.saveDoc(project, kind, title, body).then(() => {
+            setTitle("");
+            setBody("");
+            return list();
+          }, (err: Error) => setError(err.message));
+        }}
+      >
+        <h3>New doc</h3>
+        <div className="row">
+          <label className="field grow">
+            <span>Title</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="How we deploy" required />
+          </label>
+          <label className="field narrow">
+            <span>Type</span>
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="doc">Doc</option>
+              <option value="adr">Decision (ADR)</option>
+              <option value="runbook">Runbook</option>
+            </select>
+          </label>
+        </div>
+        <label className="field">
+          <span>Content (Markdown)</span>
+          <textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)} required />
+        </label>
+        <div className="row">
+          <button className="btn primary" type="submit">Save doc</button>
+        </div>
+      </form>
     </details>
   );
 }

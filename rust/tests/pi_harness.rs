@@ -17,6 +17,7 @@ fn turn(text: &str, session: Option<String>, workdir: &std::path::Path) -> Agent
         request_id: None,
         mcps_override: None,
         instructions_override: None,
+        effort: None,
     }
 }
 

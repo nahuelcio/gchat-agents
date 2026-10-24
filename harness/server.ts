@@ -442,6 +442,15 @@ function providerModelIds(provider: { id: string; getModels?: () => readonly { i
   }
 }
 
+function emitPackageHooks(event: string, payload: unknown) {
+  for (const pkg of piPackages.loaded) {
+    for (const hook of pkg.hooks) {
+      if (hook.event !== event && hook.event !== "*") continue;
+      Promise.resolve(hook.handler(payload)).catch((e) => console.error(`package hook ${pkg.name} ${event}:`, e instanceof Error ? e.message : e));
+    }
+  }
+}
+
 function packageSummary() {
   return piPackages.loaded.map((p) => ({
     name: p.name,
@@ -450,6 +459,8 @@ function packageSummary() {
     tools: p.tools.map((t) => t.name),
     skills: p.skills,
     providers: p.providers.map((provider) => ({ id: provider.id, name: provider.name || provider.id, models: providerModelIds(provider), error: providerNotes.get(provider.id) })),
+    commands: p.commands.map((c) => ({ name: c.name, description: c.description })),
+    uiHooks: p.hooks.map((h) => h.event),
     ignored: p.ignored,
     error: p.error,
   }));
@@ -727,6 +738,9 @@ async function waitFor(requestId: string, ms: number) {
   }
   if (await joined(requestId, String(settled.answer))) return { status: "joined", conversationId: known };
   const { reply, usage } = await commitAnswer(conv, settled.answer);
+  const payload = { requestId, conversationId: known, reply };
+  emitPackageHooks("message", payload);
+  emitPackageHooks("agent_end", payload);
   return { status: "done", conversationId: known, reply, usage: usage && { ...usage, tokensPerSec: turnTps(requestId) } };
 }
 
@@ -817,6 +831,18 @@ const server = createServer(async (req, res) => {
       return send(res, 200, listed);
     }
     if (req.method === "GET" && req.url === "/packages") return send(res, 200, packageSummary());
+    if (req.method === "POST" && req.url === "/packages/command") {
+      const { name, args } = JSON.parse(await read(req)) as { name?: string; args?: string };
+      const command = piPackages.loaded.flatMap((p) => p.commands).find((c) => c.name === name);
+      if (!command) return send(res, 404, { error: "unknown command" });
+      try {
+        const result = await command.handler(args ?? "", { cwd: process.cwd() });
+        const text = typeof result === "string" ? result : result == null ? "" : JSON.stringify(result);
+        return send(res, 200, { ok: true, text });
+      } catch (e) {
+        return send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
     if (req.method === "POST" && req.url === "/packages/install") {
       const { spec } = JSON.parse(await read(req)) as { spec?: string };
       if (!spec?.trim()) return send(res, 400, { error: "spec is required" });

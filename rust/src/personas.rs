@@ -526,8 +526,61 @@ pub fn human_asked_for(room: Option<&[RoomEntry]>, name: &str) -> bool {
     find_at_mention(&last.text, name).is_some() || find_bare_name(&last.text, name).is_some()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum FlowMove {
+    Stay,
+    Next { step: usize, agent: String, approve: bool },
+    Done,
+}
+
+/// After the current step's agent has replied, decide the next step. `last_agent` is the name without @.
+pub fn flow_move(step: usize, steps: &[crate::settings::FlowStep], last_agent: Option<&str>) -> FlowMove {
+    let Some(current) = steps.get(step) else {
+        return FlowMove::Done;
+    };
+    let Some(last) = last_agent else {
+        return FlowMove::Stay;
+    };
+    if !last.eq_ignore_ascii_case(&current.agent) {
+        return FlowMove::Stay;
+    }
+    let next = step + 1;
+    match steps.get(next) {
+        None => FlowMove::Done,
+        Some(step) => FlowMove::Next { step: next, agent: step.agent.clone(), approve: step.approve },
+    }
+}
+
+pub fn last_bot_agent(text: &str, author: &str) -> Option<String> {
+    if let Some(rest) = text.strip_prefix("*@") {
+        if let Some((name, _)) = rest.split_once('*') {
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    author.strip_prefix('@').filter(|n| !n.is_empty()).map(|n| n.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_flow_advances_only_after_the_current_agent_replies() {
+        let steps = vec![
+            crate::settings::FlowStep { agent: "pm".into(), approve: false },
+            crate::settings::FlowStep { agent: "dev".into(), approve: true },
+        ];
+        assert_eq!(super::flow_move(0, &steps, None), super::FlowMove::Stay);
+        assert_eq!(super::flow_move(0, &steps, Some("qa")), super::FlowMove::Stay);
+        assert_eq!(
+            super::flow_move(0, &steps, Some("PM")),
+            super::FlowMove::Next { step: 1, agent: "dev".into(), approve: true }
+        );
+        assert_eq!(super::flow_move(1, &steps, Some("dev")), super::FlowMove::Done);
+        assert_eq!(super::last_bot_agent("*@dev*\nshipped", "Switchi").as_deref(), Some("dev"));
+    }
+
     #[test]
     fn every_agent_is_told_to_fence_code() {
         let p = p("qa");
@@ -571,6 +624,7 @@ mod tests {
             prompt: "x".into(),
             driver: None,
             model: None,
+            effort: None,
             agent: None,
             listen: None,
             respond_to: None,

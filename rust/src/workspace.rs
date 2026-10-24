@@ -303,6 +303,162 @@ impl Workspaces {
             files,
         })
     }
+
+    pub async fn diffs_in(&self, dir: &str) -> Vec<FileDiff> {
+        if Path::new(dir).join(".git").exists() || Path::new(dir).join(".git").is_file() {
+            return diff_worktree(dir, "").await;
+        }
+        let mut all = Vec::new();
+        for repo in repo_dirs(Path::new(dir)) {
+            let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            all.extend(diff_worktree(&repo.to_string_lossy(), &name).await);
+        }
+        all
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileDiff {
+    pub path: String,
+    pub patch: String,
+}
+
+fn clip(s: &str, max: usize) -> String {
+    let mut out: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        out.push_str("\n…");
+    }
+    out
+}
+
+async fn git_text(dir: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output().await.ok()?;
+    if !output.status.success() && args.first() != Some(&"diff") {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn diff_worktree(dir: &str, prefix: &str) -> Vec<FileDiff> {
+    let mut out = Vec::new();
+    let raw = git_text(dir, &["diff", "HEAD"]).await.unwrap_or_default();
+    if !raw.trim().is_empty() {
+        for part in raw.split("\ndiff --git ") {
+            let part = if part.starts_with("diff --git ") { part.to_string() } else { format!("diff --git {part}") };
+            let path = part.lines().next().and_then(|l| l.split(" b/").nth(1)).unwrap_or("changes").trim().to_string();
+            let path = if prefix.is_empty() { path } else { format!("{prefix}/{path}") };
+            if path == "changes" && part.trim().is_empty() {
+                continue;
+            }
+            out.push(FileDiff { path, patch: clip(&part, 12_000) });
+        }
+    }
+    if let Some(untracked) = git_text(dir, &["ls-files", "--others", "--exclude-standard"]).await {
+        for file in untracked.lines().filter(|l| !l.is_empty()).take(40) {
+            let path = if prefix.is_empty() { file.to_string() } else { format!("{prefix}/{file}") };
+            let body = std::fs::read_to_string(Path::new(dir).join(file)).unwrap_or_default();
+            let preview = clip(&body, 4000);
+            out.push(FileDiff { path, patch: format!("new file\n{preview}") });
+        }
+    }
+    out.retain(|d| !d.patch.trim().is_empty());
+    out
+}
+
+pub async fn open_pull_request(worktree: &str, title: &str, body: &str, data_dir: &Path) -> Result<String, String> {
+    let dir = if Path::new(worktree).join(".git").exists() || Path::new(worktree).join(".git").is_file() {
+        worktree.to_string()
+    } else {
+        repo_dirs(Path::new(worktree))
+            .into_iter()
+            .next()
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok_or_else(|| "no git worktree".to_string())?
+    };
+    let branch = git_line(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+    if branch == "HEAD" {
+        return Err("detached HEAD; commit on a branch first".into());
+    }
+    let remote = git_line(&dir, &["remote", "get-url", "origin"]).await?;
+    let pushed = Command::new("git")
+        .args(["-C", &dir, "push", "-u", "origin", "HEAD"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !pushed.status.success() {
+        return Err(format!("git push failed: {}", String::from_utf8_lossy(&pushed.stderr).trim()));
+    }
+    if remote.contains("github.com") {
+        return github_pr(&dir, &branch, title, body, &remote).await;
+    }
+    if remote.contains("dev.azure.com") || remote.contains("visualstudio.com") {
+        return crate::integrations::ado_pull_request(data_dir, &remote, &branch, title, body).await;
+    }
+    Err(format!("origin is not GitHub or Azure DevOps: {remote}"))
+}
+
+async fn git_line(dir: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output().await.map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn github_slug(remote: &str) -> Option<(String, String)> {
+    let rest = remote
+        .trim()
+        .trim_end_matches(".git")
+        .split("github.com")
+        .nth(1)?
+        .trim_start_matches([':', '/']);
+    let mut parts = rest.split('/').filter(|p| !p.is_empty());
+    Some((parts.next()?.to_string(), parts.next()?.to_string()))
+}
+
+async fn github_pr(dir: &str, branch: &str, title: &str, body: &str, remote: &str) -> Result<String, String> {
+    let gh = Command::new("gh")
+        .args(["pr", "create", "--title", title, "--body", body, "--head", branch])
+        .current_dir(dir)
+        .output()
+        .await;
+    if let Ok(out) = gh {
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+        }
+    }
+    let (owner, repo) = github_slug(remote).ok_or_else(|| format!("cannot parse GitHub remote {remote}"))?;
+    let token = std::env::var("GITHUB_TOKEN").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).ok_or("Install gh and sign in, or set GITHUB_TOKEN (the GitHub MCP uses the same token).")?;
+    let client = reqwest::Client::new();
+    let repo_info: serde_json::Value = client
+        .get(format!("https://api.github.com/repos/{owner}/{repo}"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("user-agent", "switchboard")
+        .header("accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let base = repo_info.get("default_branch").and_then(|v| v.as_str()).unwrap_or("main");
+    let created: serde_json::Value = client
+        .post(format!("https://api.github.com/repos/{owner}/{repo}/pulls"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("user-agent", "switchboard")
+        .header("accept", "application/vnd.github+json")
+        .json(&serde_json::json!({ "title": title, "body": body, "head": branch, "base": base }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    created
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| created.get("message").and_then(|v| v.as_str()).unwrap_or("GitHub did not open a pull request").to_string())
 }
 
 async fn remove_dir(dir: &str) {
@@ -396,5 +552,11 @@ mod tests {
     fn slug_stable() {
         assert_eq!(slug_for("a"), slug_for("a"));
         assert_ne!(slug_for("a"), slug_for("b"));
+    }
+
+    #[test]
+    fn github_remotes_parse() {
+        assert_eq!(github_slug("git@github.com:acme/app.git").unwrap(), ("acme".into(), "app".into()));
+        assert_eq!(github_slug("https://github.com/acme/app").unwrap(), ("acme".into(), "app".into()));
     }
 }

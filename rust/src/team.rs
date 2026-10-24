@@ -263,10 +263,14 @@ pub async fn team_send(
             .await;
     }
 
+    let mut prompt = prompt_text;
+    if let Some(handoff) = deps.store.get(&thread_key).and_then(|r| r.handoff) {
+        prompt = format!("Earlier in this conversation, forked up to this point:\n{handoff}\n\n{prompt}");
+        let _ = deps.store.update(&thread_key, "team-chat", SessionPatch { handoff: Some(None), ..Default::default() }).await;
+    }
     let deps2 = deps.clone();
     let transcripts2 = transcripts.clone();
     let thread_key2 = thread_key;
-    let prompt = prompt_text;
     let sender = name.to_string();
     let request_id = uuid::Uuid::new_v4().to_string();
     if let Some(ledger) = &deps.ledger {
@@ -295,6 +299,107 @@ pub async fn team_send(
     });
 
     Ok(serde_json::json!({ "ok": true, "replies": [] }))
+}
+
+/// Regenerates the last reply, or replaces the last user message and its reply. Always a new request id.
+pub async fn team_rewrite(
+    deps: Arc<HandlerDeps>,
+    transcripts: Arc<TranscriptStore>,
+    thread: &str,
+    name: &str,
+    replacement: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if !thread_id_ok(thread) {
+        return Err("bad thread id".into());
+    }
+    let thread_key = format!("{TEAM_PREFIX}{thread}");
+    let messages = transcripts.get(&thread_key);
+    let Some(idx) = messages.iter().rposition(|m| !m.bot) else {
+        return Err("no user message to redo".into());
+    };
+    let text = match replacement {
+        None => messages[idx].text.clone(),
+        Some(next) => {
+            let next = next.trim();
+            if next.is_empty() {
+                return Err("text is required".into());
+            }
+            let mut message = messages[idx].clone();
+            message.text = next.to_string();
+            transcripts.replace_message(&thread_key, idx, message).await?;
+            next.to_string()
+        }
+    };
+    transcripts.truncate_to(&thread_key, idx + 1).await?;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    if let Some(ledger) = &deps.ledger {
+        ledger.begin(&request_id, &thread_key, "team-chat", None).await;
+        ledger.remember_prompt(&request_id, &format!("{name}: {text}")).await;
+    }
+    let deps2 = deps.clone();
+    let transcripts2 = transcripts.clone();
+    let sender = name.to_string();
+    let prompt = text;
+    tokio::spawn(async move {
+        let request = TurnRequest {
+            thread_key: thread_key.clone(),
+            space_name: "team-chat".into(),
+            text: prompt,
+            sender: Some(sender),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+            reply_sink: Some(transcripts2),
+            request_id: Some(request_id.clone()),
+        };
+        let Some(request) = crate::handler::debounce(&deps2, request).await else { return };
+        if let Err(err) = crate::handler::tracked(&deps2, Some(&request_id), process_message(request, deps2.clone())).await {
+            tracing::error!(%err, "rewrite turn failed");
+        }
+    });
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// New thread with history up to `index` and its own worktree. Pi has no copy-conversation API, so the transcript is reinjected on the next turn.
+pub async fn team_fork(
+    deps: Arc<HandlerDeps>,
+    transcripts: Arc<TranscriptStore>,
+    thread: &str,
+    index: usize,
+) -> Result<serde_json::Value, String> {
+    if !thread_id_ok(thread) {
+        return Err("bad thread id".into());
+    }
+    let thread_key = format!("{TEAM_PREFIX}{thread}");
+    let messages = transcripts.get(&thread_key);
+    if messages.is_empty() || index >= messages.len() {
+        return Err("that message is not in the thread".into());
+    }
+    let kept = messages[..=index].to_vec();
+    let new_id: String = uuid::Uuid::new_v4().simple().to_string().chars().take(12).collect();
+    let new_key = format!("{TEAM_PREFIX}{new_id}");
+    transcripts.append(&new_key, kept.clone()).await?;
+    let handoff = crate::transcripts::to_markdown(&format!("Fork of {thread}"), &kept);
+    let old = deps.store.get(&thread_key);
+    let mut patch = SessionPatch {
+        title: Some(Some(format!("Fork of {thread}"))),
+        handoff: Some(Some(handoff)),
+        members: Some(old.as_ref().and_then(|r| r.members.clone())),
+        ..Default::default()
+    };
+    if let Some(repo) = old.as_ref().and_then(|r| r.repo.clone()) {
+        if let Some(ws) = &deps.workspaces {
+            let slug = crate::workspace::slug_for(&new_key);
+            if let Ok((worktree, branch)) = ws.create(&repo, &slug).await {
+                patch.repo = Some(Some(repo));
+                patch.worktree = Some(Some(worktree));
+                patch.branch = Some(Some(branch));
+            }
+        }
+    }
+    deps.store.update(&new_key, "team-chat", patch).await?;
+    Ok(serde_json::json!({ "ok": true, "thread": new_id }))
 }
 
 pub async fn team_steer(
@@ -649,6 +754,7 @@ mod presence_tests {
                 prompt: "a".into(),
                 driver: None,
                 model: Some("opus".into()),
+                effort: None,
                 agent: None,
                 listen: None,
                 respond_to: None,

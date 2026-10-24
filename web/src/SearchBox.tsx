@@ -1,9 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ago, api, type SearchHit } from "./api";
 
 export function SearchBox() {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<SearchHit[]>();
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const focus = () => input.current?.focus();
+    addEventListener("switchboard:search", focus);
+    return () => removeEventListener("switchboard:search", focus);
+  }, []);
 
   useEffect(() => {
     const query = q.trim();
@@ -20,6 +26,8 @@ export function SearchBox() {
   return (
     <div className="search" role="search">
       <input
+        id="switchboard-search"
+        ref={input}
         type="search"
         value={q}
         onChange={(e) => setQ(e.target.value)}

@@ -32,6 +32,7 @@ pub struct AgentTurnInput {
     pub request_id: Option<String>,
     pub mcps_override: Option<Vec<String>>,
     pub instructions_override: Option<String>,
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

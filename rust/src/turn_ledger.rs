@@ -166,6 +166,7 @@ async fn resume_on_pi(deps: Arc<HandlerDeps>, ledger: Arc<TurnLedger>, transcrip
                 request_id: Some(e.request_id.clone()),
                 mcps_override: None,
                 instructions_override: None,
+                effort: None,
             })
             .await
             .map(Some),

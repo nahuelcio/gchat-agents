@@ -402,6 +402,8 @@ function UsageTable({ title, rows, label }: { title: string; rows: UsageRow[]; l
 function UsageCard() {
   const [days, setDays] = useState<(typeof USAGE_RANGES)[number]>(7);
   const [data, setData] = useState<UsageReport>();
+  const [caps, setCaps] = useState<{ dailyUsd?: number; perAgentUsd?: number; perThreadUsd?: number }>();
+  useEffect(() => { api.settings().then((s) => setCaps(s.spend), () => {}); }, []);
   useEffect(() => {
     const data = whenChanged(setData);
     return poll(() => void api.usage(days).then(data, () => {}), 15000);
@@ -427,6 +429,11 @@ function UsageCard() {
           <p className="usage-total">
             <strong>{usd(r.total.costUsd)}</strong> <span className="muted">· {tokens(r.total.tokensIn)} tokens in · {tokens(r.total.tokensOut)} out · {r.total.turns} turns</span>
           </p>
+          {caps && (caps.dailyUsd || caps.perAgentUsd || caps.perThreadUsd) ? (
+            <p className="muted small">
+              Caps today: {caps.dailyUsd ? `day ${usd(caps.dailyUsd)}` : "day open"} · {caps.perAgentUsd ? `agent ${usd(caps.perAgentUsd)}` : "agent open"} · {caps.perThreadUsd ? `thread ${usd(caps.perThreadUsd)}` : "thread open"}. Warns at 80%, stops at 100%.
+            </p>
+          ) : null}
           {r.byDay.length > 1 && (
             <div className="usage-bars" aria-label="Cost per day">
               {r.byDay.map((d) => (

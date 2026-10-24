@@ -155,6 +155,7 @@ mod tests {
                 request_id: None,
                 mcps_override: None,
                 instructions_override: None,
+                effort: None,
             })
             .await
             .unwrap();
@@ -182,6 +183,7 @@ Ana: @qa check this".into(),
             request_id: None,
             mcps_override: None,
             instructions_override: None,
+            effort: None,
         };
         assert_eq!(EchoDriver.run_turn(turn("team/t#qa")).await.unwrap().reply, "Echo: Ana: @qa check this");
         assert_eq!(EchoDriver.run_turn(turn("team/t#architect")).await.unwrap().reply, PASS);
@@ -203,6 +205,7 @@ Ana: @qa check this".into(),
                 request_id: None,
                 mcps_override: None,
                 instructions_override: None,
+                effort: None,
             })
             .await
             .unwrap();

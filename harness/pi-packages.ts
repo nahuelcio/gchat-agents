@@ -18,7 +18,9 @@ export type PiProviderDef = {
   getModels?: () => readonly { id: string }[];
 };
 
-export type LoadedPackage = { name: string; spec: string; group: string; tools: PiToolDef[]; skills: string[]; providers: PiProviderDef[]; ignored: string[]; error?: string };
+export type PiCommand = { name: string; description: string; handler: (args: string, ctx: unknown) => Promise<unknown> | unknown };
+export type PiHook = { event: string; handler: (payload: unknown) => Promise<unknown> | unknown };
+export type LoadedPackage = { name: string; spec: string; group: string; tools: PiToolDef[]; skills: string[]; providers: PiProviderDef[]; commands: PiCommand[]; hooks: PiHook[]; ignored: string[]; error?: string };
 
 type Saved = { packages: { name: string; spec: string }[] };
 
@@ -157,7 +159,7 @@ export class PiPackages {
 
   private async load(name: string, spec: string): Promise<LoadedPackage> {
     const group = groupFor(name);
-    const out: LoadedPackage = { name, spec, group, tools: [], skills: [], providers: [], ignored: [] };
+    const out: LoadedPackage = { name, spec, group, tools: [], skills: [], providers: [], commands: [], hooks: [], ignored: [] };
     const installed = join(this.dir, "node_modules", name);
     if (!existsSync(installed)) return { ...out, error: "not installed" };
     const src = join(this.dir, "src");
@@ -194,7 +196,15 @@ export class PiPackages {
       registerProvider: (provider: PiProviderDef) => {
         if (provider?.id) out.providers.push(provider);
       },
-      on: (event: string) => ignore(`on:${event}`)(),
+      registerCommand: (name: string, def: { description?: string; handler?: PiCommand["handler"] } | PiCommand["handler"] = {}) => {
+        const handler = typeof def === "function" ? def : def?.handler;
+        if (typeof name !== "string" || !name.trim()) return;
+        out.commands.push({ name: name.replace(/^\//, ""), description: typeof def === "function" ? "" : def?.description || "", handler: handler ?? (() => "") });
+      },
+      on: (event: string, handler?: PiHook["handler"]) => {
+        if (typeof event === "string" && typeof handler === "function") out.hooks.push({ event, handler });
+        return () => {};
+      },
       events: { on: () => () => {}, emit: () => {}, off: () => {} },
       getFlag: () => undefined,
       getActiveTools: () => out.tools.map((t) => t.name),

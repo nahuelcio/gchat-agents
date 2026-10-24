@@ -65,7 +65,8 @@ fn tools() -> Value {
         {"name":"skill_search","description":"Search installed skills by name or description (case-insensitive substring). Empty query lists all. Use when unsure which skill fits a task.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},
         {"name":"skill_load","description":"Load a skill's full instructions plus its bundled file list. Required before acting on a skill from the catalog or skill_search.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
         {"name":"list_agents","description":"List the specialised agents you can ask, with what each one knows.","inputSchema":{"type":"object","properties":{}}},
-        {"name":"ask_agent","description":"Ask another specialised agent a question and get its answer. Use it when the question belongs to that agent's field.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"question":{"type":"string"}},"required":["agent","question"]}}
+        {"name":"ask_agent","description":"Ask another specialised agent a question and get its answer. Use it when the question belongs to that agent's field.","inputSchema":{"type":"object","properties":{"agent":{"type":"string"},"question":{"type":"string"}},"required":["agent","question"]}},
+        {"name":"project_docs","description":"Search or read this project's ADRs, runbooks and docs. Use it before answering from memory alone. action is list, search or read.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"action":{"type":"string","description":"list | search | read"},"query":{"type":"string"},"path":{"type":"string","description":"Relative path for read"}},"required":["project","action"]}}
     ])
 }
 
@@ -542,6 +543,25 @@ pub async fn run_tool(
             .await?;
             Ok(format!("Deleted schedule {id}."))
         }
+        "project_docs" => {
+            let project = args.get("project").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("search").trim();
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if project.is_empty() {
+                return Err("project is required".into());
+            }
+            let data = call_admin(
+                "/api/docs/query",
+                "POST",
+                Some(json!({ "project": project, "action": action, "query": query, "path": path })),
+                true,
+                &env,
+                client,
+            )
+            .await?;
+            Ok(data.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        }
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -713,6 +733,115 @@ pub fn mcp_server_path(data_dir: &std::path::Path) -> PathBuf {
 
 #[allow(dead_code)]
 pub type _Unused = AgentTurnResult;
+
+pub fn docs_dir(data_dir: &std::path::Path, project: &str) -> Result<std::path::PathBuf, String> {
+    let project = safe_part(project)?;
+    Ok(data_dir.join("project-docs").join(project))
+}
+
+fn safe_part(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\') {
+        return Err("use a plain name, no slashes".into());
+    }
+    Ok(s.to_string())
+}
+
+pub fn save_doc(data_dir: &std::path::Path, project: &str, kind: &str, title: &str, body: &str) -> Result<String, String> {
+    let kind = match kind.trim() {
+        "adr" | "runbook" | "doc" => kind.trim(),
+        _ => return Err("kind must be adr, runbook or doc".into()),
+    };
+    let title = title.trim();
+    if title.is_empty() || body.trim().is_empty() {
+        return Err("title and body are required".into());
+    }
+    let slug: String = title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = if slug.is_empty() { "note".into() } else { slug };
+    let dir = docs_dir(data_dir, project)?.join(kind);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let rel = format!("{kind}/{slug}.md");
+    let file = docs_dir(data_dir, project)?.join(&rel);
+    let text = format!("# {title}\n\n{}\n", body.trim());
+    std::fs::write(file, text).map_err(|e| e.to_string())?;
+    Ok(rel)
+}
+
+fn walk_md(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_md(&path, root, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push(path);
+        }
+    }
+}
+
+pub fn query_docs(data_dir: &std::path::Path, project: &str, action: &str, query: &str, rel: &str) -> Result<String, String> {
+    let root = docs_dir(data_dir, project)?;
+    match action {
+        "list" | "" => {
+            let mut files = Vec::new();
+            walk_md(&root, &root, &mut files);
+            if files.is_empty() {
+                return Ok(format!("No docs for {project} yet."));
+            }
+            files.sort();
+            Ok(files
+                .iter()
+                .filter_map(|p| p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/")))
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "read" => {
+            let rel = rel.trim().replace('\\', "/");
+            if rel.is_empty() || rel.contains("..") {
+                return Err("path is required".into());
+            }
+            let file = root.join(&rel);
+            if !file.starts_with(&root) {
+                return Err("path escapes the project".into());
+            }
+            std::fs::read_to_string(file).map_err(|_| format!("no doc {rel}"))
+        }
+        "search" => {
+            let needle = query.trim().to_lowercase();
+            if needle.is_empty() {
+                return query_docs(data_dir, project, "list", "", "");
+            }
+            let mut files = Vec::new();
+            walk_md(&root, &root, &mut files);
+            let mut hits = Vec::new();
+            for file in files {
+                let text = std::fs::read_to_string(&file).unwrap_or_default();
+                if !text.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                let rel = file.strip_prefix(&root).unwrap_or(&file).to_string_lossy().replace('\\', "/");
+                let excerpt: String = text.lines().find(|l| l.to_lowercase().contains(&needle)).unwrap_or("").chars().take(180).collect();
+                hits.push(format!("{rel}: {excerpt}"));
+                if hits.len() >= 20 {
+                    break;
+                }
+            }
+            if hits.is_empty() {
+                Ok(format!("No matches for \"{query}\" in {project}."))
+            } else {
+                Ok(hits.join("\n"))
+            }
+        }
+        other => Err(format!("unknown action {other}")),
+    }
+}
 
 #[cfg(test)]
 mod tests {

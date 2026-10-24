@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{Datelike, Local, Timelike};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -444,6 +445,11 @@ impl Scheduler {
         self
     }
 
+    /// Runs a job through the same closure schedules use, without storing it. Event triggers use trigger = "event".
+    pub async fn run_ephemeral(&self, job: Job) -> bool {
+        (self.run)(job).await
+    }
+
     async fn note(&self, kind: &str, job: &Job, detail: &str) {
         if let Some(log) = &self.activity {
             log.record(kind, &format!("schedule/{}", job.id), job.name.clone(), detail.to_string()).await;
@@ -642,11 +648,168 @@ Precheck output:
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventTrigger {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub prompt: String,
+    pub secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+pub struct TriggerStore {
+    path: PathBuf,
+    items: Mutex<Vec<EventTrigger>>,
+}
+
+impl TriggerStore {
+    pub fn open(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref().to_path_buf();
+        let items = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        Self { path, items: Mutex::new(items) }
+    }
+
+    pub fn list(&self) -> Vec<EventTrigger> {
+        self.items.lock().unwrap().clone()
+    }
+
+    pub fn get(&self, id: &str) -> Option<EventTrigger> {
+        self.items.lock().unwrap().iter().find(|t| t.id == id).cloned()
+    }
+
+    pub async fn upsert(&self, mut trigger: EventTrigger) -> Result<EventTrigger, String> {
+        trigger.id = trigger.id.trim().to_string();
+        trigger.name = trigger.name.trim().to_string();
+        trigger.agent = trigger.agent.trim().trim_start_matches('@').to_string();
+        trigger.prompt = trigger.prompt.trim().to_string();
+        trigger.secret = trigger.secret.trim().to_string();
+        if trigger.name.is_empty() || trigger.agent.is_empty() || trigger.prompt.is_empty() {
+            return Err("name, agent and prompt are required".into());
+        }
+        if trigger.id.is_empty() {
+            trigger.id = Uuid::new_v4().simple().to_string()[..12].to_string();
+        }
+        if !trigger.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err("trigger id must be letters, digits, - or _".into());
+        }
+        if trigger.secret.is_empty() {
+            let mut bytes = [0u8; 24];
+            rand::thread_rng().fill_bytes(&mut bytes);
+            trigger.secret = hex::encode(bytes);
+        }
+        {
+            let mut items = self.items.lock().unwrap();
+            if let Some(slot) = items.iter_mut().find(|t| t.id == trigger.id) {
+                *slot = trigger.clone();
+            } else {
+                items.push(trigger.clone());
+            }
+        }
+        self.persist().await?;
+        Ok(trigger)
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<(), String> {
+        self.items.lock().unwrap().retain(|t| t.id != id);
+        self.persist().await
+    }
+
+    async fn persist(&self) -> Result<(), String> {
+        let body = serde_json::to_string_pretty(&*self.items.lock().unwrap()).map_err(|e| e.to_string())?;
+        write_atomic(&self.path, &body).await.map_err(|e| e.to_string())
+    }
+}
+
+pub fn event_job(trigger: &EventTrigger, payload: &str) -> Job {
+    let id: String = format!("e{}", &Uuid::new_v4().simple().to_string()[..11]);
+    Job {
+        id,
+        name: trigger.name.clone(),
+        prompt: event_prompt(trigger, payload),
+        cron: String::new(),
+        space: "team-chat".into(),
+        repo: trigger.repo.clone(),
+        enabled: true,
+        created_by: "webhook".into(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        next_run_at: None,
+        last_run_at: None,
+        last_status: None,
+        failures: 0,
+        trigger: "event".into(),
+        command: None,
+        pattern: None,
+        needs_approval: false,
+        precheck: None,
+        webhook: None,
+        notify_failures: false,
+        pending: None,
+    }
+}
+
+pub fn event_prompt(trigger: &EventTrigger, payload: &str) -> String {
+    let payload: String = payload.chars().take(8000).collect();
+    format!("@{}\n\n{}\n\nEvent payload:\n{}", trigger.agent, trigger.prompt, payload)
+}
+
+pub fn hmac_sha256_hex(key: &str, msg: &[u8]) -> String {
+    fn sha(data: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(data);
+        let out = h.finalize();
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&out);
+        bytes
+    }
+    let mut key = key.as_bytes().to_vec();
+    if key.len() > 64 {
+        key = sha(&key).to_vec();
+    }
+    key.resize(64, 0);
+    let mut ipad = key.clone();
+    let mut opad = key;
+    for b in &mut ipad {
+        *b ^= 0x36;
+    }
+    for b in &mut opad {
+        *b ^= 0x5c;
+    }
+    let mut inner = ipad;
+    inner.extend_from_slice(msg);
+    let inner_hash = sha(&inner);
+    let mut outer = opad;
+    outer.extend_from_slice(&inner_hash);
+    hex::encode(sha(&outer))
+}
+
+pub fn signature_ok(secret: &str, body: &[u8], header: &str) -> bool {
+    let got = header.trim().strip_prefix("sha256=").unwrap_or(header.trim());
+    let want = hmac_sha256_hex(secret, body);
+    got.len() == want.len() && got.bytes().zip(want.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
     use tempfile::tempdir;
+
+    #[test]
+    fn event_signature_matches_and_rejects_a_tampered_body() {
+        let sig = hmac_sha256_hex("topsecret", b"{\"pull\":1}");
+        assert!(signature_ok("topsecret", b"{\"pull\":1}", &format!("sha256={sig}")));
+        assert!(!signature_ok("topsecret", b"{\"pull\":2}", &format!("sha256={sig}")));
+        let prompt = event_prompt(
+            &EventTrigger { id: "t".into(), name: "pr".into(), agent: "dev".into(), prompt: "review it".into(), secret: "s".into(), repo: None },
+            "{}",
+        );
+        assert!(prompt.starts_with("@dev"));
+        assert!(prompt.contains("review it"));
+    }
 
     #[test]
     fn old_jobs_load_as_cron() {

@@ -33,6 +33,8 @@ pub struct Persona {
     pub driver: Option<AgentDriverKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing)]
     pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +59,8 @@ pub struct PersonaTemplate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
     #[serde(rename = "respondTo", skip_serializing_if = "Option::is_none")]
     pub respond_to: Option<String>,
@@ -77,6 +81,7 @@ impl PersonaTemplate {
             name: p.name.clone(),
             prompt: p.prompt.clone(),
             model: p.model.clone(),
+            effort: p.effort.clone(),
             listen: p.listen.clone(),
             respond_to: p.respond_to.clone(),
             skills: p.skills.clone(),
@@ -92,6 +97,7 @@ impl PersonaTemplate {
             prompt: self.prompt.clone(),
             driver: None,
             model: self.model.clone(),
+            effort: self.effort.clone(),
             agent: None,
             listen: self.listen.clone(),
             respond_to: self.respond_to.clone(),
@@ -110,6 +116,40 @@ pub enum ApprovalMode {
     #[default]
     Risky,
     Writes,
+}
+
+/// Daily ceilings. Empty means no cap. Warn at 80%, stop at 100% unless the thread opted to continue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendCaps {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_agent_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_thread_usd: Option<f64>,
+}
+
+impl SpendCaps {
+    pub fn is_empty(&self) -> bool {
+        self.daily_usd.is_none() && self.per_agent_usd.is_none() && self.per_thread_usd.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowStep {
+    pub agent: String,
+    #[serde(default)]
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFlow {
+    pub id: String,
+    pub name: String,
+    pub steps: Vec<FlowStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -140,6 +180,16 @@ pub struct Settings {
     pub tunnel: TunnelMode,
     #[serde(default)]
     pub approvals: ApprovalMode,
+    /// Per-agent override. Missing key uses the global mode. Key is the agent name, compared case-insensitively.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_approvals: HashMap<String, ApprovalMode>,
+    /// Per-repo override, used when the agent has none.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub repo_approvals: HashMap<String, ApprovalMode>,
+    #[serde(default, skip_serializing_if = "SpendCaps::is_empty")]
+    pub spend: SpendCaps,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flows: Vec<AgentFlow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub google_drive_folder_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -218,6 +268,10 @@ impl SettingsStore {
             host_skills: saved.host_skills.unwrap_or_default(),
             tunnel: saved.tunnel.unwrap_or_default(),
             approvals: saved.approvals.unwrap_or_default(),
+            agent_approvals: saved.agent_approvals.unwrap_or_default(),
+            repo_approvals: saved.repo_approvals.unwrap_or_default(),
+            spend: saved.spend.unwrap_or_default(),
+            flows: saved.flows.unwrap_or_default(),
             google_drive_folder_id: saved.google_drive_folder_id,
             mcp_servers: saved.mcp_servers.unwrap_or_default(),
         };
@@ -298,6 +352,18 @@ impl SettingsStore {
             }
             if let Some(v) = patch.approvals {
                 current.approvals = v;
+            }
+            if let Some(v) = patch.agent_approvals {
+                current.agent_approvals = v;
+            }
+            if let Some(v) = patch.repo_approvals {
+                current.repo_approvals = v;
+            }
+            if let Some(v) = patch.spend {
+                current.spend = v;
+            }
+            if let Some(v) = patch.flows {
+                current.flows = v;
             }
             if let Some(v) = patch.mcp_servers {
                 current.mcp_servers = v;
@@ -522,6 +588,10 @@ struct PartialSettings {
     host_skills: Option<Vec<String>>,
     tunnel: Option<TunnelMode>,
     approvals: Option<ApprovalMode>,
+    agent_approvals: Option<HashMap<String, ApprovalMode>>,
+    repo_approvals: Option<HashMap<String, ApprovalMode>>,
+    spend: Option<SpendCaps>,
+    flows: Option<Vec<AgentFlow>>,
     google_drive_folder_id: Option<String>,
     mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
@@ -545,6 +615,10 @@ pub struct SettingsPatch {
     pub host_skills: Option<Vec<String>>,
     pub tunnel: Option<TunnelMode>,
     pub approvals: Option<ApprovalMode>,
+    pub agent_approvals: Option<HashMap<String, ApprovalMode>>,
+    pub repo_approvals: Option<HashMap<String, ApprovalMode>>,
+    pub spend: Option<SpendCaps>,
+    pub flows: Option<Vec<AgentFlow>>,
     pub google_drive_folder_id: Option<String>,
     pub mcp_servers: Option<Vec<crate::mcp_client::McpServer>>,
 }
@@ -618,6 +692,31 @@ fn validate(s: &Settings) -> Result<(), String> {
     for space in &s.allowed_spaces {
         if !space_re.is_match(space) {
             return Err(format!(r#""{space}" is not a space name (spaces/XXXX)"#));
+        }
+    }
+    for (label, n) in [("daily", s.spend.daily_usd), ("per agent", s.spend.per_agent_usd), ("per thread", s.spend.per_thread_usd)] {
+        if n.is_some_and(|v| !v.is_finite() || v < 0.0) {
+            return Err(format!("{label} spend cap must be a number >= 0"));
+        }
+    }
+    let mut flow_ids = std::collections::HashSet::new();
+    for flow in &s.flows {
+        if !template_id.is_match(&flow.id) {
+            return Err(format!(r#"flow "{}": id must be lowercase letters, digits, - or _ (max 48)"#, flow.id));
+        }
+        if !flow_ids.insert(flow.id.clone()) {
+            return Err(format!("flow id \"{}\" is listed twice", flow.id));
+        }
+        if flow.name.trim().is_empty() {
+            return Err(format!("flow \"{}\" needs a name", flow.id));
+        }
+        if flow.steps.is_empty() {
+            return Err(format!("flow \"{}\" needs at least one step", flow.id));
+        }
+        for step in &flow.steps {
+            if !persona_name.is_match(&step.agent) {
+                return Err(format!(r#"flow "{}": agent "{}" must use letters, digits, - or _"#, flow.id, step.agent));
+            }
         }
     }
     Ok(())
@@ -732,6 +831,7 @@ mod tests {
             prompt: "role".into(),
             driver: None,
             model: Some("haiku".into()),
+            effort: None,
             agent: None,
             listen: Some("all".into()),
             respond_to: Some("people".into()),

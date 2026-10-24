@@ -27,7 +27,7 @@ test("a git install name is the new dependency, not a host package", () => {
   expect(dependencyAdded(Object.keys(deps), deps, spec, HOSTS)).toBe("@earendil-works/pi-claude-code");
 });
 
-test("a loaded extension's provider is kept and its commands are ignored", async () => {
+test("a loaded extension's provider, commands and UI hooks are kept", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-packages-"));
   const packages = join(dir, "pi-packages");
   const root = join(packages, "node_modules", "fake-provider");
@@ -40,7 +40,8 @@ test("a loaded extension's provider is kept and its commands are ignored", async
     join(root, "index.js"),
     `export default function (pi) {
       pi.registerProvider({ id: "claude-code", name: "Claude Code", getModels: () => [{ id: "sonnet" }] });
-      pi.registerCommand("claude-code-status", {});
+      pi.registerCommand("claude-code-status", { description: "status", handler: () => "ok" });
+      pi.on("agent_end", () => {});
     }\n`,
   );
   writeFileSync(join(packages, "packages.json"), JSON.stringify({ packages: [{ name: "fake-provider", spec: "fake-provider" }] }));
@@ -50,5 +51,7 @@ test("a loaded extension's provider is kept and its commands are ignored", async
   expect(loaded[0]?.error).toBeUndefined();
   expect(loaded[0]?.providers.map((p) => p.id)).toEqual(["claude-code"]);
   expect(loaded[0]?.providers[0]?.getModels?.().map((m) => m.id)).toEqual(["sonnet"]);
-  expect(loaded[0]?.ignored).toContain("registerCommand");
+  expect(loaded[0]?.commands.map((c) => c.name)).toEqual(["claude-code-status"]);
+  expect(loaded[0]?.hooks.map((h) => h.event)).toEqual(["agent_end"]);
+  expect(loaded[0]?.ignored).not.toContain("registerCommand");
 });

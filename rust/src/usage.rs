@@ -121,6 +121,48 @@ fn by_cost(rows: BTreeMap<String, Row>) -> Vec<Row> {
     v
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendLevel {
+    Ok,
+    Warn,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpendStatus {
+    pub level: SpendLevel,
+    pub scope: &'static str,
+    pub spent: f64,
+    pub limit: f64,
+}
+
+fn scoped(entries: &[UsageEntry], today: &str, pred: impl Fn(&UsageEntry) -> bool) -> f64 {
+    entries.iter().filter(|e| e.at.as_str() >= today && pred(e)).map(|e| e.delta.cost_usd).sum()
+}
+
+/// `today` is `YYYY-MM-DD`. Warns at 80% and stops at 100%. `override_on` skips the stop.
+pub fn assess_spend(entries: &[UsageEntry], today: &str, thread: &str, agent: &str, caps: &crate::settings::SpendCaps, override_on: bool) -> Option<SpendStatus> {
+    if override_on {
+        return None;
+    }
+    let checks = [
+        ("today", caps.daily_usd, scoped(entries, today, |_| true)),
+        ("agent", caps.per_agent_usd, scoped(entries, today, |e| e.agent.eq_ignore_ascii_case(agent))),
+        ("thread", caps.per_thread_usd, scoped(entries, today, |e| e.thread == thread)),
+    ];
+    let mut warn: Option<SpendStatus> = None;
+    for (scope, limit, spent) in checks {
+        let Some(limit) = limit else { continue };
+        if limit <= 0.0 || spent >= limit {
+            return Some(SpendStatus { level: SpendLevel::Stop, scope, spent, limit });
+        }
+        if spent >= limit * 0.8 && warn.is_none() {
+            warn = Some(SpendStatus { level: SpendLevel::Warn, scope, spent, limit });
+        }
+    }
+    warn
+}
+
 pub fn report(entries: &[UsageEntry], since: &str) -> Report {
     let (mut day, mut agent, mut thread, mut total) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     for e in entries.iter().filter(|e| e.at.as_str() >= since) {
@@ -162,5 +204,19 @@ mod tests {
         assert_eq!(r.by_agent[0].totals.tokens_in, 3000);
         assert_eq!(r.by_day.len(), 1);
         assert_eq!(r.by_thread[0].turns, 4);
+    }
+
+    #[test]
+    fn caps_warn_at_eighty_and_stop_at_the_limit() {
+        let caps = crate::settings::SpendCaps { daily_usd: Some(1.0), per_agent_usd: Some(0.4), per_thread_usd: None };
+        let entries = vec![UsageEntry { at: "2026-10-24T10:00:00".into(), thread: "share/a".into(), agent: "Dev".into(), delta: Totals { cost_usd: 0.85, tokens_in: 1, tokens_out: 1 } }];
+        let warn = assess_spend(&entries, "2026-10-24", "share/a", "Dev", &caps, false).unwrap();
+        assert_eq!(warn.level, SpendLevel::Stop);
+        assert_eq!(warn.scope, "agent");
+        let under = vec![UsageEntry { at: "2026-10-24T10:00:00".into(), thread: "share/a".into(), agent: "Dev".into(), delta: Totals { cost_usd: 0.85, tokens_in: 1, tokens_out: 1 } }];
+        let caps = crate::settings::SpendCaps { daily_usd: Some(1.0), ..Default::default() };
+        assert_eq!(assess_spend(&under, "2026-10-24", "share/a", "Dev", &caps, false).unwrap().level, SpendLevel::Warn);
+        assert!(assess_spend(&under, "2026-10-24", "share/a", "Dev", &caps, true).is_none());
+        assert!(assess_spend(&under, "2026-10-25", "share/a", "Dev", &caps, false).is_none());
     }
 }

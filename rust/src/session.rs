@@ -122,6 +122,23 @@ pub struct SessionRecord {
     pub members: Option<Vec<RoomMember>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kicked: Option<Vec<String>>,
+    /// Transcript reinjected into the next turn when Pi cannot copy a conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<FlowCursor>,
+    /// This thread may pass a spend cap that already fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_override: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowCursor {
+    pub id: String,
+    pub step: usize,
+    #[serde(default)]
+    pub hold: bool,
 }
 
 pub struct SessionStore {
@@ -222,6 +239,9 @@ pub struct SessionPatch {
     pub room_seen: Option<Option<HashMap<String, u64>>>,
     pub members: Option<Option<Vec<RoomMember>>>,
     pub kicked: Option<Option<Vec<String>>>,
+    pub handoff: Option<Option<String>>,
+    pub flow: Option<Option<FlowCursor>>,
+    pub spend_override: Option<Option<bool>>,
 }
 
 impl SessionPatch {
@@ -297,6 +317,15 @@ impl SessionPatch {
         }
         if let Some(v) = self.kicked {
             record.kicked = v;
+        }
+        if let Some(v) = self.handoff {
+            record.handoff = v;
+        }
+        if let Some(v) = self.flow {
+            record.flow = v;
+        }
+        if let Some(v) = self.spend_override {
+            record.spend_override = v;
         }
     }
 }

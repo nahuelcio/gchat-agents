@@ -59,6 +59,40 @@ pub struct SearchHit {
     pub href: String,
 }
 
+pub fn to_markdown(title: &str, messages: &[TranscriptMessage]) -> String {
+    let mut out = format!("# {title}\n\n");
+    for m in messages {
+        let who = if m.bot { m.author.clone() } else { m.author.clone() };
+        out.push_str(&format!("**{who}**\n\n{}\n\n", m.text.trim()));
+    }
+    out
+}
+
+/// A shareable summary: who spoke, the ask, and the latest reply. Not a model call.
+pub fn summarize(messages: &[TranscriptMessage]) -> String {
+    if messages.is_empty() {
+        return "Empty thread.".into();
+    }
+    let people: Vec<String> = {
+        let mut seen = Vec::new();
+        for m in messages {
+            if !seen.iter().any(|s: &String| s.eq_ignore_ascii_case(&m.author)) {
+                seen.push(m.author.clone());
+            }
+        }
+        seen
+    };
+    let ask = messages.iter().find(|m| !m.bot).map(|m| m.text.trim()).unwrap_or("");
+    let latest = messages.iter().rev().find(|m| m.bot).map(|m| m.text.trim()).unwrap_or("");
+    let ask: String = ask.chars().take(500).collect();
+    let latest: String = latest.chars().take(800).collect();
+    format!(
+        "{count} messages · {who}\n\nAsk: {ask}\n\nLatest reply: {latest}",
+        count = messages.len(),
+        who = people.join(", "),
+    )
+}
+
 fn snippet(text: &str, needle: &[char]) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
@@ -199,6 +233,29 @@ impl TranscriptStore {
         write_atomic(&self.file_for(thread_key), &body).await.map_err(|e| e.to_string())
     }
 
+    async fn write_all(&self, thread_key: &str, messages: Vec<TranscriptMessage>) -> Result<(), String> {
+        self.cache.lock().unwrap().insert(thread_key.to_string(), messages.clone());
+        let _guard = self.writing.lock().await;
+        let body = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
+        write_atomic(&self.file_for(thread_key), &body).await.map_err(|e| e.to_string())
+    }
+
+    /// Keep the first `len` messages. Used when regenerating or editing the last turn.
+    pub async fn truncate_to(&self, thread_key: &str, len: usize) -> Result<(), String> {
+        let mut current = self.get(thread_key);
+        if len < current.len() {
+            current.truncate(len);
+        }
+        self.write_all(thread_key, current).await
+    }
+
+    pub async fn replace_message(&self, thread_key: &str, index: usize, message: TranscriptMessage) -> Result<(), String> {
+        let mut current = self.get(thread_key);
+        let slot = current.get_mut(index).ok_or_else(|| "message is gone".to_string())?;
+        *slot = message;
+        self.write_all(thread_key, current).await
+    }
+
     pub async fn archive(&self, thread_key: &str, archived: bool) -> Result<(), String> {
         {
             let mut set = self.archived.lock().unwrap();
@@ -264,6 +321,12 @@ mod tests {
         let list = store.list("share/", false);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].count, 1);
+        store.truncate_to("share/t1", 0).await.unwrap();
+        assert!(store.get("share/t1").is_empty());
+        let md = to_markdown("T", &[TranscriptMessage { author: "Ana".into(), text: "hola".into(), bot: false, at: None, questions: None, attachments: None, reply_to: None }]);
+        assert!(md.contains("**Ana**"));
+        assert!(md.contains("hola"));
+        assert!(summarize(&[]).contains("Empty"));
     }
 }
 

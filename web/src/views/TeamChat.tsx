@@ -34,6 +34,26 @@ function activeMention(text: string, caret: number): { start: number; query: str
   return { start: before.length - query.length - 1, query };
 }
 
+const SLASH_COMMANDS = [
+  { name: "help", description: "List commands" },
+  { name: "compact", description: "Compact the session" },
+  { name: "clear", description: "Clear the thread" },
+  { name: "model", description: "Switch the model" },
+  { name: "agent", description: "Switch the agent" },
+  { name: "context", description: "Show context usage" },
+  { name: "repo", description: "Attach a repo worktree" },
+  { name: "flow", description: "Start a multi-agent flow" },
+  { name: "spend-continue", description: "Continue past the spend cap" },
+];
+
+function activeSlash(text: string, caret: number): { start: number; query: string } | null {
+  const before = text.slice(0, caret);
+  const m = /(?:^|\s)\/([\w-]*)$/.exec(before);
+  if (!m) return null;
+  const query = m[1] ?? "";
+  return { start: before.length - query.length - 1, query };
+}
+
 /** Per-browser memory (names, a guest's own threads). Storage may be unavailable: then it just isn't remembered. */
 function remember<T>(key: string, fallback: T): T {
   try {
@@ -276,6 +296,15 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [caret, setCaret] = useState(0);
   const [mentionHi, setMentionHi] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [slashHi, setSlashHi] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [packageCommands, setPackageCommands] = useState<{ name: string; description: string }[]>([]);
+  const [unread, setUnread] = useState<Set<string>>(new Set());
+  const [dropping, setDropping] = useState(false);
+  const [voteFor, setVoteFor] = useState<number | null>(null);
+  const [voteReason, setVoteReason] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [notifyThreads, setNotifyThreads] = useState(() => remember("switchboard.notifyThreads", false));
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog; startedAt?: number }>();
   const [sending, setSending] = useState(false);
@@ -302,12 +331,42 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     return catalog.filter((p) => inRoom.has(p.name.toLowerCase()));
   }, [catalog, state?.members]);
   const mention = useMemo(() => activeMention(draft, caret), [draft, caret]);
+  const slash = useMemo(() => (mention ? null : activeSlash(draft, caret)), [draft, caret, mention]);
+  const slashMatches = useMemo(() => {
+    if (!slash) return [];
+    const q = slash.query.toLowerCase();
+    return [...SLASH_COMMANDS, ...packageCommands].filter((c) => c.name.toLowerCase().startsWith(q));
+  }, [slash, packageCommands]);
+  const slashOpen = Boolean(slash) && !slashDismissed;
   const mentionMatches = useMemo(() => {
     if (!mention) return [];
     const q = mention.query.toLowerCase();
     return personas.filter((p) => p.name.toLowerCase().startsWith(q));
   }, [mention, personas]);
   const mentionOpen = Boolean(mention) && !mentionDismissed;
+  useEffect(() => {
+    if (transport.guest || !transport.packageCommands) return;
+    transport.packageCommands().then(setPackageCommands, () => {});
+  }, [transport]);
+  const prevBusy = useRef<Map<string, boolean>>(new Map());
+  const unreadPrimed = useRef(false);
+  useEffect(() => {
+    const next = new Map(threads.map((t) => [t.id, Boolean(t.busy)]));
+    if (unreadPrimed.current) {
+      const fresh = [...next].filter(([id, busy]) => prevBusy.current.get(id) && !busy && id !== activeId).map(([id]) => id);
+      if (fresh.length) {
+        setUnread((cur) => new Set([...cur, ...fresh]));
+        if (notifyThreads && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          fresh.forEach((id) => {
+            const title = threads.find((t) => t.id === id)?.title ?? id;
+            new Notification("Thread ready", { body: title, tag: `thread-${id}` });
+          });
+        }
+      }
+    }
+    unreadPrimed.current = true;
+    prevBusy.current = next;
+  }, [threads, activeId, notifyThreads]);
   useEffect(
     () => () => {
       for (const p of pendingRef.current) URL.revokeObjectURL(p.url);
@@ -423,9 +482,29 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     setMentionHi(0);
     setMentionDismissed(false);
   }, [mention?.start, mention?.query]);
+  useEffect(() => {
+    setSlashHi(0);
+    setSlashDismissed(false);
+  }, [slash?.start, slash?.query]);
 
   function syncCaret(el: HTMLInputElement | null = composerInput.current) {
     if (el) setCaret(el.selectionStart ?? el.value.length);
+  }
+
+  function insertSlash(command: string) {
+    if (!slash) return;
+    const next = `${draft.slice(0, slash.start)}/${command} ${draft.slice(caret)}`;
+    const pos = slash.start + command.length + 2;
+    setDraft(next);
+    setCaret(pos);
+    setSlashHi(0);
+    setSlashDismissed(true);
+    requestAnimationFrame(() => {
+      const el = composerInput.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
   }
 
   function insertMention(name: string) {
@@ -445,6 +524,30 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
 
   function onComposerKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (slashOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+      if (slashMatches.length === 0) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashHi((i) => (i + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashHi((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const pick = slashMatches[slashHi] ?? slashMatches[0];
+        if (pick) insertSlash(pick.name);
+      }
+      return;
+    }
     if (!mentionOpen) return;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -532,6 +635,25 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
 
   async function send(text = draft, threadId = activeId, files = pending.map((p) => p.file)) {
     const value = text.trim();
+    if (editing && threadId && transport.rewrite && value) {
+      setEditing(false);
+      setDraft("");
+      await transport.rewrite(threadId, name || "you", value).then(() => loadThreads(), (e: Error) => notify(e.message, true));
+      return;
+    }
+    const pkg = packageCommands.find((c) => value === `/${c.name}` || value.startsWith(`/${c.name} `));
+    if (pkg && threadId && transport.runPackageCommand && !files.length) {
+      setDraft("");
+      const args = value.slice(pkg.name.length + 1).trim();
+      await transport.runPackageCommand(pkg.name, args).then(
+        (res) =>
+          setState((cur) =>
+            cur ? { ...cur, messages: [...cur.messages, { author: "package", bot: true, text: res.text || `/${pkg.name} ran`, at: new Date().toISOString() }] } : cur,
+          ),
+        (e: Error) => notify(e.message, true),
+      );
+      return;
+    }
     // Allow another message while a turn is still running: while busy, a text message steers the running turn.
     if ((!value && !files.length) || !threadId) return;
     const steer = busy && threadId === activeId && !files.length ? transport.steer : undefined;
@@ -619,6 +741,42 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
     navigator.clipboard.writeText(link).then(() => notify("Link to this conversation copied: it opens only this one"), () => notify("Copy failed", true));
   }
 
+  useEffect(() => {
+    if (!name) return;
+    const threadsNow = () => threads;
+    const onNew = () => {
+      if (repos?.length) setPicking(true);
+      else newThread();
+    };
+    const onMove = (dir: number) => {
+      const list = threadsNow();
+      if (!list.length) return;
+      const i = Math.max(0, list.findIndex((t) => t.id === activeId));
+      const next = list[(i + dir + list.length) % list.length];
+      if (next) pickThread(next.id);
+    };
+    const onStop = () => {
+      if (activeId) void transport.stopAgents(activeId);
+    };
+    const stopIfTyping = (e: Event) => {
+      const target = (e as CustomEvent).detail as EventTarget | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      onStop();
+    };
+    const onPrev = () => onMove(-1);
+    const onNext = () => onMove(1);
+    addEventListener("switchboard:new-thread", onNew);
+    addEventListener("switchboard:prev-thread", onPrev);
+    addEventListener("switchboard:next-thread", onNext);
+    addEventListener("switchboard:stop", stopIfTyping);
+    return () => {
+      removeEventListener("switchboard:new-thread", onNew);
+      removeEventListener("switchboard:prev-thread", onPrev);
+      removeEventListener("switchboard:next-thread", onNext);
+      removeEventListener("switchboard:stop", stopIfTyping);
+    };
+  });
+
   if (!name) {
     return (
       <div className="name-gate">
@@ -691,6 +849,12 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }
   function pickThread(id: string) {
     setActiveId(id);
+    setUnread((cur) => {
+      if (!cur.has(id)) return cur;
+      const next = new Set(cur);
+      next.delete(id);
+      return next;
+    });
     if (isNarrow()) setThreadsOpen(false);
   }
 
@@ -788,6 +952,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 <span className="strong">
                   {t.title}
                   {t.busy && <span className="live-dot" title="Agents are answering" aria-label="Agents are answering" />}
+                  {unread.has(t.id) && <span className="unread-dot" title="Finished while you were away" aria-label="Unread" />}
                   {t.needsApproval && <span className="approval-badge" title="Needs your approval">Approval</span>}
                 </span>
                 <span className="muted small">
@@ -854,7 +1019,21 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         )}
       </aside>
 
-      <section className="play-chat" aria-label="Conversation">
+      <section
+        className={`play-chat${dropping ? " dropping" : ""}`}
+        aria-label="Conversation"
+        onDragOver={(e) => {
+          if (![...e.dataTransfer.types].includes("Files")) return;
+          e.preventDefault();
+          setDropping(true);
+        }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDropping(false);
+          if (e.dataTransfer.files.length) queueImages(e.dataTransfer.files);
+        }}
+      >
         <header className="play-head">
           <span className="strong title">{state?.title ?? active?.title ?? "Team chat"}</span>
           {state?.repo ? <code className="tag">{state.repo} · {state.branch}</code> : state?.title?.startsWith("switchboard/") && <code className="tag muted">branch kept</code>}
@@ -877,6 +1056,36 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
             </label>
           )}
           <span className="head-actions push">
+            {activeId && transport.exportMd && (
+              <button className="btn small" onClick={() => void transport.exportMd!(activeId).then((r) => {
+                const blob = new Blob([r.markdown], { type: "text/markdown" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${activeId}.md`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }, (e: Error) => notify(e.message, true))}>
+                Export
+              </button>
+            )}
+            {activeId && transport.summarize && (
+              <button className="btn small" disabled={working} onClick={() => void transport.summarize!(activeId).then(() => notify("Summary saved"), (e: Error) => notify(e.message, true))}>
+                Summarize
+              </button>
+            )}
+            <button
+              className={`btn small ${notifyThreads ? "" : "ghost"}`}
+              title="Browser notification when another thread finishes"
+              onClick={() => {
+                const next = !notifyThreads;
+                setNotifyThreads(next);
+                store("switchboard.notifyThreads", next);
+                if (next && typeof Notification !== "undefined" && Notification.permission === "default") void Notification.requestPermission();
+              }}
+            >
+              {notifyThreads ? "Alerts on" : "Alerts"}
+            </button>
             {activeId && linkFor && (
               <button className="btn small" onClick={() => copyThreadLink(activeId)}>
                 Share
@@ -919,8 +1128,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               prevAgent === agent &&
               !m.replyTo &&
               (!m.at || !prev.at || new Date(m.at).getTime() - new Date(prev.at).getTime() < 5 * 60_000);
+            const last = i === all.length - 1;
             return (
-              <div key={i} className={`message${agent ? " agent-tint" : ""}${cont ? " cont" : ""}`} style={agent ? agentTint(agent) : undefined}>
+              <div key={i} className={`message${agent ? " agent-tint" : ""}${cont ? " cont" : ""}${last ? " is-last" : ""}`} style={agent ? agentTint(agent) : undefined}>
                 <Face
                   host={m.bot && !agent}
                   agent={Boolean(agent)}
@@ -944,42 +1154,72 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                     );
                   })()}
                   {body.footer && <div className="message-footer">{body.footer}</div>}
-                  {m.bot && speechOut && body.text.trim() && (
-                    <button
-                      type="button"
-                      className={`speak-btn ${speakingId === i ? "on" : ""}`}
-                      aria-label={speakingId === i ? "Stop speaking" : "Speak message"}
-                      title={speakingId === i ? "Stop" : "Listen"}
-                      onClick={() => toggleSpeak(i, body.text)}
-                    >
-                      <Icon size={14}>
-                        {speakingId === i ? (
-                          <rect x="7" y="7" width="10" height="10" />
-                        ) : (
-                          <>
-                            <polygon points="5,4 15,12 5,20" />
-                            <path d="M17 8a5 5 0 0 1 0 8" />
-                          </>
-                        )}
-                      </Icon>
-                    </button>
-                  )}
-                  {body.text.trim() && (
-                    <button
-                      type="button"
-                      className="reply-btn"
-                      aria-label="Reply to this message"
-                      title="Reply"
-                      onClick={() => {
-                        setReplyTo({ author: m.bot ? (agent ?? BOT_NAME) : m.author, text: excerpt(body.text) });
-                        composerInput.current?.focus();
-                      }}
-                    >
-                      <Icon size={14}>
-                        <path d="M9 14L4 9l5-5" />
-                        <path d="M4 9h10a6 6 0 0 1 6 6v5" />
-                      </Icon>
-                    </button>
+                  <div className="message-actions">
+                    {m.bot && transport.feedback && (
+                      <>
+                        <button type="button" className="msg-act" title="Good reply" aria-label="Good reply" onClick={() => void transport.feedback!(activeId!, i, "up").then(() => notify("Saved as an eval"), (e: Error) => notify(e.message, true))}>
+                          <Icon size={15}><path d="M7 10v12" /><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" /></Icon>
+                        </button>
+                        <button type="button" className={`msg-act${voteFor === i ? " on bad" : ""}`} title="Bad reply" aria-label="Bad reply" onClick={() => { setVoteFor(i); setVoteReason(""); }}>
+                          <Icon size={15}><path d="M17 14V2" /><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z" /></Icon>
+                        </button>
+                      </>
+                    )}
+                    {!m.bot && i === all.reduce((acc, msg, idx) => (!msg.bot ? idx : acc), -1) && transport.rewrite && (
+                      <button type="button" className="msg-act" title="Edit" aria-label="Edit" onClick={() => { setEditing(true); setDraft(m.text); setCaret(m.text.length); composerInput.current?.focus(); }}>
+                        <Icon size={15}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>
+                      </button>
+                    )}
+                    {((m.bot && i === all.reduce((acc, msg, idx) => (msg.bot ? idx : acc), -1)) || (!m.bot && i === all.reduce((acc, msg, idx) => (!msg.bot ? idx : acc), -1))) && transport.rewrite && (
+                      <button type="button" className="msg-act" title="Regenerate" aria-label="Regenerate" disabled={working} onClick={() => void transport.rewrite!(activeId!, name || "you").then(() => {}, (e: Error) => notify(e.message, true))}>
+                        <Icon size={15}><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" /><path d="M16 16h5v5" /></Icon>
+                      </button>
+                    )}
+                    {transport.fork && activeId && (
+                      <button type="button" className="msg-act" title="Continue from here" aria-label="Continue from here" onClick={() => void transport.fork!(activeId, i).then((r) => { notify("Forked"); pickThread(r.thread); loadThreads(); }, (e: Error) => notify(e.message, true))}>
+                        <Icon size={15}><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 9v6" /><circle cx="18" cy="6" r="3" /><path d="M18 9a6 6 0 0 1-6 6H6" /></Icon>
+                      </button>
+                    )}
+                    {m.bot && speechOut && body.text.trim() && (
+                      <button
+                        type="button"
+                        className={`msg-act${speakingId === i ? " on" : ""}`}
+                        aria-label={speakingId === i ? "Stop speaking" : "Speak message"}
+                        title={speakingId === i ? "Stop" : "Listen"}
+                        onClick={() => toggleSpeak(i, body.text)}
+                      >
+                        <Icon size={15}>
+                          {speakingId === i ? (
+                            <rect x="7" y="7" width="10" height="10" />
+                          ) : (
+                            <polygon points="6,4 20,12 6,20" />
+                          )}
+                        </Icon>
+                      </button>
+                    )}
+                    {body.text.trim() && (
+                      <button
+                        type="button"
+                        className="msg-act"
+                        aria-label="Reply to this message"
+                        title="Reply"
+                        onClick={() => {
+                          setReplyTo({ author: m.bot ? (agent ?? BOT_NAME) : m.author, text: excerpt(body.text) });
+                          composerInput.current?.focus();
+                        }}
+                      >
+                        <Icon size={15}>
+                          <path d="M9 14 4 9l5-5" />
+                          <path d="M4 9h10a6 6 0 0 1 6 6v5" />
+                        </Icon>
+                      </button>
+                    )}
+                  </div>
+                  {voteFor === i && (
+                    <form className="vote-reason" onSubmit={(e) => { e.preventDefault(); void transport.feedback!(activeId!, i, "down", voteReason).then(() => { setVoteFor(null); notify("Saved as an eval"); }, (err: Error) => notify(err.message, true)); }}>
+                      <input value={voteReason} onChange={(e) => setVoteReason(e.target.value)} placeholder="Optional reason" aria-label="Why this reply missed" />
+                      <button className="btn small" type="submit">Save</button>
+                    </form>
                   )}
                   {m.questions && m.questions.length > 0 && !all.slice(i + 1).some((later) => !later.bot) && (
                     <AgentQuestions questions={m.questions} disabled={sending} onAnswer={(text) => void send(text)} />
@@ -1098,6 +1338,19 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
                 ))}
               </div>
             )}
+            {slashOpen && (
+              <div className="suggestions" role="listbox" aria-label="Commands">
+                {slashMatches.length > 0 ? (
+                  slashMatches.map((c, i) => (
+                    <button key={c.name} type="button" role="option" aria-selected={i === slashHi} className={`chip ${i === slashHi ? "on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => insertSlash(c.name)}>
+                      <span>/{c.name}</span> <span className="muted small">{c.description}</span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="muted small">No command matches /{slash?.query}</span>
+                )}
+              </div>
+            )}
             {mentionOpen && (
               <div className="suggestions" role="listbox" aria-label="Mention an agent">
                 {mentionMatches.length > 0 ? (
@@ -1125,7 +1378,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               className="composer"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (mentionOpen && mentionMatches.length) return;
+                if ((mentionOpen && mentionMatches.length) || (slashOpen && slashMatches.length)) return;
                 void send();
               }}
               onPaste={(e) => {
@@ -1205,6 +1458,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           catalog={catalog}
           onHideContext={() => toggleContext(false)}
           onShowContext={() => toggleContext(true)}
+          transport={transport}
           onCommand={(text) => void send(text)}
           onMember={
             transport.members && activeId
@@ -1233,12 +1487,14 @@ function TeamChatSide({
   onShowContext,
   onCommand,
   onMember,
+  transport,
 }: {
   activeId?: string;
   contextOpen: boolean;
   state?: TeamThreadState;
   guest: boolean;
   catalog: PersonaRef[];
+  transport: TeamTransport;
   onHideContext: () => void;
   onShowContext: () => void;
   onCommand: (text: string) => void;
@@ -1257,6 +1513,7 @@ function TeamChatSide({
           onCommand={onCommand}
           onMember={onMember}
           threadId={activeId}
+          transport={transport}
         />
       )}
       {!active && activeId && !contextOpen && (
@@ -1629,6 +1886,7 @@ function ThreadContextPanel({
   onCommand,
   onHide,
   threadId,
+  transport,
 }: {
   state?: TeamThreadState;
   guest: boolean;
@@ -1637,9 +1895,16 @@ function ThreadContextPanel({
   onCommand?: (text: string) => void;
   onHide?: () => void;
   threadId?: string;
+  transport?: TeamTransport;
 }) {
   const wi = state?.workItem;
   const changes = state?.changes;
+  const [diffs, setDiffs] = useState<{ path: string; patch: string }[]>([]);
+  const [openDiff, setOpenDiff] = useState<string>();
+  useEffect(() => {
+    if (!threadId || !transport?.diff || !state?.worktree) return setDiffs([]);
+    transport.diff(threadId).then((r) => setDiffs(r.files), () => setDiffs([]));
+  }, [threadId, transport, state?.worktree, changes?.files.length]);
   return (
     <aside className="play-context" aria-label="Thread context">
       <div className="play-context-head">
@@ -1725,13 +1990,30 @@ function ThreadContextPanel({
           <p className={`small ${changes.clean ? "muted" : "strong"}`}>{changeSummary(changes)}</p>
           {changes.files.length > 0 && (
             <ul className="play-changes">
-              {changes.files.map((f) => (
-                <li key={`${f.status}:${f.path}`}>
-                  <code className="status">{f.status}</code>
-                  <code className="path">{f.path}</code>
-                </li>
-              ))}
+              {changes.files.map((f) => {
+                const patch = diffs.find((d) => d.path === f.path)?.patch;
+                return (
+                  <li key={`${f.status}:${f.path}`}>
+                    <code className="status">{f.status}</code>
+                    <button type="button" className="path linkish" onClick={() => setOpenDiff(openDiff === f.path ? undefined : f.path)}>{f.path}</button>
+                    {openDiff === f.path && patch && <pre className="file-diff">{patch}</pre>}
+                  </li>
+                );
+              })}
             </ul>
+          )}
+          {transport?.openPr && threadId && (
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => {
+                const title = window.prompt("Pull request title", state?.title ?? "switchboard") ?? "";
+                if (!title.trim()) return;
+                void transport.openPr!(threadId, title.trim()).then((r) => window.open(r.url, "_blank", "noopener"), (e: Error) => window.alert(e.message));
+              }}
+            >
+              Abrir PR
+            </button>
           )}
         </>
       )}

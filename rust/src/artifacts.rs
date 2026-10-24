@@ -144,6 +144,17 @@ pub fn validate_artifact(title: &str, html: &str) -> Result<String, String> {
     Ok(wrapped)
 }
 
+/// A shareable HTML page for a thread summary. The body is escaped text, one paragraph per line.
+pub fn summary_html(title: &str, summary: &str) -> Result<String, String> {
+    let body = summary
+        .lines()
+        .map(|l| format!("<p>{}</p>", escape_html(l)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let html = format!("<style>body{{font:16px/1.5 system-ui;max-width:42rem;margin:1.5rem auto;padding:0 1rem}}</style><article>{body}</article>");
+    validate_artifact(title, &html)
+}
+
 pub fn marker(id: &str, title: &str) -> String {
     let safe = title.replace(['[', ']', '|', '\n', '\r'], " ").trim().to_string();
     format!("[[artifact:{id}|{safe}]]")

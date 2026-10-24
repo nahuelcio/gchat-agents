@@ -31,6 +31,16 @@ struct Open {
 static GATES: Mutex<Option<HashMap<String, Open>>> = Mutex::new(None);
 static ROUTES: Mutex<Option<HashMap<String, (String, Option<PostThread>)>>> = Mutex::new(None);
 
+/// Agent override wins, then the repo, then the global mode.
+pub fn effective_mode(global: ApprovalMode, agent: Option<ApprovalMode>, repo: Option<ApprovalMode>) -> ApprovalMode {
+    agent.or(repo).unwrap_or(global)
+}
+
+/// A flow step that asks for approval always opens a gate, independent of the global mode.
+pub fn open_flow(thread_key: &str, agent: &str) -> (GateInfo, oneshot::Receiver<bool>) {
+    open(thread_key, "flow", &format!("Continue the flow with @{agent}?"), "flow")
+}
+
 pub fn needs_gate(mode: ApprovalMode, kind: &str) -> bool {
     match mode {
         ApprovalMode::Off => false,
@@ -128,6 +138,9 @@ mod tests {
         assert!(!needs_gate(ApprovalMode::Risky, "write"));
         assert!(needs_gate(ApprovalMode::Risky, "outside"));
         assert!(needs_gate(ApprovalMode::Writes, "write"));
+        assert_eq!(effective_mode(ApprovalMode::Risky, Some(ApprovalMode::Off), Some(ApprovalMode::Writes)), ApprovalMode::Off);
+        assert_eq!(effective_mode(ApprovalMode::Off, None, Some(ApprovalMode::Writes)), ApprovalMode::Writes);
+        assert_eq!(effective_mode(ApprovalMode::Risky, None, None), ApprovalMode::Risky);
     }
 
     #[tokio::test]

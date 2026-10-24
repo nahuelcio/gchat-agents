@@ -309,6 +309,72 @@ pub async fn ado_repos(
         .collect())
 }
 
+pub fn ado_remote_parts(remote: &str) -> Option<(String, String, String)> {
+    let remote = remote.trim().trim_end_matches(".git");
+    if let Some(rest) = remote.split("dev.azure.com/").nth(1) {
+        let parts: Vec<&str> = rest.split(['/', '?']).filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 4 && parts[2] == "_git" {
+            return Some((parts[0].into(), parts[1].into(), parts[3].into()));
+        }
+    }
+    if let Some(rest) = remote.split(".visualstudio.com/").nth(1) {
+        let host_org = remote.split(".visualstudio.com").next()?.rsplit(['/', '@']).next()?;
+        let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 3 && parts[1] == "_git" {
+            return Some((host_org.into(), parts[0].into(), parts[2].into()));
+        }
+    }
+    if let Some(rest) = remote.split("ssh.dev.azure.com").nth(1) {
+        let parts: Vec<&str> = rest.split(['/', ':']).filter(|s| !s.is_empty() && *s != "v3").collect();
+        if parts.len() >= 3 {
+            return Some((parts[0].into(), parts[1].into(), parts[2].into()));
+        }
+    }
+    None
+}
+
+/// Opens a pull request with the Azure DevOps credentials already stored for the MCP.
+pub async fn ado_pull_request(data_dir: &Path, remote: &str, branch: &str, title: &str, body: &str) -> Result<String, String> {
+    let (org, project, repo) = ado_remote_parts(remote).ok_or_else(|| format!("cannot parse Azure DevOps remote {remote}"))?;
+    let stored = resolve_ado(data_dir).ok_or("Azure DevOps is not connected. Add it in Settings — the same sign-in the Azure DevOps MCP uses.")?;
+    let auth = AdoAuth { org: org.clone(), pat: stored.pat };
+    let client = reqwest::Client::new();
+    let repos = ado_repos(&auth, &project, &client).await?;
+    let found = repos.into_iter().find(|r| r.name.eq_ignore_ascii_case(&repo)).ok_or_else(|| format!("repo {repo} was not found in {project}"))?;
+    let target = found.default_branch.clone().unwrap_or_else(|| "main".into());
+    let url = format!(
+        "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests?api-version=7.1",
+        urlencoding(&org),
+        urlencoding(&project),
+        found.id
+    );
+    let res = client
+        .post(&url)
+        .header("authorization", ado_auth_header(&auth.pat))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "sourceRefName": format!("refs/heads/{branch}"),
+            "targetRefName": format!("refs/heads/{target}"),
+            "title": title,
+            "description": body,
+        }))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status();
+    let value: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(value.get("message").and_then(|v| v.as_str()).unwrap_or("Azure DevOps rejected the pull request").to_string());
+    }
+    value
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|u| u.replace("/_apis/git/repositories/", "/_git/").replace("/pullRequests/", "/pullrequest/"))
+        .or_else(|| value.get("pullRequestId").and_then(|v| v.as_i64()).map(|id| format!("https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}")))
+        .ok_or_else(|| "pull request created without a url".to_string())
+}
+
 async fn get_json(client: &reqwest::Client, url: &str, auth: &str) -> Result<serde_json::Value, String> {
     let res = client
         .get(url)
@@ -512,6 +578,18 @@ mod tests {
         assert_eq!(resolved.pat, "ui-pat");
         assert_eq!(resolved.source, "settings");
         unsafe { std::env::remove_var("SWITCHBOARD_ADO_CLI_HOME") };
+    }
+
+    #[test]
+    fn ado_remote_parses_https_and_ssh() {
+        assert_eq!(
+            ado_remote_parts("https://dev.azure.com/org/proj/_git/app").unwrap(),
+            ("org".into(), "proj".into(), "app".into())
+        );
+        assert_eq!(
+            ado_remote_parts("git@ssh.dev.azure.com:v3/org/proj/app").unwrap(),
+            ("org".into(), "proj".into(), "app".into())
+        );
     }
 
     #[test]

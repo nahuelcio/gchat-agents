@@ -7,16 +7,16 @@ use crate::driver::types::{AgentDriver, AgentQuestion, AgentTurnInput};
 use crate::google::{ChatClient, PostMessageBody, PostThread};
 use crate::personas::{
     active_personas, add_hint, addressed_personas, asked_personas, consult_open, consult_topics,
-    dialogue_open, dialogue_pass, host_preamble, is_pass, mentioned_personas, mentions_bot,
-    persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update,
-    strip_self_prefix, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
+    dialogue_open, dialogue_pass, flow_move, host_preamble, is_pass, last_bot_agent, mentioned_personas,
+    mentions_bot, persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update,
+    strip_self_prefix, FlowMove, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
 };
 pub use crate::personas::BOT_NAME;
 use crate::workspace::slug_for;
 use crate::question_gate::{has_question, hold_question, take_question};
 use crate::questions::{continuation, question_cards};
 use crate::queue::TurnQueue;
-use crate::session::{SessionPatch, SessionStore};
+use crate::session::{FlowCursor, SessionPatch, SessionStore};
 use crate::settings::{ContextFooter, Persona, Settings};
 use crate::text::{chunk_text, extract_prompt};
 use crate::verify::TokenVerifier;
@@ -537,6 +537,121 @@ async fn steer_persona(req: &TurnRequest, deps: &HandlerDeps, persona: &Persona)
     true
 }
 
+fn spend_notice(req: &TurnRequest, deps: &HandlerDeps) -> Option<(String, bool)> {
+    let settings = crate::settings::global()?.get();
+    if settings.spend.is_empty() {
+        return None;
+    }
+    let ledger = crate::usage::global()?;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let agent = addressed_personas(&req.text, &settings.personas).first().map(|p| p.name.clone()).unwrap_or_else(|| BOT_NAME.to_string());
+    let override_on = deps.store.get(&req.thread_key).and_then(|r| r.spend_override).unwrap_or(false);
+    let status = crate::usage::assess_spend(&ledger.entries(), &today, &req.thread_key, &agent, &settings.spend, override_on)?;
+    let pct = if status.limit > 0.0 { (status.spent / status.limit * 100.0).round() as u32 } else { 100 };
+    let text = match status.level {
+        crate::usage::SpendLevel::Stop => format!(
+            "Spend cap reached ({pct}% of the {} limit, ${:.4} / ${:.4}). Send /spend-continue to keep going.",
+            status.scope, status.spent, status.limit
+        ),
+        crate::usage::SpendLevel::Warn => format!("Spend is at {pct}% of the {} limit (${:.4} / ${:.4}).", status.scope, status.spent, status.limit),
+        crate::usage::SpendLevel::Ok => return None,
+    };
+    Some((text, status.level == crate::usage::SpendLevel::Stop))
+}
+
+fn kick_flow(thread_key: String, space: String, sink: Option<Arc<crate::transcripts::TranscriptStore>>, deps: Arc<HandlerDeps>) {
+    tokio::spawn(async move {
+        let Some(settings) = crate::settings::global().map(|s| s.get()) else { return };
+        let Some(cursor) = deps.store.get(&thread_key).and_then(|r| r.flow) else { return };
+        if cursor.hold {
+            return;
+        }
+        let Some(flow) = settings.flows.iter().find(|f| f.id == cursor.id).cloned() else { return };
+        let Some(step) = flow.steps.get(cursor.step).cloned() else { return };
+        if step.approve {
+            let _ = deps
+                .store
+                .update(&thread_key, &space, SessionPatch { flow: Some(Some(FlowCursor { hold: true, ..cursor.clone() })), ..Default::default() })
+                .await;
+            let (info, rx) = crate::gate::open_flow(&thread_key, &step.agent);
+            if let Some(sink) = &sink {
+                let _ = sink.append(&thread_key, vec![crate::team::bot_line(&crate::gate::summary(&info))]).await;
+            }
+            let deps2 = deps.clone();
+            let sink2 = sink.clone();
+            let space2 = space.clone();
+            let thread2 = thread_key.clone();
+            let id = cursor.id.clone();
+            let step_i = cursor.step;
+            tokio::spawn(async move {
+                let ok = rx.await.unwrap_or(false);
+                if !ok {
+                    let _ = deps2.store.update(&thread2, &space2, SessionPatch { flow: Some(None), ..Default::default() }).await;
+                    if let Some(sink) = &sink2 {
+                        let _ = sink.append(&thread2, vec![crate::team::bot_line("Flow stopped.")]).await;
+                    }
+                    return;
+                }
+                let _ = deps2
+                    .store
+                    .update(&thread2, &space2, SessionPatch { flow: Some(Some(FlowCursor { id, step: step_i, hold: false })), ..Default::default() })
+                    .await;
+                kick_flow(thread2, space2, sink2, deps2);
+            });
+            return;
+        }
+        let text = format!(
+            "@{} You are step {} of the flow \"{}\". Continue from the conversation. Do not @mention the next step; the flow does that.",
+            step.agent,
+            cursor.step + 1,
+            flow.name
+        );
+        let request_id = uuid::Uuid::new_v4().to_string();
+        if let Some(ledger) = &deps.ledger {
+            ledger.begin(&request_id, &thread_key, &space, None).await;
+        }
+        let req = TurnRequest {
+            thread_key,
+            space_name: space,
+            text,
+            sender: Some("flow".into()),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+            reply_sink: sink,
+            request_id: Some(request_id),
+        };
+        let _ = process_message(req, deps).await;
+    });
+}
+
+async fn follow_flow(req: &TurnRequest, sink: &Arc<crate::transcripts::TranscriptStore>, deps: Arc<HandlerDeps>) {
+    let Some(settings) = crate::settings::global().map(|s| s.get()) else { return };
+    let Some(cursor) = deps.store.get(&req.thread_key).and_then(|r| r.flow) else { return };
+    if cursor.hold {
+        return;
+    }
+    let Some(flow) = settings.flows.iter().find(|f| f.id == cursor.id).cloned() else { return };
+    let messages = sink.get(&req.thread_key);
+    let last = messages.iter().rev().find(|m| m.bot);
+    let agent = last.and_then(|m| last_bot_agent(&m.text, &m.author));
+    match flow_move(cursor.step, &flow.steps, agent.as_deref()) {
+        FlowMove::Stay => {}
+        FlowMove::Done => {
+            let _ = deps.store.update(&req.thread_key, &req.space_name, SessionPatch { flow: Some(None), ..Default::default() }).await;
+            deliver_reply(req, &deps, &format!("Flow {} finished.", flow.name), None, None).await;
+        }
+        FlowMove::Next { step, .. } => {
+            let _ = deps
+                .store
+                .update(&req.thread_key, &req.space_name, SessionPatch { flow: Some(Some(FlowCursor { id: cursor.id, step, hold: false })), ..Default::default() })
+                .await;
+            kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps);
+        }
+    }
+}
+
 pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Result<bool, String> {
     let key = req.thread_key.clone();
     if req.reply_via_chat {
@@ -545,10 +660,20 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
     let lane_free = persona_lane(&req, &deps);
     let queue = deps.queue.clone();
     let turn = move || async move {
-        if command_of(&req.text).is_some() {
+        if let Some(cmd) = command_of(&req.text) {
             let reply = run_command(&req, &deps).await.unwrap_or_else(|e| format!("Command failed: {e}"));
+            let started = cmd == "flow" && !reply.starts_with("Command failed");
             deliver_reply(&req, &deps, &reply, None, None).await;
+            if started {
+                kick_flow(req.thread_key.clone(), req.space_name.clone(), req.reply_sink.clone(), deps.clone());
+            }
             return Ok(true);
+        }
+        if let Some((text, stop)) = spend_notice(&req, &deps) {
+            deliver_reply(&req, &deps, &text, None, None).await;
+            if stop {
+                return Ok(true);
+            }
         }
         offer_repo(&req, &deps).await;
         if let Some(scheduler) = deps.scheduler.get() {
@@ -589,6 +714,11 @@ pub async fn process_message(mut req: TurnRequest, deps: Arc<HandlerDeps>) -> Re
             Err(e) => ("turn_fail", e.clone()),
         };
         note(&deps, kind, &req.thread_key, req.text.chars().take(80).collect::<String>(), detail).await;
+        if result.is_ok() && req.sender.as_deref() == Some("flow") {
+            if let Some(sink) = req.reply_sink.clone() {
+                follow_flow(&req, &sink, deps.clone()).await;
+            }
+        }
         if !parallel {
             let jump = optional_jump(&req, &deps, true);
             optional_round(&req, &deps, jump).await;
@@ -825,6 +955,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 request_id: req.request_id.clone(),
                 mcps_override: None,
                 instructions_override: None,
+                effort: None,
             })
             .await
     };
@@ -1142,6 +1273,7 @@ async fn persona_round(
                 request_id: persona_request.clone(),
                 mcps_override: None,
                 instructions_override: None,
+                effort: item.persona.effort.clone(),
             })
             .await;
         drop(talking);
@@ -1316,6 +1448,7 @@ async fn host_continue(req: &TurnRequest, deps: &HandlerDeps, text: &str) -> Opt
             request_id: None,
             mcps_override: None,
             instructions_override: None,
+            effort: None,
         })
         .await
     {
@@ -1371,7 +1504,32 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     let cmd = command_of(&req.text).unwrap_or("");
     let args: Vec<&str> = req.text.split_whitespace().skip(1).collect();
     match cmd {
-        "help" => Ok("Commands: /help /clear [@agent] /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo]".into()),
+        "help" => Ok("Commands: /help /clear [@agent] /compact /context /model /stop /agents /invite <agent> /kick <agent> /approve <id> /deny <id> /topic <text> /repo <name...> /status /up [repo] /down /logs /close [repo] /flow <id> /spend-continue".into()),
+        "spend-continue" => {
+            deps.store
+                .update(&req.thread_key, &req.space_name, SessionPatch { spend_override: Some(Some(true)), ..Default::default() })
+                .await?;
+            Ok("This thread can keep going past the spend cap.".into())
+        }
+        "flow" => {
+            let id = args.first().copied().ok_or("Usage: /flow <id>")?;
+            let settings = crate::settings::global().ok_or("settings are not loaded")?.get();
+            let flow = settings.flows.iter().find(|f| f.id == id).ok_or_else(|| format!("unknown flow {id}"))?;
+            if flow.steps.is_empty() {
+                return Err(format!("flow {id} has no steps"));
+            }
+            deps.store
+                .update(
+                    &req.thread_key,
+                    &req.space_name,
+                    SessionPatch {
+                        flow: Some(Some(FlowCursor { id: flow.id.clone(), step: 0, hold: false })),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            Ok(format!("Starting {}.", flow.name))
+        }
         "stop" => {
             request_stop(&req.thread_key);
             crate::pi_sidecar::abort(&req.thread_key).await;
@@ -1491,6 +1649,7 @@ pub async fn ask_persona(deps: &HandlerDeps, thread_key: &str, agent: &str, ques
             request_id: None,
             mcps_override: None,
             instructions_override: None,
+            effort: None,
         })
         .await?;
     let space = record.as_ref().map(|r| r.space.clone()).unwrap_or_else(|| "team-chat".into());
@@ -1669,6 +1828,7 @@ async fn compact(thread_key: &str, space: &str, deps: &HandlerDeps) -> Result<St
             request_id: None,
             mcps_override: None,
             instructions_override: None,
+            effort: None,
         })
         .await?;
     let after = out.reply.len().div_ceil(4) as u64;
@@ -2021,6 +2181,7 @@ mod tests {
             prompt: format!("You are {name}."),
             driver: None,
             model: None,
+            effort: None,
             agent: None,
             listen: listen.map(str::to_string),
             respond_to: None,

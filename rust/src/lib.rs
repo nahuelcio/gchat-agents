@@ -96,6 +96,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
     crate::settings::set_global(settings.clone());
     let health = Arc::new(Mutex::new(Health::from_env(config.data_dir.join("health.json"))));
     let schedules = Arc::new(ScheduleStore::open(config.data_dir.join("schedules.json")));
+    let triggers = Arc::new(crate::schedules::TriggerStore::open(config.data_dir.join("triggers.json")));
     let workspaces = Arc::new(Workspaces::new(
         config.data_dir.join("worktrees"),
         settings.get().repos.clone(),
@@ -173,6 +174,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         }));
     }
 
+    let handler_for_events = handler.clone();
     let activity_for_run = activity.clone();
     let transcripts_for_run = transcripts.clone();
     let schedules_for_run = schedules.clone();
@@ -189,7 +191,39 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         let activity = activity_for_run.clone();
         let transcripts = transcripts_for_run.clone();
         let (key, name, prompt) = (format!("schedule/{}", job.id), job.name.clone(), job.prompt.clone());
+        let event = job.trigger == "event";
+        let handler = handler_for_events.clone();
         async move {
+            if event {
+                let thread = job.id.clone();
+                let thread_key = format!("{}{thread}", crate::handler::TEAM_PREFIX);
+                if let Some(repo) = job.repo.as_deref().filter(|r| !r.is_empty()) {
+                    let req = crate::handler::TurnRequest {
+                        thread_key: thread_key.clone(),
+                        space_name: "team-chat".into(),
+                        text: format!("/repo {repo}"),
+                        sender: Some("webhook".into()),
+                        reply_via_chat: false,
+                        thread: None,
+                        room_n: None,
+                        captured_replies: None,
+                        reply_sink: Some(transcripts.clone()),
+                        request_id: Some(uuid::Uuid::new_v4().to_string()),
+                    };
+                    let _ = crate::handler::process_message(req, handler.clone()).await;
+                }
+                let sent = crate::team::team_send(handler, transcripts.clone(), &thread, &job.prompt, "webhook", None, &[], None).await;
+                return match sent {
+                    Ok(_) => {
+                        activity.record("trigger_ok", &thread_key, name, "").await;
+                        true
+                    }
+                    Err(err) => {
+                        activity.record("trigger_fail", &thread_key, name, err).await;
+                        false
+                    }
+                };
+            }
             let _ = store;
             let result = driver
                 .run_turn(crate::driver::types::AgentTurnInput {
@@ -204,6 +238,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     request_id: None,
                     mcps_override: None,
                     instructions_override: None,
+                    effort: None,
                 })
                 .await;
             let reply = match &result {
@@ -239,6 +274,7 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
         settings,
         health,
         schedules,
+        triggers,
         scheduler,
         share,
         transcripts,

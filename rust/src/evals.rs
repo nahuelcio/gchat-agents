@@ -37,6 +37,14 @@ pub struct Case {
     pub prompt: String,
     #[serde(default)]
     pub expect: Expect,
+    /// The reply that was rated, when the case came from a chat vote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// "up" or "down".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +156,42 @@ impl EvalStore {
         Ok(cases)
     }
 
+    /// A 👍 or 👎 on a real reply becomes a case. The prompt is the user's message; the sample is the reply.
+    pub async fn add_feedback(&self, prompt: &str, reply: &str, vote: &str, reason: Option<&str>, agent: &str) -> Result<Case, String> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err("feedback needs the user message".into());
+        }
+        let vote = if vote == "up" { "up" } else { "down" };
+        let reason = reason.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let sample: String = reply.chars().take(8000).collect();
+        let mut rubric = if vote == "down" {
+            "The previous reply was rejected. A new reply should fix that.".to_string()
+        } else {
+            "The previous reply was accepted. A new reply should be at least as helpful.".to_string()
+        };
+        if let Some(why) = &reason {
+            rubric.push_str(" Reason: ");
+            rubric.push_str(why);
+        }
+        rubric.push_str("\nSample reply:\n");
+        rubric.push_str(&sample);
+        let case = Case {
+            id: String::new(),
+            name: format!("{vote} {}", prompt.chars().take(40).collect::<String>()),
+            agent: agent.trim().trim_start_matches('@').to_string(),
+            prompt: prompt.to_string(),
+            expect: Expect { rubric: Some(rubric), ..Default::default() },
+            sample: Some(sample),
+            reason,
+            vote: Some(vote.to_string()),
+        };
+        let mut cases = self.cases();
+        cases.push(case);
+        let saved = self.set_cases(cases).await?;
+        saved.last().cloned().ok_or_else(|| "case was not saved".to_string())
+    }
+
     pub fn runs(&self) -> Vec<Run> {
         self.data.lock().unwrap().runs.iter().rev().cloned().collect()
     }
@@ -253,6 +297,7 @@ async fn run_case(driver: &Arc<dyn AgentDriver>, run_id: &str, case: &Case, mode
             request_id: Some(format!("eval/{run_id}/{}", case.id)),
             mcps_override: None,
             instructions_override: None,
+            effort: None,
         })
         .await;
     let seconds = start.elapsed().as_secs_f64();
@@ -410,15 +455,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("evals-{}", uuid::Uuid::new_v4()));
         let store = EvalStore::open(dir.join("evals.json"));
         let cases = store
-            .set_cases(vec![Case { id: String::new(), name: String::new(), agent: String::new(), prompt: " hola ".into(), expect: Expect::default() }])
+            .set_cases(vec![Case { id: String::new(), name: String::new(), agent: String::new(), prompt: " hola ".into(), expect: Expect::default(), sample: None, reason: None, vote: None }])
             .await
             .unwrap();
         assert_eq!(cases[0].prompt, "hola");
         assert_eq!(cases[0].name, "hola");
         assert_eq!(cases[0].id.len(), 8);
-        assert!(store.set_cases(vec![Case { id: "x".into(), name: "n".into(), agent: String::new(), prompt: " ".into(), expect: Expect::default() }]).await.is_err());
+        assert!(store.set_cases(vec![Case { id: "x".into(), name: "n".into(), agent: String::new(), prompt: " ".into(), expect: Expect::default(), sample: None, reason: None, vote: None }]).await.is_err());
+        let voted = store.add_feedback("why is the build red", "I don't know", "down", Some(" missed the log "), "dev").await.unwrap();
+        assert_eq!(voted.vote.as_deref(), Some("down"));
+        assert_eq!(voted.prompt, "why is the build red");
+        assert_eq!(voted.reason.as_deref(), Some("missed the log"));
+        assert!(voted.expect.rubric.unwrap().contains("I don't know"));
+        assert_eq!(store.cases().len(), 2);
         let again = EvalStore::open(dir.join("evals.json"));
-        assert_eq!(again.cases().len(), 1);
+        assert_eq!(again.cases().len(), 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

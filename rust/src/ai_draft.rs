@@ -541,6 +541,7 @@ pub(crate) async fn run_draft(driver: &Arc<dyn AgentDriver>, thread_key: &str, i
             request_id: Some(format!("{thread_key}:{}", uuid::Uuid::new_v4())),
             mcps_override: Some(vec![]),
             instructions_override: Some(instructions),
+            effort: None,
         })
         .await?;
     Ok(out.reply)
