@@ -197,6 +197,7 @@ impl AgentDriver for PiDriver {
                 "text": input.text,
                 "cwd": input.workdir,
                 "model": input.model.clone().or_else(|| self.model.clone()).map(|m| pi_model(&m)),
+                "effort": self.settings.as_ref().map(|s| s.get().effort.clone()).unwrap_or_else(|| "high".into()),
                 "mcps": input.mcps_override.clone().or_else(|| self.groups(&input.thread_key)),
                 "instructions": input.instructions_override.clone().or_else(|| self.instructions(&input.thread_key)),
             }),

@@ -50,7 +50,7 @@ pub fn spawn(data_dir: &Path, admin_port: u16) {
         loop {
             let started = std::time::Instant::now();
             let mut cmd = Command::new(crate::driver::spawn::resolve_bin("node"));
-            cmd.args(["--experimental-strip-types", "--no-warnings", &script.to_string_lossy()])
+            cmd.args(["--experimental-transform-types", "--no-warnings", &script.to_string_lossy()])
                 .current_dir(&root)
                 .env("DATA_DIR", &data_dir)
                 .env("PI_PORT", port().to_string())

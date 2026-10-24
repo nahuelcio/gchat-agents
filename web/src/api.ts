@@ -16,6 +16,7 @@ export type ApprovalMode = "off" | "risky" | "writes";
 export interface Settings {
   agentDriver: "pi";
   models: { pi?: string };
+  effort?: string;
   repos: Record<string, RepoConfig>;
   allowedSpaces: string[];
   contextFooter: ContextFooter;
@@ -278,6 +279,7 @@ export interface PiPackage {
   group: string;
   tools: string[];
   skills: string[];
+  providers: { id: string; name: string; models: string[]; error?: string }[];
   ignored: string[];
   error?: string;
 }

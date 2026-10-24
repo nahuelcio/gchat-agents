@@ -12,14 +12,36 @@ export type PiToolDef = {
   execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) => Promise<{ content?: { type: string; text?: string; data?: string; mimeType?: string }[]; isError?: boolean; details?: unknown }>;
 };
 
-export type LoadedPackage = { name: string; spec: string; group: string; tools: PiToolDef[]; skills: string[]; ignored: string[]; error?: string };
+export type PiProviderDef = {
+  id: string;
+  name?: string;
+  getModels?: () => readonly { id: string }[];
+};
+
+export type LoadedPackage = { name: string; spec: string; group: string; tools: PiToolDef[]; skills: string[]; providers: PiProviderDef[]; ignored: string[]; error?: string };
 
 type Saved = { packages: { name: string; spec: string }[] };
+
+const NPM_NAME = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i;
+const GIT_SPEC = /^(?:github:|git\+https:\/\/github\.com\/|https:\/\/github\.com\/)[\w.-]+\/[\w.-]+(?:\.git)?(?:#[\w./-]+)?$/;
 
 export function packageName(spec: string) {
   const s = spec.trim().replace(/^npm:/, "");
   const at = s.lastIndexOf("@");
   return at > 0 ? s.slice(0, at) : s;
+}
+
+export function isGitSpec(spec: string) {
+  return GIT_SPEC.test(spec.trim().replace(/\/+$/, ""));
+}
+
+export function dependencyAdded(before: readonly string[], deps: Record<string, string>, spec: string, hosts: readonly string[]) {
+  const prior = new Set(before);
+  const host = new Set(hosts);
+  const added = Object.keys(deps).filter((n) => !prior.has(n) && !host.has(n));
+  if (added.length === 1) return added[0];
+  const tail = spec.split("#")[0].replace(/\.git$/, "").split("/").pop() ?? "";
+  return Object.entries(deps).find(([n, v]) => !host.has(n) && (v.includes(spec) || n === tail || n.endsWith(`/${tail}`)))?.[0];
 }
 
 export const groupFor = (name: string) => `pi-${name.replace(/^@/, "").replace(/^pi-/, "").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
@@ -59,13 +81,27 @@ export class PiPackages {
     });
   }
 
+  private dependencies(): Record<string, string> {
+    try {
+      const pkg = JSON.parse(readFileSync(join(this.dir, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
+      return pkg.dependencies ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   async install(spec: string) {
-    const name = packageName(spec);
-    if (!/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)) throw new Error(`not an npm package name: ${spec}`);
+    const raw = spec.trim().replace(/^npm:/, "").replace(/\/+$/, "");
+    const git = isGitSpec(raw);
+    const named = git ? undefined : packageName(raw);
+    if (!git && !NPM_NAME.test(named ?? "")) throw new Error(`not an npm package or GitHub repo: ${spec}`);
     if (!existsSync(join(this.dir, "package.json"))) writeFileSync(join(this.dir, "package.json"), JSON.stringify({ name: "switchboard-pi-packages", private: true }, null, 2));
-    await this.npm(["install", "--no-audit", "--no-fund", "--loglevel=error", spec.replace(/^npm:/, ""), ...HOST_PACKAGES.filter((h) => !existsSync(join(this.dir, "node_modules", h)))]);
+    const before = Object.keys(this.dependencies());
+    await this.npm(["install", "--no-audit", "--no-fund", "--loglevel=error", raw, ...HOST_PACKAGES.filter((h) => !existsSync(join(this.dir, "node_modules", h)))]);
+    const name = named ?? dependencyAdded(before, this.dependencies(), raw, HOST_PACKAGES);
+    if (!name) throw new Error(`could not tell which package ${raw} installed`);
     const s = this.saved();
-    s.packages = [...s.packages.filter((p) => p.name !== name), { name, spec }];
+    s.packages = [...s.packages.filter((p) => p.name !== name), { name, spec: raw }];
     this.save(s);
     return name;
   }
@@ -121,7 +157,7 @@ export class PiPackages {
 
   private async load(name: string, spec: string): Promise<LoadedPackage> {
     const group = groupFor(name);
-    const out: LoadedPackage = { name, spec, group, tools: [], skills: [], ignored: [] };
+    const out: LoadedPackage = { name, spec, group, tools: [], skills: [], providers: [], ignored: [] };
     const installed = join(this.dir, "node_modules", name);
     if (!existsSync(installed)) return { ...out, error: "not installed" };
     const src = join(this.dir, "src");
@@ -155,6 +191,9 @@ export class PiPackages {
     };
     const api: Record<string, unknown> = {
       registerTool: (def: PiToolDef) => out.tools.push(def),
+      registerProvider: (provider: PiProviderDef) => {
+        if (provider?.id) out.providers.push(provider);
+      },
       on: (event: string) => ignore(`on:${event}`)(),
       events: { on: () => () => {}, emit: () => {}, off: () => {} },
       getFlag: () => undefined,

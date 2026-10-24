@@ -117,6 +117,8 @@ pub enum ApprovalMode {
 pub struct Settings {
     pub agent_driver: AgentDriverKind,
     pub models: Models,
+    #[serde(default = "default_effort")]
+    pub effort: String,
     pub repos: HashMap<String, RepoConfig>,
     pub allowed_spaces: Vec<String>,
     pub context_footer: ContextFooter,
@@ -196,6 +198,7 @@ impl SettingsStore {
             models: Models {
                 pi: saved.models.as_ref().and_then(|m| m.pi.clone()).or(defaults.models.pi),
             },
+            effort: saved.effort.and_then(|v| normalize_effort(&v).ok()).unwrap_or_else(default_effort),
             repos: saved.repos.unwrap_or(defaults.repos),
             allowed_spaces: saved.allowed_spaces.unwrap_or(defaults.allowed_spaces),
             context_footer: saved
@@ -249,6 +252,9 @@ impl SettingsStore {
             current.agent_driver = AgentDriverKind::Pi;
             if let Some(v) = patch.models {
                 current.models = Models { pi: v.pi };
+            }
+            if let Some(v) = patch.effort {
+                current.effort = normalize_effort(&v)?;
             }
             if let Some(v) = patch.repos {
                 current.repos = v;
@@ -502,6 +508,7 @@ struct PartialSettings {
     #[allow(dead_code)]
     agent_driver: Option<AgentDriverKind>,
     models: Option<Models>,
+    effort: Option<String>,
     repos: Option<HashMap<String, RepoConfig>>,
     allowed_spaces: Option<Vec<String>>,
     context_footer: Option<ContextFooter>,
@@ -524,6 +531,7 @@ struct PartialSettings {
 pub struct SettingsPatch {
     pub agent_driver: Option<AgentDriverKind>,
     pub models: Option<Models>,
+    pub effort: Option<String>,
     pub repos: Option<HashMap<String, RepoConfig>>,
     pub allowed_spaces: Option<Vec<String>>,
     pub context_footer: Option<ContextFooter>,
@@ -872,4 +880,17 @@ mod tests {
 
 fn parallel_room_default() -> bool {
     true
+}
+
+fn default_effort() -> String {
+    "high".into()
+}
+
+fn normalize_effort(raw: &str) -> Result<String, String> {
+    let value = raw.trim().to_ascii_lowercase();
+    if matches!(value.as_str(), "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") {
+        Ok(value)
+    } else {
+        Err("effort must be off, minimal, low, medium, high, xhigh, or max".into())
+    }
 }

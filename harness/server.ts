@@ -10,9 +10,11 @@ import { acceptWebSockets, createHost } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { WebSocketServer } from "ws";
 import { envApiKeyAuth, Type, type Api, type Model, type ProviderStreams } from "@earendil-works/pi-ai";
-import { createModels, createProvider, type MutableModels } from "@earendil-works/pi-ai/models";
+import { createModels, createProvider, type MutableModels, type Provider } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
+import { ensureClaudeCommand } from "./claude-bin.ts";
+import { effortFor } from "./effort.ts";
 import { PiPackages, toolContext } from "./pi-packages.ts";
 import { insights, type VersionMark } from "./insights.ts";
 import { engramDigest } from "./engram.ts";
@@ -81,6 +83,8 @@ type CustomProviderConfig = {
 };
 
 const customProviderIds = new Set<string>();
+const packageProviderIds = new Set<string>();
+const providerNotes = new Map<string, string>();
 let modelsRef: MutableModels;
 
 function loadCustomProviders(): CustomProviderConfig[] {
@@ -113,12 +117,21 @@ function buildCustomProvider(cfg: CustomProviderConfig) {
         api: "openai-completions",
         provider: cfg.id,
         baseUrl: cfg.baseUrl,
-        reasoning: false,
+        reasoning: true,
+        thinkingLevelMap: {
+          off: null,
+          minimal: "minimal",
+          low: "low",
+          medium: "medium",
+          high: "high",
+          xhigh: "xhigh",
+          max: "max",
+        },
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
-        compat: { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openrouter" },
+        compat: { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openrouter", supportsReasoningEffort: true },
       }),
     );
   const envVar = customEnv(cfg.id, cfg.apiKeyEnv);
@@ -140,6 +153,33 @@ function lenientToolCalls(api: ProviderStreams): ProviderStreams {
     return { ...o, onProviderStreamEvent: (data: unknown, model: Model<Api>) => (fix(data), o?.onProviderStreamEvent?.(data, model)) } as O;
   };
   return { ...api, stream: (m, c, o) => api.stream(m, c, withFix(o)), streamSimple: (m, c, o) => api.streamSimple(m, c, withFix(o)) };
+}
+
+async function applyPackageProviders(m: MutableModels) {
+  const next = piPackages.loaded.flatMap((pkg) => pkg.providers);
+  const nextIds = new Set(next.map((p) => p.id));
+  for (const id of packageProviderIds) {
+    if (!nextIds.has(id)) m.deleteProvider(id);
+  }
+  packageProviderIds.clear();
+  for (const provider of next) {
+    try {
+      m.setProvider(provider as Provider);
+      packageProviderIds.add(provider.id);
+    } catch (err) {
+      console.error(`package provider ${provider.id} skipped:`, err instanceof Error ? err.message : err);
+    }
+  }
+  for (const id of [...providerNotes.keys()]) {
+    if (!packageProviderIds.has(id)) providerNotes.delete(id);
+  }
+  if (!packageProviderIds.size) return;
+  const result = await m.refresh({ providers: [...packageProviderIds] });
+  for (const id of packageProviderIds) providerNotes.delete(id);
+  for (const [id, err] of result.errors) {
+    providerNotes.set(id, err.message);
+    console.error(`package provider ${id} model refresh:`, err.message);
+  }
 }
 
 function applyCustomProviders(m: MutableModels) {
@@ -164,6 +204,7 @@ function models(): MutableModels {
   if (process.env.PI_FAUX !== "1") {
     modelsRef = builtinModels();
     applyCustomProviders(modelsRef);
+    void applyPackageProviders(modelsRef);
     return modelsRef;
   }
   const faux = fauxProvider({ provider: "faux", models: [{ id: "echo", contextWindow: 200_000 }] });
@@ -183,6 +224,7 @@ function models(): MutableModels {
   modelsRef = createModels();
   modelsRef.setProvider(faux.provider);
   applyCustomProviders(modelsRef);
+  void applyPackageProviders(modelsRef);
   return modelsRef;
 }
 
@@ -388,11 +430,29 @@ async function loadPiPackages() {
     }),
   );
   registry.install(defineExtension({ name: "pi-packages", tools: piTools.map((t) => t.tool) }));
+  if (modelsRef) await applyPackageProviders(modelsRef);
   return loaded;
 }
 
+function providerModelIds(provider: { id: string; getModels?: () => readonly { id: string }[] }) {
+  try {
+    return (provider.getModels?.() ?? []).map((model) => `${provider.id}/${model.id}`);
+  } catch {
+    return [];
+  }
+}
+
 function packageSummary() {
-  return piPackages.loaded.map((p) => ({ name: p.name, spec: p.spec, group: p.group, tools: p.tools.map((t) => t.name), skills: p.skills, ignored: p.ignored, error: p.error }));
+  return piPackages.loaded.map((p) => ({
+    name: p.name,
+    spec: p.spec,
+    group: p.group,
+    tools: p.tools.map((t) => t.name),
+    skills: p.skills,
+    providers: p.providers.map((provider) => ({ id: provider.id, name: provider.name || provider.id, models: providerModelIds(provider), error: providerNotes.get(provider.id) })),
+    ignored: p.ignored,
+    error: p.error,
+  }));
 }
 
 function toolsFor(groups?: string[] | null) {
@@ -407,6 +467,7 @@ const registry = createRegistry();
 registry.install(coding);
 registry.install(codemode);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
+ensureClaudeCommand();
 await loadPiPackages().catch((e) => console.error("pi packages unavailable:", e instanceof Error ? e.message : e));
 
 if (existsSync(join(dataDir, "harness.sqlite"))) {
@@ -557,6 +618,7 @@ type SubmitBody = {
   text: string;
   cwd?: string;
   model?: string;
+  effort?: string;
   mcps?: string[] | null;
   instructions?: string | null;
 };
@@ -602,7 +664,9 @@ async function admit(body: SubmitBody) {
   remember(String(conv.id), body.threadKey, body.requestId);
   if (body.cwd) cwdOf[String(conv.id)] = body.cwd;
   if (!known) {
-    await conv.configure({ model: modelRef(body.model) ?? null, cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
+    const ref = modelRef(body.model);
+    const model = ref ? modelsRef.getModel(ref.provider, ref.modelId) : undefined;
+    await conv.configure({ model: ref ?? null, thinkingLevel: effortFor(model, body.effort), cwd: body.cwd ?? null, tools: toolsFor(body.mcps), instructions: body.instructions || null }, ctx);
   }
   const submission = await conv.submit({ type: "input", content: body.text ? inputContent(body.text) : "(resumed)", requestId: body.requestId }, ctx);
   submissions.set(body.requestId, submission);
@@ -742,6 +806,15 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/insights") {
       const { days, labels, filter, versions } = JSON.parse(await read(req)) as { days?: number; labels?: Record<string, { thread?: string; agent?: string; repos?: string[] }>; filter?: { agent?: string; repo?: string; thread?: string }; versions?: VersionMark[] };
       return send(res, 200, insights(join(dataDir, "harness.sqlite"), threads, labels ?? {}, days || 7, filter ?? {}, versions ?? []));
+    }
+    if (req.method === "GET" && req.url?.startsWith("/models")) {
+      const refresh = new URL(req.url, "http://127.0.0.1").searchParams.get("refresh") === "1";
+      if (refresh && packageProviderIds.size) {
+        const result = await modelsRef.refresh({ providers: [...packageProviderIds], force: true });
+        for (const [id, err] of result.errors) console.error(`package provider ${id} model refresh:`, err.message);
+      }
+      const listed = [...packageProviderIds].flatMap((id) => modelsRef.getModels(id).map((model) => `${model.provider}/${model.id}`));
+      return send(res, 200, listed);
     }
     if (req.method === "GET" && req.url === "/packages") return send(res, 200, packageSummary());
     if (req.method === "POST" && req.url === "/packages/install") {

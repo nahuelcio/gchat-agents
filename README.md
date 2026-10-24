@@ -87,7 +87,7 @@ Any other stdio MCP server can be added by hand or by pasting a Claude or Cursor
 
 ### pi.dev packages
 
-Browse, search and install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**, most popular first. Their tools become a `pi-<name>` group you can give to agents, and bundled skills are added to your skills. Only tools are adapted; TUI, commands and event hooks are ignored and listed as such.
+Browse, search and install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**, most popular first, or paste a GitHub repo such as `https://github.com/earendil-works/pi-claude-code`. Their tools become a `pi-<name>` group you can give to agents, bundled skills are added to your skills, and a registered model provider appears in the model picker as `provider/model`. TUI, commands and event hooks are ignored and listed as such. A Claude Code subscription provider uses the `claude` CLI login on this machine; it does not take an API key.
 
 ## Connect Google Chat
 

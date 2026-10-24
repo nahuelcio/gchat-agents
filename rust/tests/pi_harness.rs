@@ -25,7 +25,7 @@ async fn pi_driver_talks_to_the_durable_harness() {
     let dir = tempdir().unwrap();
     let port = 18990;
     let mut child = tokio::process::Command::new(switchboard::driver::spawn::resolve_bin("node"))
-        .args(["--experimental-strip-types", "--no-warnings", "harness/server.ts"])
+        .args(["--experimental-transform-types", "--no-warnings", "harness/server.ts"])
         .current_dir("..")
         .env("DATA_DIR", dir.path())
         .env("PI_PORT", port.to_string())
@@ -63,7 +63,7 @@ async fn a_restart_resumes_pi_turns_without_empty_or_duplicate_replies() {
     let port = 18991;
     std::env::set_var("PI_PORT", port.to_string());
     let mut child = tokio::process::Command::new(switchboard::driver::spawn::resolve_bin("node"))
-        .args(["--experimental-strip-types", "--no-warnings", "harness/server.ts"])
+        .args(["--experimental-transform-types", "--no-warnings", "harness/server.ts"])
         .current_dir("..")
         .env("DATA_DIR", dir.path().join("pi"))
         .env("PI_PORT", port.to_string())
@@ -135,7 +135,7 @@ async fn a_steer_joins_the_running_turn_and_compact_and_reset_keep_the_conversat
     let dir = tempdir().unwrap();
     let port = 18992;
     let mut child = tokio::process::Command::new(switchboard::driver::spawn::resolve_bin("node"))
-        .args(["--experimental-strip-types", "--no-warnings", "harness/server.ts"])
+        .args(["--experimental-transform-types", "--no-warnings", "harness/server.ts"])
         .current_dir("..")
         .env("DATA_DIR", dir.path())
         .env("PI_PORT", port.to_string())
@@ -186,7 +186,7 @@ async fn a_steer_joins_the_running_turn_and_compact_and_reset_keep_the_conversat
     child.kill().await.ok();
     drop(child);
     let restarted = tokio::process::Command::new(switchboard::driver::spawn::resolve_bin("node"))
-        .args(["--experimental-strip-types", "--no-warnings", "harness/server.ts"])
+        .args(["--experimental-transform-types", "--no-warnings", "harness/server.ts"])
         .current_dir("..")
         .env("DATA_DIR", dir.path())
         .env("PI_PORT", port.to_string())

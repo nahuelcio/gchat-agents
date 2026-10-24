@@ -190,9 +190,20 @@ async fn get_agents(State(_state): State<Arc<AppState>>) -> Response {
     Json(detect_agents().await).into_response()
 }
 
-async fn get_pi_models(State(state): State<Arc<AppState>>) -> Response {
+#[derive(Deserialize)]
+struct RefreshQuery {
+    refresh: Option<String>,
+}
+
+async fn get_pi_models(State(state): State<Arc<AppState>>, Query(q): Query<RefreshQuery>) -> Response {
     let mut models = pi_models().await;
     models.extend(crate::agents::custom_pi_models(&state.data_dir));
+    let path = if q.refresh.as_deref() == Some("1") { "/models?refresh=1" } else { "/models" };
+    if let Ok(v) = crate::pi_sidecar::call(reqwest::Method::GET, path, None).await {
+        if let Some(list) = v.as_array() {
+            models.extend(list.iter().filter_map(|item| item.as_str().map(str::to_string)));
+        }
+    }
     models.sort();
     models.dedup();
     Json(models).into_response()

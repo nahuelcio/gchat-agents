@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::atomic::write_atomic;
 
 /// Built-in Pi providers that resolve via a single API-key env var.
-/// Kept in sync with `@earendil-works/pi-ai` `getApiKeyEnvVars` (pi-ai 1.3.0).
+/// Kept in sync with `@earendil-works/pi-ai` `getApiKeyEnvVars` (pi-ai 1.4.0).
 /// OpenAI-compatible custom endpoints (Ollama, vLLM, …) are not listed here —
 /// they need `createProvider` with a base URL in the harness, not just a key.
 pub const PROVIDERS: &[(&str, &str, &str)] = &[

@@ -153,6 +153,7 @@ export function SettingsView(props: ViewProps) {
 function AgentCard({ settings, save, notify }: ViewProps) {
   const [pi, setPi] = useState<Agent>();
   const [model, setModel] = useState(settings.models.pi ?? "");
+  const [effort, setEffort] = useState(settings.effort ?? "high");
 
   useEffect(() => {
     api.agents().then(
@@ -162,7 +163,8 @@ function AgentCard({ settings, save, notify }: ViewProps) {
   }, []);
   useEffect(() => {
     setModel(settings.models.pi ?? "");
-  }, [settings.models.pi]);
+    setEffort(settings.effort ?? "high");
+  }, [settings.models.pi, settings.effort]);
 
   return (
     <details className="card" open>
@@ -202,7 +204,26 @@ function AgentCard({ settings, save, notify }: ViewProps) {
               void save({ models: { pi: m } }, `Default model: ${m}`);
             }}
           />
-          <span className="muted small">Threads can override it with /model.</span>
+          <span className="muted small">Threads can override the model with /model.</span>
+          <span>Effort</span>
+          <select
+            value={effort}
+            aria-label="Effort"
+            onChange={(e) => {
+              const next = e.target.value;
+              setEffort(next);
+              void save({ effort: next }, `Effort: ${next}`);
+            }}
+          >
+            <option value="off">Off</option>
+            <option value="minimal">Minimal</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+            <option value="max">Max</option>
+          </select>
+          <span className="muted small">Applies on the next turn for every model and provider. A model that lists levels uses the closest one.</span>
         </div>
         <button className="btn primary">Save</button>
       </form>
@@ -361,6 +382,13 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
 
 const PI_TOPICS = ["web search", "browser", "mcp", "subagents", "git", "memory", "review", "docs", "test", "plan", "image"];
 
+const PI_RECOMMENDED = {
+  name: "@earendil-works/pi-claude-code",
+  spec: "https://github.com/earendil-works/pi-claude-code",
+  description: "Claude Pro or Max subscription as a model provider. Sign in with claude auth login; no API key.",
+  repository: "https://github.com/earendil-works/pi-claude-code",
+};
+
 function downloads(n?: number) {
   if (!n) return "";
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M/mo` : n >= 1000 ? `${Math.round(n / 1000)}k/mo` : `${n}/mo`;
@@ -429,8 +457,28 @@ function PiMarketplace({ installed, busy, onInstall }: { installed: Set<string>;
         ))}
       </div>
       {error && <p className="small mcp-error">{error}</p>}
-      {items && <p className="muted small">{query ? `Results for “${query}”, ` : "From pi.dev, "}most popular first. Only tools work here; packages that are just TUI themes or commands load with nothing to use.</p>}
+      {items && <p className="muted small">{query ? `Results for “${query}”, ` : "From pi.dev, "}most popular first. Tools and model providers work here; packages that are just TUI themes or commands load with nothing to use.</p>}
       <div className="pi-grid">
+        {(!query || /claude/i.test(query)) && (
+          <article className="pi-item" aria-label="Recommended package">
+            <div className="pi-item-head">
+              <a className="strong" href={PI_RECOMMENDED.repository} target="_blank" rel="noreferrer">
+                {PI_RECOMMENDED.name}
+              </a>
+              <span className="pill accent">Recommended</span>
+            </div>
+            <p className="small pi-desc">{PI_RECOMMENDED.description}</p>
+            <div className="pi-item-foot">
+              <span className="muted small">GitHub · model provider</span>
+              <a className="small" href={PI_RECOMMENDED.repository} target="_blank" rel="noreferrer">
+                source
+              </a>
+              <button type="button" className={`btn small ${installed.has(PI_RECOMMENDED.name) ? "" : "primary"}`} disabled={installed.has(PI_RECOMMENDED.name) || busy !== null} onClick={() => onInstall(PI_RECOMMENDED.spec)}>
+                {installed.has(PI_RECOMMENDED.name) ? "Installed" : busy === PI_RECOMMENDED.spec ? "Installing…" : "Install"}
+              </button>
+            </div>
+          </article>
+        )}
         {items && [...items].sort((a, b) => Number(installed.has(b.name)) - Number(installed.has(a.name))).map((p) => {
           const have = installed.has(p.name);
           return (
@@ -493,7 +541,7 @@ function PiPackagesCard({ notify }: ViewProps) {
       <summary className="card-title">
         <h2>pi.dev packages</h2>
         <p className="muted small">
-          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a>. Their tools become a tool group (pi-…) you can give to agents, and bundled skills land in your skills. Only tools are supported: UI, commands and event hooks are ignored.
+          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a> or a GitHub repo. Their tools become a tool group (pi-…) you can give to agents, bundled skills land in your skills, and a model provider shows up in the model picker. UI, commands and event hooks are ignored.
         </p>
       </summary>
       <form
@@ -503,7 +551,7 @@ function PiPackagesCard({ notify }: ViewProps) {
           if (spec.trim()) run("install", api.installPiPackage(spec.trim()), `${spec.trim()} installed`);
         }}
       >
-        <input className="mono grow" value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="npm package, e.g. pi-web-search" aria-label="Package" />
+        <input className="mono grow" value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="npm package or https://github.com/owner/repo" aria-label="Package" />
         <button className="btn primary" disabled={!spec.trim() || busy !== null}>
           {busy === "install" ? "Installing…" : "Install"}
         </button>
@@ -513,8 +561,18 @@ function PiPackagesCard({ notify }: ViewProps) {
         <div key={p.name} className="persona-row">
           <div className="grow">
             <span className="strong">{p.name}</span> <code className="muted small">{p.group}</code>{" "}
-            {p.error ? <span className="pill bad">failing</span> : <span className="pill ok">{p.tools.length} tools</span>}
+            {p.name === PI_RECOMMENDED.name && <span className="pill accent">Recommended</span>}{" "}
+            {p.error ? (
+              <span className="pill bad">failing</span>
+            ) : (
+              <>
+                {(p.tools.length > 0 || p.providers.length === 0) && <span className="pill ok">{p.tools.length} tools</span>}
+                {p.providers.length > 0 && <span className="pill ok">{p.providers.length === 1 ? "1 provider" : `${p.providers.length} providers`}</span>}
+              </>
+            )}
             {p.tools.length > 0 && <div className="muted small">tools: {p.tools.join(", ")}</div>}
+            {p.providers.length > 0 && <div className="muted small">models: {p.providers.flatMap((provider) => provider.models).join(", ")}</div>}
+            {p.providers.some((provider) => provider.error) && <div className="small mcp-error">{p.providers.flatMap((provider) => (provider.error ? [provider.error] : [])).join(" ")}</div>}
             {p.skills.length > 0 && <div className="muted small">skills: {p.skills.join(", ")}</div>}
             {p.ignored.length > 0 && <div className="muted small">ignored: {p.ignored.join(", ")}</div>}
             {p.error && <div className="small mcp-error">{p.error}</div>}

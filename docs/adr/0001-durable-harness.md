@@ -1,6 +1,6 @@
 # ADR 0001 — Durable agent runtime: Pi Durable in a sidecar
 
-Status: accepted · 2026-10-17 · updated 2026-10-17 (Pi-only)
+Status: accepted · 2026-10-17 · updated 2026-10-23 (Pi 1.4.0)
 
 ## Context
 
@@ -13,7 +13,7 @@ Switchboard bridges Google Chat and the team chat to coding agents. Previously e
 ## Decision
 
 1. **Use Pi Durable, do not reimplement it.** It runs in `harness/server.ts`, a small Node sidecar that embeds the library and owns `DATA_DIR/harness.sqlite`.
-2. **Rust stays the bridge.** It starts the sidecar (`node --experimental-strip-types harness/server.ts`), restarts it if it exits, and talks to it over loopback HTTP (`PI_PORT`, default 8090): `POST /turn`, `POST /abort`, `GET /health`.
+2. **Rust stays the bridge.** It starts the sidecar (`node --experimental-transform-types harness/server.ts`), restarts it if it exits, and talks to it over loopback HTTP (`PI_PORT`, default 8090): `POST /turn`, `POST /abort`, `GET /health`.
 3. **`pi` is the only production driver.** `session_ref` holds the Pi conversation id. Echo remains for local smoke/tests.
 4. **Exactly-once turns end to end.** The Rust turn ledger's request id is the Pi `requestId`; the sidecar maps each `requestId` to its conversation before submitting. On restart, unfinished turns on Pi are resubmitted with the same id and their answer is posted. The Pi driver retries a lost connection with the same id while the sidecar restarts.
 5. **Tools.** Pi's `CodingTools` (`read`, `write`, `edit`, `bash`) plus Switchboard tools (`create_xlsx`, `list_spreadsheets`) that call the Rust admin. `create_xlsx` is `replay: "safe"` because Drive files are tagged with the task id. The tool list follows the agent's MCPs: `coding` → coding tools, `google-drive` → Drive tools; an agent without MCPs gets both.
@@ -25,7 +25,7 @@ Switchboard bridges Google Chat and the team chat to coding agents. Previously e
 - Node 22.19+ is required for the production runtime.
 - One sidecar process owns the SQLite file; Pi has no cross-process locking.
 - On Windows a killed sidecar can leave a running `bash` child behind; Pi still never reruns it.
-- Pi's API is marked experimental, so the dependency is pinned (`1.3.0`).
+- Pi's API is marked experimental, so the dependency is pinned to the latest published release (`1.4.0` for `pi-durable`, `pi-ai`, `pi-codemode`, and `chord`). Settings reads that version from the installed package.
 
 ## Not doing
 
