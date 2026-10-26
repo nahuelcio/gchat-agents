@@ -324,21 +324,57 @@ const CODE_HINT: &str = "Put code, commands, file excerpts and logs in a fenced 
 
 const QUOTE_HINT: &str = "Messages that reply to an earlier one arrive as \"Replying to <name>:\" followed by the quoted lines. To reply to a specific message yourself, start your reply with the part you answer quoted on lines beginning with \"> \", then write your answer.";
 
+fn when_text(p: &Persona) -> Option<String> {
+    let raw = p
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let tip = p.prompt.trim();
+            if tip.is_empty() { None } else { Some(tip) }
+        })?;
+    Some(raw.chars().take(200).collect())
+}
+
+fn call_line(p: &Persona) -> String {
+    let mut line = match when_text(p) {
+        Some(d) => format!("@{} — {d}", p.name),
+        None => format!("@{}", p.name),
+    };
+    if p.respond_to.as_deref() == Some("people") {
+        line.push_str(" (answers only people)");
+    }
+    line
+}
+
+fn callable<'a>(caller: &Persona, room: &'a [Persona]) -> Vec<&'a Persona> {
+    room.iter()
+        .filter(|o| !o.name.eq_ignore_ascii_case(&caller.name))
+        .filter(|o| caller.delegates.is_empty() || caller.delegates.iter().any(|d| d.eq_ignore_ascii_case(&o.name)))
+        .collect()
+}
+
+/// Who this agent may call in the current room, and when, from each peer's description.
+pub fn invoke_guide(caller: &Persona, room: &[Persona]) -> String {
+    let peers = callable(caller, room);
+    if peers.is_empty() {
+        return String::new();
+    }
+    let lines = peers.iter().map(|p| call_line(p)).collect::<Vec<_>>().join("\n");
+    format!(
+        "Agents you can call in this room. Write @name only when that line matches what you need now. To mention someone without calling them, write the name without @.\n{lines}"
+    )
+}
+
 fn roster_preamble(p: &Persona, all: &[Persona]) -> String {
-    let others: Vec<_> = all
-        .iter()
-        .filter(|o| o.name != p.name)
-        .map(|o| format!("@{}", o.name))
-        .collect();
     let mut parts = vec![
         format!("You are @{}, one of several agents in a shared team chat.", p.name),
         p.prompt.trim().to_string(),
     ];
-    if !others.is_empty() {
-        parts.push(format!(
-            "Other agents here: {}. Writing @name in your reply makes that agent answer right away, so only write @name when you are asking them something now; to just refer to them, write their name without the @.",
-            others.join(", ")
-        ));
+    let guide = invoke_guide(p, all);
+    if !guide.is_empty() {
+        parts.push(guide);
     }
     parts.push(format!(
         "People address you with @{}. Messages from other agents start with their @name.",
@@ -464,23 +500,11 @@ If a person asks to add an agent back to the room, use the invite_agent tool. Re
 }
 
 pub fn host_preamble(personas: &[Persona], host_prompt: Option<&str>) -> String {
-    let roster = personas
-        .iter()
-        .map(|p| {
-            let tip = p.prompt.trim();
-            if tip.is_empty() {
-                format!("@{}", p.name)
-            } else {
-                let short: String = tip.chars().take(120).collect();
-                format!("@{} ({short})", p.name)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
+    let roster = personas.iter().map(call_line).collect::<Vec<_>>().join("\n");
     let agents = if roster.is_empty() {
         "No other agents are in this room yet.".to_string()
     } else {
-        format!("Agents in this room: {roster}.")
+        format!("Agents in this room, and when to call them:\n{roster}")
     };
     let body = host_prompt
         .map(str::trim)
@@ -490,16 +514,19 @@ pub fn host_preamble(personas: &[Persona], host_prompt: Option<&str>) -> String 
     format!("{body}\n\n{agents}\n\n{QUOTE_HINT}\n\n{CODE_HINT}")
 }
 
-pub fn roster_update(before: Option<&[String]>, now: &[String]) -> String {
+pub fn roster_update(before: Option<&[String]>, now: &[Persona]) -> String {
     let Some(before) = before else {
         return String::new();
     };
     let was: std::collections::HashSet<_> = before.iter().map(|n| n.to_lowercase()).collect();
-    let is: std::collections::HashSet<_> = now.iter().map(|n| n.to_lowercase()).collect();
+    let is: std::collections::HashSet<_> = now.iter().map(|p| p.name.to_lowercase()).collect();
     let mut changes = Vec::new();
-    for n in now {
-        if !was.contains(&n.to_lowercase()) {
-            changes.push(format!("@{n} joined"));
+    for p in now {
+        if !was.contains(&p.name.to_lowercase()) {
+            changes.push(match when_text(p) {
+                Some(d) => format!("@{} joined — {d}", p.name),
+                None => format!("@{} joined", p.name),
+            });
         }
     }
     for n in before {
@@ -631,6 +658,7 @@ mod tests {
             skills: vec![],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         }
     }
@@ -657,5 +685,37 @@ mod tests {
         assert!(is_pass("**PASS**"));
         assert!(is_pass(""));
         assert!(!is_pass("PASS and more"));
+    }
+
+    #[test]
+    fn invoke_guide_uses_room_descriptions_and_delegates() {
+        let mut critic = p("ScenarioCritic");
+        critic.description = Some("a scenario would pass while the feature is broken".into());
+        let mut coverage = p("ScenarioCoverage");
+        coverage.description = Some("a step cannot fail".into());
+        let mut me = p("StepAuditor");
+        me.delegates = vec!["ScenarioCritic".into()];
+        let guide = super::invoke_guide(&me, &[me.clone(), critic, coverage]);
+        assert!(guide.contains("@ScenarioCritic — a scenario would pass while the feature is broken"));
+        assert!(!guide.contains("ScenarioCoverage"));
+        assert!(guide.contains("Write @name only when that line matches"));
+    }
+
+    #[test]
+    fn host_preamble_says_when_to_call_each_agent() {
+        let mut critic = p("ScenarioCritic");
+        critic.description = Some("false green scenarios".into());
+        let text = super::host_preamble(std::slice::from_ref(&critic), None);
+        assert!(text.contains("Agents in this room, and when to call them:"));
+        assert!(text.contains("@ScenarioCritic — false green scenarios"));
+    }
+
+    #[test]
+    fn a_joining_agent_brings_its_when_to_call_line() {
+        let mut qa = p("qa");
+        qa.description = Some("false greens".into());
+        let note = super::roster_update(Some(&["dev".into()]), &[qa, p("dev")]);
+        assert!(note.contains("@qa joined — false greens"));
+        assert!(!note.contains("@dev joined"));
     }
 }

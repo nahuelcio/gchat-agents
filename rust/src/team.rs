@@ -761,6 +761,7 @@ mod presence_tests {
                 skills: vec![],
                 mcps: vec![],
                 delegates: vec![],
+                description: None,
                 avatar: None,
             }],
             host_prompt: None,

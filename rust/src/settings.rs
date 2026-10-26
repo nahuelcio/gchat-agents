@@ -29,6 +29,9 @@ pub struct PersonaAvatar {
 pub struct Persona {
     pub name: String,
     pub prompt: String,
+    /// One line other agents use to decide when to call this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default, skip_serializing)]
     pub driver: Option<AgentDriverKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +59,8 @@ pub struct PersonaTemplate {
     pub id: String,
     pub name: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +85,7 @@ impl PersonaTemplate {
             id,
             name: p.name.clone(),
             prompt: p.prompt.clone(),
+            description: p.description.clone(),
             model: p.model.clone(),
             effort: p.effort.clone(),
             listen: p.listen.clone(),
@@ -95,6 +101,7 @@ impl PersonaTemplate {
         Persona {
             name: self.name.clone(),
             prompt: self.prompt.clone(),
+            description: self.description.clone(),
             driver: None,
             model: self.model.clone(),
             effort: self.effort.clone(),
@@ -838,6 +845,7 @@ mod tests {
             skills: vec!["finanzas".into()],
             mcps: vec!["google-drive".into()],
             delegates: vec!["qa".into()],
+            description: None,
             avatar: None,
         }
     }

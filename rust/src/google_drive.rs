@@ -285,7 +285,7 @@ pub(crate) mod tests {
 
     #[test]
     fn only_personas_with_the_drive_mcp_may_use_it() {
-        let finanzas = crate::settings::Persona { name: "finanzas".into(), prompt: String::new(), driver: None, model: None, effort: None, agent: None, listen: None, respond_to: None, skills: vec![], mcps: vec!["google-drive".into()], delegates: vec![], avatar: None };
+        let finanzas = crate::settings::Persona { name: "finanzas".into(), prompt: String::new(), description: None, driver: None, model: None, effort: None, agent: None, listen: None, respond_to: None, skills: vec![], mcps: vec!["google-drive".into()], delegates: vec![], avatar: None };
         let dev = crate::settings::Persona { name: "dev".into(), mcps: vec![], ..finanzas.clone() };
         let mut settings: crate::settings::Settings = serde_json::from_value(serde_json::json!({
             "agentDriver": "opencode", "models": {}, "agents": {}, "repos": {}, "allowedSpaces": [], "contextFooter": "never", "autoCompactAt": 0, "personas": []

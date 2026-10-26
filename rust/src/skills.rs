@@ -370,6 +370,7 @@ mod tests {
             skills: vec!["finanzas".into()],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         };
         let preamble = crate::personas::persona_preamble(&p, std::slice::from_ref(&p));
@@ -396,6 +397,7 @@ mod tests {
             skills: vec!["ghost".into()],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         };
         assert!(instructions(&p).is_empty());
@@ -417,6 +419,7 @@ mod tests {
             skills: vec!["ghost".into()],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         };
         assert!(mcps(&ghost).is_empty());
@@ -475,6 +478,7 @@ mod tests {
             skills: vec!["pdf".into()],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         };
         assert!(mcps(&p).contains(&"coding".into()));

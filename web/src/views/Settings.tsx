@@ -1136,7 +1136,7 @@ function RoomRepliesCard({ settings, save }: ViewProps) {
     <details className="card" open aria-label="Room replies">
       <summary className="card-title">
         <h2>Room replies</h2>
-        <p className="muted small">When a message isn't addressed to anyone, the other agents in the room may chime in.</p>
+        <p className="muted small">When a message isn't addressed to anyone, agents set to hear every message may chime in.</p>
       </summary>
       <div className="field">
         <span>Other agents answer</span>

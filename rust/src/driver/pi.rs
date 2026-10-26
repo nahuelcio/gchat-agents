@@ -58,6 +58,7 @@ pub(crate) fn host_persona(settings: &crate::settings::Settings) -> crate::setti
         skills,
         mcps: settings.host_mcps.clone().unwrap_or_default(),
         delegates: vec![],
+        description: None,
         avatar: None,
     }
 }

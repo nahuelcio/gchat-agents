@@ -63,6 +63,8 @@ export interface PersonaAvatar {
 export interface Persona {
   name: string;
   prompt: string;
+  /** When other agents should write @name. */
+  description?: string;
   model?: string;
   effort?: string;
   listen?: "mentions" | "all";

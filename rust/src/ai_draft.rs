@@ -13,6 +13,8 @@ pub struct AgentDraft {
     pub name: String,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
@@ -161,6 +163,12 @@ pub fn parse_agent_draft(reply: &str, ctx: &DraftContext) -> Result<AgentDraft, 
     if draft.prompt.is_empty() {
         return Err("draft needs a prompt".into());
     }
+    draft.description = draft
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     draft.mcps = ensure_default_mcps(filter_known(&draft.mcps, &ctx.available_mcps), &ctx.available_mcps);
     draft.skills = filter_known(&draft.skills, &ctx.available_skills);
     draft.delegates = draft
@@ -226,6 +234,7 @@ Rules:
 - Reply with ONLY one JSON object (no markdown, no commentary).
 - name: short handle, lowercase letters/digits/-/_ , max 32, no @.
 - prompt: concise role + know-how in the brief's language (default English; 2–8 sentences). Prefer putting reusable procedures in skills when a matching skill exists.
+- description: one short line saying when another agent should call this one. Omit if unknown.
 - listen: omit or "all" (listens to every message). Default omit = only @mentions.
 - respondTo: omit or "people" (ignore other agents). Default omit = anyone.
 - skills: subset of [{skills}] — only when clearly useful.
@@ -234,7 +243,7 @@ Rules:
 - model: omit unless the brief names one.
 
 JSON shape:
-{{"name":"ventas","prompt":"...","listen":"all","respondTo":"people","skills":[],"mcps":["google-drive","engram"],"delegates":[]}}"#
+{{"name":"ventas","prompt":"...","description":"call when a quote or price looks wrong","listen":"all","respondTo":"people","skills":[],"mcps":["google-drive","engram"],"delegates":[]}}"#
     )
 }
 
@@ -355,6 +364,7 @@ Rules:
 - Draft fields:
   - name: short handle, lowercase letters/digits/-/_ , max 32, no @. On edit, keep the existing name unless the user renames.
   - prompt: concise role + know-how (2–8 sentences). Prefer reusable procedures in skills when a matching skill exists.
+  - description: one short line saying when another agent should call this one. Omit if unknown.
   - listen: omit or "all". Default omit = only @mentions.
   - respondTo: omit or "people". Default omit = anyone.
   - skills: subset of [{skills}] — only when clearly useful.

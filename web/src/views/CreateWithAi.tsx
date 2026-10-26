@@ -98,11 +98,17 @@ const INTRO = {
 } as const;
 
 function cleanPersona(raw: Persona): Persona {
-  const draft: Persona = { ...raw, name: raw.name.trim().replace(/^@/, ""), prompt: raw.prompt.trim() };
+  const draft: Persona = {
+    ...raw,
+    name: raw.name.trim().replace(/^@/, ""),
+    prompt: raw.prompt.trim(),
+    description: raw.description?.trim() || undefined,
+  };
   if (!draft.skills?.length) delete draft.skills;
   if (!draft.mcps?.length) delete draft.mcps;
   if (!draft.delegates?.length || !draft.mcps?.includes("agents")) delete draft.delegates;
   if (!draft.model?.trim()) delete draft.model;
+  if (!draft.description) delete draft.description;
   if (draft.listen !== "all") delete draft.listen;
   if (draft.respondTo !== "people") delete draft.respondTo;
   if (!draft.avatar?.color) delete draft.avatar;
@@ -1084,6 +1090,18 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                     </select>
                   </label>
                 </div>
+                <span className="muted small">
+                  Only @mentions speaks when someone writes @name. Every message reads the room and can chime in, or pass. Only people ignores other agents; Anyone answers them too.
+                </span>
+                <label className="field">
+                  <span>When to call</span>
+                  <input
+                    value={agentDraft.description ?? ""}
+                    onChange={(e) => setAgentDraft({ ...agentDraft, description: e.target.value })}
+                    placeholder="Call when a scenario would pass while the feature is broken"
+                  />
+                  <span className="muted small">One line. The room builds a call list from this, so other agents know when to write @you.</span>
+                </label>
                 <label className="field">
                   <span>Role</span>
                   <CodeEditor

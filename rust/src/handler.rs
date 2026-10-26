@@ -750,10 +750,11 @@ fn optional_jump(req: &TurnRequest, deps: &HandlerDeps, after_turn: bool) -> Vec
             spoken.extend(room.into_iter().filter(|e| e.n > since).filter_map(|e| e.author.strip_prefix('@').map(|n| n.to_lowercase())));
         }
     }
-    let members_present = record.as_ref().and_then(|r| r.members.as_ref()).is_some();
+    // Room membership does not override Listens. Only "Every message" chimes in
+    // on a line that did not name them; "Only @mentions" stays quiet until @name.
     room_now
         .iter()
-        .filter(|p| !spoken.contains(&p.name.to_lowercase()) && (members_present || p.listen.as_deref() == Some("all")))
+        .filter(|p| !spoken.contains(&p.name.to_lowercase()) && p.listen.as_deref() == Some("all"))
         .cloned()
         .collect()
 }
@@ -918,7 +919,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 if record.as_ref().and_then(|r| r.session_ref.as_ref()).is_none() {
                     text = format!("{}\n\n---\n\n{text}", host_preamble(&personas, options.host_prompt.as_deref()));
                 } else if let Some(before) = record.as_ref().and_then(|r| r.host_roster.as_deref()) {
-                    text.push_str(&roster_update(Some(before), &names));
+                    text.push_str(&roster_update(Some(before), &personas));
                 } else {
                     text.push_str(&format!("\n\n{}", host_preamble(&personas, options.host_prompt.as_deref())));
                 }
@@ -1218,7 +1219,7 @@ async fn persona_round(
                     .and_then(|r| r.persona_roster.as_ref())
                     .and_then(|m| m.get(&item.persona.name))
                     .map(|v| v.as_slice()),
-                &names,
+                all,
             )
         } else {
             String::new()
@@ -2195,6 +2196,7 @@ mod tests {
             skills: vec![],
             mcps: vec![],
             delegates: vec![],
+            description: None,
             avatar: None,
         }
     }
@@ -2619,7 +2621,7 @@ mod tests {
         let d = room_deps(
             dir.path(),
             driver.clone(),
-            vec![persona("qa", None), persona("dev", None)],
+            vec![persona("qa", Some("all")), persona("dev", Some("all"))],
             Some(vec!["qa", "dev"]),
         )
         .await;
@@ -2661,7 +2663,7 @@ mod tests {
         let d = room_deps(
             dir.path(),
             driver.clone(),
-            vec![persona("architect", None), persona("qa", None)],
+            vec![persona("architect", None), persona("qa", Some("all"))],
             Some(vec!["architect", "qa"]),
         )
         .await;
@@ -2696,6 +2698,47 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(qa_call.text.contains("[Room message"));
+    }
+
+    #[tokio::test]
+    async fn mentions_only_agent_stays_quiet_until_named() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "qa" => "qa note".into(),
+            "dev" => "dev note".into(),
+            _ => "host".into(),
+        }));
+        let d = room_deps(
+            dir.path(),
+            driver.clone(),
+            vec![persona("qa", None), persona("dev", Some("all"))],
+            Some(vec!["qa", "dev"]),
+        )
+        .await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let req = |text: &str| TurnRequest {
+            thread_key: "team/t1".into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: Some("Ana".into()),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: Some(captured.clone()),
+            reply_sink: None,
+            request_id: None,
+        };
+        process_message(req("open question"), d.clone()).await.unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.thread_key.ends_with("#dev") && c.text.contains("[Room message")));
+        assert!(!calls.iter().any(|c| c.thread_key.ends_with("#qa")), "{calls:?}");
+        let replies = captured.lock().await.clone();
+        assert!(replies.iter().any(|r| r.contains("*@dev*")));
+        assert!(!replies.iter().any(|r| r.contains("*@qa*")));
+
+        process_message(req("@qa look at this"), d).await.unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.thread_key.ends_with("#qa") && c.text.contains("@qa look at this")));
     }
 
     #[tokio::test]
@@ -2742,7 +2785,7 @@ mod tests {
         let d = room_deps(
             dir.path(),
             driver,
-            vec![persona("a1", None), persona("b1", None), persona("c1", None)],
+            vec![persona("a1", Some("all")), persona("b1", Some("all")), persona("c1", Some("all"))],
             Some(vec!["a1", "b1", "c1"]),
         )
         .await;
