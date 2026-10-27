@@ -97,7 +97,9 @@ pub fn load_config() -> Result<Config, String> {
         agent_driver: AgentDriverKind::parse(env_str("AGENT_DRIVER").as_deref().unwrap_or("pi"))?,
         workdir: env_str("AGENT_WORKDIR").map(PathBuf::from).unwrap_or(default_workdir),
         turn_timeout_ms,
-        data_dir: env_str("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("./data")),
+        // Absolute so worktree paths never get re-joined onto a thread's cwd.
+        data_dir: std::path::absolute(env_str("DATA_DIR").unwrap_or_else(|| "./data".into()))
+            .map_err(|e| e.to_string())?,
         admin_port: env_str("ADMIN_PORT").and_then(|s| s.parse().ok()).unwrap_or(8081),
         repos: load_repos(env_str("AGENT_REPOS_FILE").as_deref())?,
         skip_token_verify: env_str("SWITCHBOARD_SKIP_VERIFY").as_deref() == Some("1"),
