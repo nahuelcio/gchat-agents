@@ -375,6 +375,11 @@ pub fn debouncing(thread_key: &str) -> bool {
     debounce_pending(thread_key).is_some()
 }
 
+/// Busy beyond the host queue: a pending debounce or an agent answering on its own lane.
+pub fn lanes_busy(thread_key: &str) -> bool {
+    debouncing(thread_key) || !speaking(thread_key).is_empty()
+}
+
 pub fn debounce_pending(thread_key: &str) -> Option<(usize, u64)> {
     let guard = BATCHES.lock().unwrap();
     let batch = guard.as_ref()?.get(thread_key)?;
@@ -2565,6 +2570,16 @@ mod tests {
         assert!(last.text.contains("Continue where you left off") && last.text.contains("review all"), "{}", last.text);
         assert!(crate::personas::paused(thread).is_empty());
         assert!(captured.lock().await.iter().any(|r| r.contains("#qa done")));
+    }
+
+    #[test]
+    fn agent_lane_turn_marks_thread_busy() {
+        let key = "share/lane-busy-test";
+        assert!(!lanes_busy(key));
+        let talking = Speaking::start(key, "@qa");
+        assert!(lanes_busy(key), "a persona answering on its own lane must show as busy");
+        drop(talking);
+        assert!(!lanes_busy(key));
     }
 
     #[tokio::test]

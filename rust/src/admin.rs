@@ -1102,7 +1102,7 @@ async fn get_team_threads(State(state): State<Arc<AppState>>, Query(q): Query<Ar
     let gated: Vec<String> = crate::gate::pending().into_iter().map(|g| g.thread_key).collect();
     for t in state.transcripts.list(TEAM_PREFIX, archived) {
         let title = state.handler.store.get(&t.key).and_then(|r| r.title).unwrap_or(t.title);
-        let busy = state.handler.queue.busy(&t.key).await || crate::handler::debouncing(&t.key);
+        let busy = state.handler.queue.busy(&t.key).await || crate::handler::lanes_busy(&t.key);
         list.push(json!({
             "id": t.key.strip_prefix(TEAM_PREFIX).unwrap_or(&t.key),
             "title": title,

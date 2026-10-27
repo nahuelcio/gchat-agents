@@ -653,7 +653,7 @@ pub async fn team_thread(
             .as_ref()
             .and_then(|r| r.work_item_id.map(|id| serde_json::json!({ "id": id }))),
         changes,
-        busy: deps.queue.busy(&thread_key).await || crate::handler::debouncing(&thread_key),
+        busy: deps.queue.busy(&thread_key).await || crate::handler::lanes_busy(&thread_key),
         pending_approvals: crate::gate::pending().into_iter().filter(|g| g.thread_key == thread_key).map(|g| g.id).collect(),
         members: record.as_ref().and_then(|r| r.members.clone()),
         kicked: record.as_ref().and_then(|r| r.kicked.clone()).unwrap_or_default(),
