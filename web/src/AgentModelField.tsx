@@ -11,17 +11,21 @@ const EFFORTS = [
   { value: "max", label: "Max" },
 ];
 
+const DEFAULT_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 export function AgentModelField({
   model,
   effort,
   defaultModel,
   defaultEffort,
+  asDefault = false,
   onChange,
 }: {
   model?: string;
   effort?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  asDefault?: boolean;
   onChange: (next: { model?: string; effort?: string }) => void;
 }) {
   const [models, setModels] = useState<string[]>([]);
@@ -41,11 +45,14 @@ export function AgentModelField({
           <select
             value={provider}
             onChange={(e) => {
-              setProvider(e.target.value);
-              onChange({ model: undefined, effort });
+              const next = e.target.value;
+              setProvider(next);
+              const first = models.find((m) => providerOf(m) === next);
+              onChange({ model: asDefault ? first : undefined, effort: asDefault ? effort || defaultEffort || "high" : effort });
             }}
           >
-            <option value="">Same as default{defaultModel ? ` (${providerOf(defaultModel)})` : ""}</option>
+            {!asDefault && <option value="">Same as default{defaultModel ? ` (${providerOf(defaultModel)})` : ""}</option>}
+            {asDefault && !provider && <option value="">Pick a provider</option>}
             {providers.map((p) => (
               <option key={p} value={p}>{p}</option>
             ))}
@@ -70,13 +77,13 @@ export function AgentModelField({
       <div className="field">
         <span>Effort</span>
         <div className="chips" role="radiogroup" aria-label="Effort">
-          {EFFORTS.map((e) => (
+          {(asDefault ? DEFAULT_EFFORTS.map((value) => ({ value, label: value })) : EFFORTS).map((e) => (
             <button
-              key={e.value}
+              key={e.value || "default"}
               type="button"
               role="radio"
-              aria-checked={(effort ?? "") === e.value}
-              className={`chip${(effort ?? "") === e.value ? " on" : ""}`}
+              aria-checked={(asDefault ? effort || defaultEffort || "high" : effort ?? "") === e.value}
+              className={`chip${(asDefault ? effort || defaultEffort || "high" : effort ?? "") === e.value ? " on" : ""}`}
               onClick={() => onChange({ model, effort: e.value || undefined })}
             >
               {e.value ? e.label : `Default (${defaultEffort ?? "high"})`}

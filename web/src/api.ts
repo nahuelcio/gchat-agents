@@ -38,7 +38,7 @@ export interface Settings {
   hostSkills?: string[];
 }
 
-export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "context7", "agents", "google-drive"];
+export const DEFAULT_HOST_MCPS = ["coding", "switchboard", "engram", "context7", "agents", "google-drive", "pi-mcp-adapter"];
 
 export const DEFAULT_HOST_SKILLS = [
   "artifacts",
@@ -177,6 +177,8 @@ export interface HostDraft {
   prompt: string;
   mcps?: string[];
   skills?: string[];
+  model?: string;
+  effort?: string;
 }
 
 export interface HostDraftChatReply {

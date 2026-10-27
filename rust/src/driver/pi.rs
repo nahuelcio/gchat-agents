@@ -24,7 +24,7 @@ pub fn pi_model(model: &str) -> String {
 }
 
 pub const DEFAULT_HOST_MCPS: &[&str] =
-    &["coding", "switchboard", "engram", "context7", "agents", "google-drive"];
+    &["coding", "switchboard", "engram", "context7", "agents", "google-drive", "pi-mcp-adapter"];
 
 pub const DEFAULT_HOST_SKILLS: &[&str] = &[
     "artifacts",

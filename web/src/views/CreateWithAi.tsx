@@ -302,6 +302,8 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
         prompt,
         mcps: settings.hostMcps?.length ? settings.hostMcps : [...DEFAULT_HOST_MCPS],
         skills: settings.hostSkills?.length ? settings.hostSkills : [...DEFAULT_HOST_SKILLS],
+        model: settings.models.pi,
+        effort: settings.effort || "high",
       });
     }
     setReady(true);
@@ -430,6 +432,8 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                 prompt: reply.draft.prompt ?? hostDraft?.prompt ?? "",
                 mcps: reply.draft.mcps ?? hostDraft?.mcps ?? [],
                 skills: reply.draft.skills ?? hostDraft?.skills ?? [...DEFAULT_HOST_SKILLS],
+                model: hostDraft?.model ?? settings.models.pi,
+                effort: hostDraft?.effort ?? settings.effort,
               });
             }
           }),
@@ -478,8 +482,10 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
     const prompt = hostDraft?.prompt.trim() ?? "";
     const mcps = hostDraft?.mcps ?? [];
     const hostSkills = hostDraft?.skills?.length ? hostDraft.skills : [...DEFAULT_HOST_SKILLS];
-    void save({ hostPrompt: prompt || null, hostMcps: mcps, hostSkills }, "Host agent saved").then(() => {
-      notify("Host agent updated");
+    const model = hostDraft?.model?.trim();
+    const effort = hostDraft?.effort?.trim() || settings.effort || "high";
+    void save({ hostPrompt: prompt || null, hostMcps: mcps, hostSkills, models: { pi: model || undefined }, effort }, "Switchi saved").then(() => {
+      notify("Switchi updated");
       reset("agent");
     });
   };
@@ -847,11 +853,10 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                 <AgentBlob name={BOT_NAME} size={36} animate />
               </span>
               <button type="button" className="create-ai-item-main" onClick={() => startEditHost(false)}>
-                <span className="strong">Host (Pi)</span>
-                <span className="muted small">{hostTools.join(" · ")}</span>
+                <span className="strong">{BOT_NAME}</span>
+                <span className="muted small">{[settings.models.pi, settings.effort, ...hostTools].filter(Boolean).join(" · ")}</span>
               </button>
               <span className="create-ai-item-meta">
-                <span className="pill accent">locked</span>
                 <button className="btn small" type="button" onClick={() => startEditHost(false)}>
                   Edit
                 </button>
@@ -972,7 +977,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
               <div>
                 <h3>
                   {editingHost
-                    ? "Host"
+                    ? BOT_NAME
                     : editingAgent
                       ? `@${editingAgent}`
                       : editingSkill
@@ -1002,6 +1007,14 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                   saveHost();
                 }}
               >
+                <AgentModelField
+                  asDefault
+                  model={hostDraft.model}
+                  effort={hostDraft.effort}
+                  defaultModel={settings.models.pi}
+                  defaultEffort={settings.effort}
+                  onChange={(next) => setHostDraft({ ...hostDraft, ...next })}
+                />
                 <label className="field">
                   <span>System prompt</span>
                   <CodeEditor
@@ -1010,7 +1023,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                     language="markdown"
                     placeholder={HOST_DEFAULT_PROMPT}
                     minHeight={200}
-                    ariaLabel="Host system prompt"
+                    ariaLabel="Switchi system prompt"
                   />
                 </label>
                 {skillOpts.length > 0 && (
@@ -1033,7 +1046,7 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
                   <span className="muted small">None selected = all tools.</span>
                 </fieldset>
                 <div className="create-ai-actions-bar">
-                  <button className="btn primary">Save host</button>
+                  <button className="btn primary">Save</button>
                   <button type="button" className="btn" onClick={() => reset("agent")}>
                     Cancel
                   </button>

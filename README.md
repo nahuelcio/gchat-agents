@@ -87,7 +87,7 @@ Any other stdio MCP server can be added by hand or by pasting a Claude or Cursor
 
 ### pi.dev packages
 
-Browse, search and install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**, most popular first, or paste a GitHub repo such as `https://github.com/earendil-works/pi-claude-code`. Their tools become a `pi-<name>` group you can give to agents, bundled skills are added to your skills, and a registered model provider appears in the model picker as `provider/model`. TUI, commands and event hooks are ignored and listed as such. A Claude Code subscription provider uses the `claude` CLI login on this machine; it does not take an API key.
+Browse, search and install extensions from [pi.dev/packages](https://pi.dev/packages) in **Settings › Tools**, most popular first, or paste a GitHub repo. On first start Switchboard installs [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) and [pi-claude-code](https://github.com/earendil-works/pi-claude-code). The adapter's `mcp` tool is pointed at the MCP servers in Settings (it does not read `~/.pi` or Cursor configs). pi-claude-code uses the `claude` CLI already on this machine; sign in with `claude auth login`. Remove either package in Settings and it stays removed. Their tools become a `pi-<name>` group you can give to agents, bundled skills are added to your skills, and a registered model provider appears in the model picker as `provider/model`. TUI pieces are ignored and listed as such.
 
 ## Connect Google Chat
 

@@ -15,7 +15,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { toolCallStreamFixer } from "./tool-call-stream.ts";
 import { ensureClaudeCommand } from "./claude-bin.ts";
 import { effortFor } from "./effort.ts";
-import { PiPackages, toolContext } from "./pi-packages.ts";
+import { mcpConfigFromSettings, PiPackages, toolContext } from "./pi-packages.ts";
 import { insights, type VersionMark } from "./insights.ts";
 import { engramDigest } from "./engram.ts";
 import { repairDocs } from "./repair-docs.ts";
@@ -434,6 +434,24 @@ async function loadPiPackages() {
   return loaded;
 }
 
+function switchboardMcpConfig() {
+  try {
+    return mcpConfigFromSettings(readFileSync(join(dataDir, "config.json"), "utf8"));
+  } catch {
+    return mcpConfigFromSettings("{}");
+  }
+}
+
+let mcpStamp = "";
+async function refreshPiPackages(force = false) {
+  const config = switchboardMcpConfig();
+  const stamp = JSON.stringify(config.mcpServers);
+  piPackages.mcpConfig = config;
+  if (!force && stamp === mcpStamp && piPackages.loaded.length) return piPackages.loaded;
+  mcpStamp = stamp;
+  return loadPiPackages();
+}
+
 function providerModelIds(provider: { id: string; getModels?: () => readonly { id: string }[] }) {
   try {
     return (provider.getModels?.() ?? []).map((model) => `${provider.id}/${model.id}`);
@@ -479,7 +497,12 @@ registry.install(coding);
 registry.install(codemode);
 await loadMcp().catch((e) => console.error("MCP tools unavailable:", e instanceof Error ? e.message : e));
 ensureClaudeCommand();
-await loadPiPackages().catch((e) => console.error("pi packages unavailable:", e instanceof Error ? e.message : e));
+const packagesReady = (async () => {
+  if (process.env.PI_FAUX !== "1" && process.env.PI_DEFAULT_PACKAGES !== "off") {
+    await piPackages.ensureDefaults().catch((e) => console.error("default pi packages:", e instanceof Error ? e.message : e));
+  }
+  await refreshPiPackages(true);
+})().catch((e) => console.error("pi packages unavailable:", e instanceof Error ? e.message : e));
 
 if (existsSync(join(dataDir, "harness.sqlite"))) {
   for (const r of repairDocs(join(dataDir, "harness.sqlite"))) console.error("repaired harness document:", r);
@@ -810,6 +833,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/reload") {
       await loadMcp();
       applyCustomProviders(modelsRef);
+      await refreshPiPackages();
       return send(res, 200, {
         ok: true,
         tools: mcpTools.map((t) => t.tool.name),
@@ -822,6 +846,7 @@ const server = createServer(async (req, res) => {
       return send(res, 200, insights(join(dataDir, "harness.sqlite"), threads, labels ?? {}, days || 7, filter ?? {}, versions ?? []));
     }
     if (req.method === "GET" && req.url?.startsWith("/models")) {
+      await packagesReady;
       const refresh = new URL(req.url, "http://127.0.0.1").searchParams.get("refresh") === "1";
       if (refresh && packageProviderIds.size) {
         const result = await modelsRef.refresh({ providers: [...packageProviderIds], force: true });
@@ -830,20 +855,30 @@ const server = createServer(async (req, res) => {
       const listed = [...packageProviderIds].flatMap((id) => modelsRef.getModels(id).map((model) => `${model.provider}/${model.id}`));
       return send(res, 200, listed);
     }
-    if (req.method === "GET" && req.url === "/packages") return send(res, 200, packageSummary());
+    if (req.method === "GET" && req.url === "/packages") {
+      await packagesReady;
+      return send(res, 200, packageSummary());
+    }
     if (req.method === "POST" && req.url === "/packages/command") {
+      await packagesReady;
       const { name, args } = JSON.parse(await read(req)) as { name?: string; args?: string };
       const command = piPackages.loaded.flatMap((p) => p.commands).find((c) => c.name === name);
       if (!command) return send(res, 404, { error: "unknown command" });
       try {
-        const result = await command.handler(args ?? "", { cwd: process.cwd() });
-        const text = typeof result === "string" ? result : result == null ? "" : JSON.stringify(result);
+        let note = "";
+        const result = await command.handler(args ?? "", {
+          cwd: process.cwd(),
+          signal: AbortSignal.timeout(30_000),
+          ui: { notify: (text: string) => { note = text; }, select: async () => undefined, editor: async () => undefined },
+        });
+        const text = typeof result === "string" && result ? result : note || (result == null ? "" : JSON.stringify(result));
         return send(res, 200, { ok: true, text });
       } catch (e) {
         return send(res, 400, { error: e instanceof Error ? e.message : String(e) });
       }
     }
     if (req.method === "POST" && req.url === "/packages/install") {
+      await packagesReady;
       const { spec } = JSON.parse(await read(req)) as { spec?: string };
       if (!spec?.trim()) return send(res, 400, { error: "spec is required" });
       try {
@@ -855,6 +890,7 @@ const server = createServer(async (req, res) => {
       return send(res, 200, packageSummary());
     }
     if (req.method === "POST" && req.url === "/packages/remove") {
+      await packagesReady;
       const { name } = JSON.parse(await read(req)) as { name?: string };
       if (name) await piPackages.remove(name);
       await loadPiPackages();

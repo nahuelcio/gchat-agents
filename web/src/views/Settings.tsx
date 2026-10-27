@@ -397,12 +397,22 @@ function McpServersCard({ settings, save, setSettings, notify }: ViewProps) {
 
 const PI_TOPICS = ["web search", "browser", "mcp", "subagents", "git", "memory", "review", "docs", "test", "plan", "image"];
 
-const PI_RECOMMENDED = {
-  name: "@earendil-works/pi-claude-code",
-  spec: "https://github.com/earendil-works/pi-claude-code",
-  description: "Claude Pro or Max subscription as a model provider. Sign in with claude auth login; no API key.",
-  repository: "https://github.com/earendil-works/pi-claude-code",
-};
+const PI_DEFAULTS = [
+  {
+    name: "pi-mcp-adapter",
+    spec: "pi-mcp-adapter",
+    description: "One mcp tool for the MCP servers configured here. Installed on startup. Servers start when a call needs them.",
+    repository: "https://github.com/nicobailon/pi-mcp-adapter",
+    foot: "npm · MCP gateway",
+  },
+  {
+    name: "@earendil-works/pi-claude-code",
+    spec: "https://github.com/earendil-works/pi-claude-code",
+    description: "Claude Pro or Max subscription as a model provider. Installed on startup. Sign in with claude auth login; no API key.",
+    repository: "https://github.com/earendil-works/pi-claude-code",
+    foot: "GitHub · model provider",
+  },
+];
 
 function downloads(n?: number) {
   if (!n) return "";
@@ -474,27 +484,27 @@ function PiMarketplace({ installed, busy, onInstall }: { installed: Set<string>;
       {error && <p className="small mcp-error">{error}</p>}
       {items && <p className="muted small">{query ? `Results for “${query}”, ` : "From pi.dev, "}most popular first. Tools and model providers work here; packages that are just TUI themes or commands load with nothing to use.</p>}
       <div className="pi-grid">
-        {(!query || /claude/i.test(query)) && (
-          <article className="pi-item" aria-label="Recommended package">
+        {PI_DEFAULTS.filter((p) => !query || `${p.name} ${p.description}`.toLowerCase().includes(query.toLowerCase())).map((p) => (
+          <article key={p.name} className="pi-item" aria-label="Default package">
             <div className="pi-item-head">
-              <a className="strong" href={PI_RECOMMENDED.repository} target="_blank" rel="noreferrer">
-                {PI_RECOMMENDED.name}
+              <a className="strong" href={p.repository} target="_blank" rel="noreferrer">
+                {p.name}
               </a>
-              <span className="pill accent">Recommended</span>
+              <span className="pill accent">Default</span>
             </div>
-            <p className="small pi-desc">{PI_RECOMMENDED.description}</p>
+            <p className="small pi-desc">{p.description}</p>
             <div className="pi-item-foot">
-              <span className="muted small">GitHub · model provider</span>
-              <a className="small" href={PI_RECOMMENDED.repository} target="_blank" rel="noreferrer">
+              <span className="muted small">{p.foot}</span>
+              <a className="small" href={p.repository} target="_blank" rel="noreferrer">
                 source
               </a>
-              <button type="button" className={`btn small ${installed.has(PI_RECOMMENDED.name) ? "" : "primary"}`} disabled={installed.has(PI_RECOMMENDED.name) || busy !== null} onClick={() => onInstall(PI_RECOMMENDED.spec)}>
-                {installed.has(PI_RECOMMENDED.name) ? "Installed" : busy === PI_RECOMMENDED.spec ? "Installing…" : "Install"}
+              <button type="button" className={`btn small ${installed.has(p.name) ? "" : "primary"}`} disabled={installed.has(p.name) || busy !== null} onClick={() => onInstall(p.spec)}>
+                {installed.has(p.name) ? "Installed" : busy === p.spec ? "Installing…" : "Install"}
               </button>
             </div>
           </article>
-        )}
-        {items && [...items].sort((a, b) => Number(installed.has(b.name)) - Number(installed.has(a.name))).map((p) => {
+        ))}
+        {items && [...items].filter((p) => !PI_DEFAULTS.some((d) => d.name === p.name)).sort((a, b) => Number(installed.has(b.name)) - Number(installed.has(a.name))).map((p) => {
           const have = installed.has(p.name);
           return (
             <article key={p.name} className="pi-item">
@@ -556,7 +566,7 @@ function PiPackagesCard({ notify }: ViewProps) {
       <summary className="card-title">
         <h2>pi.dev packages</h2>
         <p className="muted small">
-          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a> or a GitHub repo. Their tools become a tool group (pi-…) you can give to agents, bundled skills land in your skills, a model provider shows up in the model picker, and commands show up in the chat / menu. UI hooks run when a turn finishes.
+          Install extensions from <a href="https://pi.dev/packages" target="_blank" rel="noreferrer">pi.dev/packages</a> or a GitHub repo. pi-mcp-adapter and pi-claude-code install on startup and follow the MCP servers and Claude Code login on this machine. Their tools become a tool group (pi-…) you can give to agents, bundled skills land in your skills, a model provider shows up in the model picker, and commands show up in the chat / menu. UI hooks run when a turn finishes. Remove a default here and it stays removed.
         </p>
       </summary>
       <form
@@ -576,7 +586,7 @@ function PiPackagesCard({ notify }: ViewProps) {
         <div key={p.name} className="persona-row">
           <div className="grow">
             <span className="strong">{p.name}</span> <code className="muted small">{p.group}</code>{" "}
-            {p.name === PI_RECOMMENDED.name && <span className="pill accent">Recommended</span>}{" "}
+            {PI_DEFAULTS.some((d) => d.name === p.name) && <span className="pill accent">Default</span>}{" "}
             {p.error ? (
               <span className="pill bad">failing</span>
             ) : (

@@ -48,12 +48,52 @@ export function dependencyAdded(before: readonly string[], deps: Record<string, 
 
 export const groupFor = (name: string) => `pi-${name.replace(/^@/, "").replace(/^pi-/, "").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
 
+export const DEFAULT_PI_PACKAGES = [
+  { name: "pi-mcp-adapter", spec: "pi-mcp-adapter" },
+  { name: "@earendil-works/pi-claude-code", spec: "https://github.com/earendil-works/pi-claude-code" },
+] as const;
+
 const HOST_PACKAGES = ["typebox", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"];
+const PROBE_ABSENT = new Set(["registerMcpServer", "getMcpServers", "unregisterMcpServer"]);
+
+export type McpServerConfig = { command?: string; args?: string[]; env?: Record<string, string> };
+export type SwitchboardMcpConfig = { mcpServers: Record<string, McpServerConfig>; settings?: { hostConfigDiscovery?: "off" } };
+
+const specKey = (spec: string) => spec.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+
+export function packageMatches(installed: { name: string; spec: string }, wanted: { name: string; spec: string }) {
+  return installed.name === wanted.name || specKey(installed.spec) === specKey(wanted.spec);
+}
+
+export function pendingDefaults(installed: readonly { name: string; spec: string }[], seeded: readonly string[], defaults: readonly { name: string; spec: string }[] = DEFAULT_PI_PACKAGES) {
+  const done = new Set(seeded);
+  return defaults.filter((d) => !done.has(d.name) && !installed.some((p) => packageMatches(p, d)));
+}
+
+export function mcpConfigFromSettings(raw: string): SwitchboardMcpConfig {
+  let parsed: { mcpServers?: { name?: string; command?: string; args?: string[]; env?: Record<string, string> }[]; mcp_servers?: { name?: string; command?: string; args?: string[]; env?: Record<string, string> }[] } = {};
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    parsed = {};
+  }
+  const mcpServers: Record<string, McpServerConfig> = {};
+  for (const server of [...(parsed.mcpServers ?? []), ...(parsed.mcp_servers ?? [])]) {
+    if (!server?.name || !server.command) continue;
+    mcpServers[server.name] = {
+      command: server.command,
+      ...(server.args?.length ? { args: server.args } : {}),
+      ...(server.env && Object.keys(server.env).length ? { env: server.env } : {}),
+    };
+  }
+  return { mcpServers, settings: { hostConfigDiscovery: "off" } };
+}
 
 export class PiPackages {
   readonly dir: string;
   readonly skillsDir: string;
   loaded: LoadedPackage[] = [];
+  mcpConfig?: SwitchboardMcpConfig;
 
   constructor(dataDir: string) {
     this.dir = resolve(dataDir, "pi-packages");
@@ -90,6 +130,38 @@ export class PiPackages {
     } catch {
       return {};
     }
+  }
+
+  private seededPath() {
+    return join(this.dir, "defaults.seeded");
+  }
+
+  private seeded(): Set<string> {
+    try {
+      return new Set(readFileSync(this.seededPath(), "utf8").split("\n").map((l) => l.trim()).filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  }
+
+  private writeSeeded(names: Set<string>) {
+    writeFileSync(this.seededPath(), [...names].sort().join("\n") + (names.size ? "\n" : ""));
+  }
+
+  async ensureDefaults() {
+    const seeded = this.seeded();
+    for (const d of pendingDefaults(this.saved().packages, [...seeded])) {
+      try {
+        await this.install(d.spec);
+        seeded.add(d.name);
+      } catch (e) {
+        console.error(`default pi package ${d.spec} not installed:`, e instanceof Error ? e.message : e);
+      }
+    }
+    for (const d of DEFAULT_PI_PACKAGES) {
+      if (this.saved().packages.some((p) => packageMatches(p, d))) seeded.add(d.name);
+    }
+    this.writeSeeded(seeded);
   }
 
   async install(spec: string) {
@@ -175,10 +247,15 @@ export class PiPackages {
       if (existsSync(join(installed, "node_modules"))) cpSync(join(installed, "node_modules"), join(root, "node_modules"), { recursive: true });
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       out.skills = this.copySkills(root, pkg);
+      const shim = this.shim(out);
       for (const file of this.entries(root, pkg)) {
-        const mod = (await import(pathToFileURL(file).href)) as { default?: (pi: unknown) => unknown };
+        const mod = (await import(pathToFileURL(file).href)) as { default?: (pi: unknown) => unknown; createMcpAdapter?: (opts: { config: SwitchboardMcpConfig }) => (pi: unknown) => unknown };
+        if (name === "pi-mcp-adapter" && this.mcpConfig && typeof mod.createMcpAdapter === "function") {
+          await mod.createMcpAdapter({ config: this.mcpConfig })(shim);
+          continue;
+        }
         if (typeof mod.default !== "function") continue;
-        await mod.default(this.shim(out));
+        await mod.default(shim);
       }
     } catch (e) {
       out.error = e instanceof Error ? e.message : String(e);
@@ -208,7 +285,7 @@ export class PiPackages {
       events: { on: () => () => {}, emit: () => {}, off: () => {} },
       getFlag: () => undefined,
       getActiveTools: () => out.tools.map((t) => t.name),
-      getAllTools: () => out.tools.map((t) => t.name),
+      getAllTools: () => out.tools.map((t) => ({ name: t.name })),
       getSettings: () => ({}),
       getCommands: () => [],
       getThinkingLevel: () => "off",
@@ -223,7 +300,13 @@ export class PiPackages {
           child.on("error", (e) => ok({ stdout, stderr: String(e), code: 1, killed: false }));
         }),
     };
-    return new Proxy(api, { get: (t, k) => (k in t ? t[k as string] : typeof k === "string" ? ignore(k) : undefined) });
+    return new Proxy(api, {
+      get: (t, k) => {
+        if (typeof k === "string" && PROBE_ABSENT.has(k)) return undefined;
+        if (k in t) return t[k as string];
+        return typeof k === "string" ? ignore(k) : undefined;
+      },
+    });
   }
 }
 
