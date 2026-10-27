@@ -34,6 +34,13 @@ function activeMention(text: string, caret: number): { start: number; query: str
   return { start: before.length - query.length - 1, query };
 }
 
+/** True when the typed @query already names a match exactly (case-insensitive). */
+function exactMention(query: string | undefined, matches: { name: string }[]): { name: string } | undefined {
+  if (!query) return undefined;
+  const q = query.toLowerCase();
+  return matches.find((p) => p.name.toLowerCase() === q);
+}
+
 const SLASH_COMMANDS = [
   { name: "help", description: "List commands" },
   { name: "compact", description: "Compact the session" },
@@ -479,9 +486,11 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }, [transport, loadThreads, personasProp]);
 
   useEffect(() => {
-    setMentionHi(0);
     setMentionDismissed(false);
-  }, [mention?.start, mention?.query]);
+    const q = mention?.query.toLowerCase() ?? "";
+    const exactIdx = mentionMatches.findIndex((p) => p.name.toLowerCase() === q);
+    setMentionHi(exactIdx >= 0 ? exactIdx : 0);
+  }, [mention?.start, mention?.query, mentionMatches]);
   useEffect(() => {
     setSlashHi(0);
     setSlashDismissed(false);
@@ -565,8 +574,19 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
       setMentionHi((i) => (i - 1 + mentionMatches.length) % mentionMatches.length);
       return;
     }
-    if (e.key === "Enter" || e.key === "Tab") {
+    if (e.key === "Tab") {
       e.preventDefault();
+      const pick = mentionMatches[mentionHi] ?? mentionMatches[0];
+      if (pick) insertMention(pick.name);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // Full @Name already typed → send so the agent is invoked; partial → autocomplete.
+      if (exactMention(mention?.query, mentionMatches)) {
+        void send();
+        return;
+      }
       const pick = mentionMatches[mentionHi] ?? mentionMatches[0];
       if (pick) insertMention(pick.name);
     }
@@ -1305,7 +1325,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         </div>
 
         {activeId && (
-          <div className="composer-wrap">
+          <div className={`composer-wrap${speechIn ? " has-mic" : ""}`}>
             {replyTo && (
               <div className="composer-reply">
                 <QuoteBlock quote={replyTo} />
@@ -1378,7 +1398,9 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
               className="composer"
               onSubmit={(e) => {
                 e.preventDefault();
-                if ((mentionOpen && mentionMatches.length) || (slashOpen && slashMatches.length)) return;
+                if (slashOpen && slashMatches.length) return;
+                // Partial @query still picking — don't send. Exact @Name → send and invoke.
+                if (mentionOpen && mentionMatches.length && !exactMention(mention?.query, mentionMatches)) return;
                 void send();
               }}
               onPaste={(e) => {
