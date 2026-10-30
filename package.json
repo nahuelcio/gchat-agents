@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "private": true,
   "description": "Google Chat bridge for local coding agents, with a local control plane",
   "type": "module",
