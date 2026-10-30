@@ -3,6 +3,7 @@ import { poll, whenChanged } from "../poll";
 import { agentTint, BOT_NAME } from "../agent-color";
 import { ago, api, duration, until, type Health, type Job, type JobTrigger, type ScheduleLogMessage } from "../api";
 import { hashQuery, type ViewProps } from "../App";
+import { AgentModelField } from "../AgentModelField";
 import { CodeEditor } from "../LazyCodeEditor";
 import { jobAlertsOn, setJobAlerts } from "../jobAlerts";
 
@@ -157,12 +158,13 @@ function promptSummary(prompt: string): string {
   return first.length > 140 ? `${first.slice(0, 140)}…` : first;
 }
 
-function JobFlow(props: { when: string; precheck?: string; needsApproval: boolean; prompt: string; space: string; repo?: string; webhook?: string }) {
+function JobFlow(props: { when: string; precheck?: string; needsApproval: boolean; prompt: string; space: string; repo?: string; webhook?: string; model?: string; effort?: string }) {
+  const how = [props.repo && `in ${props.repo}`, props.model && `on ${props.model}`, props.effort && `effort ${props.effort}`].filter(Boolean).join(", ");
   const steps = [
     props.when,
     ...(props.precheck ? [`Runs its precheck script (${props.precheck.split("\n").length} lines) — stops here if it prints nothing`] : []),
     ...(props.needsApproval ? ["Waits for your approval"] : []),
-    `Agent${props.repo ? ` in ${props.repo}` : ""}: ${promptSummary(props.prompt) || "—"}`,
+    `Agent${how ? ` ${how}` : ""}: ${promptSummary(props.prompt) || "—"}`,
     `Notifies the Notifications chat${props.space.startsWith("spaces/") ? ` and ${props.space}` : ""}`,
     ...(props.webhook ? [`Sends it to the webhook ${props.webhook.replace(/^https?:\/\//, "").split("/")[0]}`] : []),
   ];
@@ -198,6 +200,8 @@ export function Schedules({ settings, notify }: ViewProps) {
     precheck: "",
     webhook: "",
     notifyFailures: true,
+    model: undefined as string | undefined,
+    effort: undefined as string | undefined,
   });
   const [alerts, setAlerts] = useState(jobAlertsOn);
   const [logId, setLogId] = useState<string>();
@@ -264,6 +268,8 @@ export function Schedules({ settings, notify }: ViewProps) {
       ...(j.pattern && { pattern: j.pattern }),
       ...(j.precheck && { precheck: j.precheck }),
       ...(j.webhook && { webhook: j.webhook }),
+      ...(j.model && { model: j.model }),
+      ...(j.effort && { effort: j.effort }),
       notifyFailures: j.notifyFailures ?? true,
       needsApproval: j.needsApproval,
     }));
@@ -303,6 +309,8 @@ export function Schedules({ settings, notify }: ViewProps) {
           ...(j.pattern && { pattern: j.pattern }),
           ...(j.precheck && { precheck: j.precheck }),
           ...(j.webhook && { webhook: j.webhook }),
+          ...(j.model && { model: j.model }),
+          ...(j.effort && { effort: j.effort }),
           notifyFailures: j.notifyFailures ?? true,
         }));
         added++;
@@ -364,7 +372,7 @@ export function Schedules({ settings, notify }: ViewProps) {
           Import
           <input type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importJobs(f); }} />
         </label>
-        <button className="btn primary" onClick={() => { setEditing(undefined); if (!open) setForm((f) => ({ ...f, name: "", prompt: "" })); setOpen(!open); }}>
+        <button className="btn primary" onClick={() => { setEditing(undefined); if (!open) setForm((f) => ({ ...f, name: "", prompt: "", model: undefined, effort: undefined })); setOpen(!open); }}>
           New schedule
         </button>
         </div>
@@ -441,6 +449,8 @@ export function Schedules({ settings, notify }: ViewProps) {
                 notifyFailures: form.notifyFailures,
                 ...(form.space !== editing.space && { space: form.space }),
                 ...(cronChanged && { cron: form.cron }),
+                model: form.model ?? "",
+                effort: form.effort ?? "",
               }), "Job updated").then(() => {
                 setOpen(false);
                 setEditing(undefined);
@@ -459,11 +469,13 @@ export function Schedules({ settings, notify }: ViewProps) {
               ...(form.repo && { repo: form.repo }),
               ...(form.trigger === "command" && { command: form.command }),
               ...(form.trigger === "mention" && { pattern: form.pattern }),
+              ...(form.model && { model: form.model }),
+              ...(form.effort && { effort: form.effort }),
             };
             void act(api.addSchedule(job), "Job created").then(() => {
               setOpen(false);
               setAiDraft("");
-              setForm({ ...form, prompt: "" });
+              setForm({ ...form, prompt: "", model: undefined, effort: undefined });
             });
           }}
         >
@@ -658,6 +670,14 @@ export function Schedules({ settings, notify }: ViewProps) {
               {[editing.repo && `repo ${editing.repo}`, editing.needsApproval && "asks for approval"].filter(Boolean).join(" · ")} — delete and re-create to change these.
             </div>
           )}
+          <AgentModelField
+            key={editing?.id ?? "new"}
+            model={form.model}
+            effort={form.effort}
+            defaultModel={settings.models.pi}
+            defaultEffort={settings.effort}
+            onChange={({ model, effort }) => setForm((f) => ({ ...f, model, effort }))}
+          />
           <div className="field">
             <span>How it runs</span>
             <JobFlow
@@ -668,10 +688,12 @@ export function Schedules({ settings, notify }: ViewProps) {
               space={form.space}
               repo={editing ? editing.repo : form.repo || undefined}
               webhook={/^https?:\/\//.test(form.webhook) ? form.webhook : undefined}
+              model={form.model}
+              effort={form.effort}
             />
           </div>
           <div className="form-actions">
-            <button type="button" className="btn" onClick={() => { setEditing(undefined); setOpen(false); }}>
+            <button type="button" className="btn" onClick={() => { setEditing(undefined); setForm((f) => ({ ...f, model: undefined, effort: undefined })); setOpen(false); }}>
               Cancel
             </button>
             <button className="btn primary">{editing ? "Save changes" : "Create job"}</button>
@@ -723,6 +745,8 @@ export function Schedules({ settings, notify }: ViewProps) {
                     space={j.space}
                     repo={j.repo}
                     webhook={j.webhook}
+                    model={j.model}
+                    effort={j.effort}
                   />
                   {j.pending && (
                     <div className="approval">
@@ -750,7 +774,7 @@ export function Schedules({ settings, notify }: ViewProps) {
                     aria-label={`Edit ${j.name}`}
                     onClick={() => {
                       setEditing(j);
-                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, precheck: j.precheck ?? "", webhook: j.webhook ?? "", notifyFailures: j.notifyFailures ?? true, space: j.space, cron: j.cron || PRESETS[1]!.cron }));
+                      setForm((f) => ({ ...f, name: j.name, prompt: j.prompt, precheck: j.precheck ?? "", webhook: j.webhook ?? "", notifyFailures: j.notifyFailures ?? true, space: j.space, cron: j.cron || PRESETS[1]!.cron, model: j.model, effort: j.effort }));
                       setOpen(true);
                     }}
                   >

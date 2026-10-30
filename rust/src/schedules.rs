@@ -44,6 +44,10 @@ pub struct Job {
     #[serde(default = "yes")]
     pub notify_failures: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<PendingRun>,
 }
 
@@ -62,6 +66,10 @@ fn cron_trigger() -> String {
     "cron".into()
 }
 
+fn blank_to_none(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewJob {
     pub name: String,
@@ -77,6 +85,8 @@ pub struct NewJob {
     pub precheck: Option<String>,
     pub webhook: Option<String>,
     pub notify_failures: Option<bool>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 impl Job {
@@ -283,6 +293,8 @@ impl ScheduleStore {
             precheck: input.precheck.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
             webhook: input.webhook.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
             notify_failures: input.notify_failures.unwrap_or(true),
+            model: blank_to_none(input.model),
+            effort: blank_to_none(input.effort),
             pending: None,
         };
         job.next_run_at = job.next_after(now)?;
@@ -318,6 +330,12 @@ impl ScheduleStore {
             }
             if let Some(v) = patch.notify_failures {
                 next.notify_failures = v;
+            }
+            if let Some(v) = patch.model {
+                next.model = blank_to_none(Some(v));
+            }
+            if let Some(v) = patch.effort {
+                next.effort = blank_to_none(Some(v));
             }
             if let Some(v) = patch.precheck {
                 next.precheck = Some(v.trim().to_string()).filter(|c| !c.is_empty());
@@ -374,6 +392,8 @@ pub struct JobPatch {
     pub space: Option<String>,
     pub webhook: Option<String>,
     pub notify_failures: Option<bool>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 const PRECHECK_TIMEOUT_SECS: u64 = 300;
@@ -746,6 +766,8 @@ pub fn event_job(trigger: &EventTrigger, payload: &str) -> Job {
         precheck: None,
         webhook: None,
         notify_failures: false,
+        model: None,
+        effort: None,
         pending: None,
     }
 }
@@ -817,6 +839,7 @@ mod tests {
         let jobs: Vec<Job> = serde_json::from_str(raw).unwrap();
         assert_eq!(jobs[0].trigger, "cron");
         assert!(!jobs[0].needs_approval && jobs[0].pending.is_none());
+        assert!(jobs[0].model.is_none() && jobs[0].effort.is_none());
     }
 
     #[tokio::test]
@@ -882,6 +905,8 @@ mod tests {
                     precheck: None,
                     webhook: None,
                     notify_failures: None,
+                    model: None,
+                    effort: None,
                     name: "n".into(),
                     prompt: "p".into(),
                     cron: "0 9 * * *".into(),
@@ -896,5 +921,39 @@ mod tests {
         let again = ScheduleStore::open(&path);
         assert_eq!(again.all().len(), 1);
         assert_eq!(describe_cron("0 9 * * *"), "Every day at 09:00");
+    }
+
+    #[tokio::test]
+    async fn job_keeps_model_and_effort_until_cleared() {
+        let dir = tempdir().unwrap();
+        let store = ScheduleStore::open(dir.path().join("s.json"));
+        let now = Local::now();
+        let job = store
+            .add(
+                NewJob {
+                    name: "n".into(),
+                    prompt: "p".into(),
+                    cron: "0 9 * * *".into(),
+                    model: Some("  anthropic/claude  ".into()),
+                    effort: Some("max".into()),
+                    ..Default::default()
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.model.as_deref(), Some("anthropic/claude"));
+        assert_eq!(job.effort.as_deref(), Some("max"));
+        let cleared = store
+            .update(&job.id, JobPatch { model: Some(String::new()), effort: Some("  ".into()), ..Default::default() }, now)
+            .await
+            .unwrap();
+        assert!(cleared.model.is_none() && cleared.effort.is_none());
+        let kept = store
+            .update(&job.id, JobPatch { name: Some("renamed".into()), ..Default::default() }, now)
+            .await
+            .unwrap();
+        assert!(kept.model.is_none() && kept.effort.is_none());
+        assert_eq!(kept.name, "renamed");
     }
 }

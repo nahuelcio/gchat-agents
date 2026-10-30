@@ -342,6 +342,8 @@ struct ScheduleBody {
     precheck: Option<String>,
     webhook: Option<String>,
     notify_failures: Option<bool>,
+    model: Option<String>,
+    effort: Option<String>,
 }
 
 async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<ScheduleBody>) -> Response {
@@ -372,6 +374,8 @@ async fn post_schedules(State(state): State<Arc<AppState>>, Json(body): Json<Sch
                 precheck: body.precheck,
                 webhook: body.webhook,
                 notify_failures: body.notify_failures,
+                model: body.model,
+                effort: body.effort,
             },
             chrono::Local::now(),
         )
@@ -399,6 +403,8 @@ async fn post_schedules_update(State(state): State<Arc<AppState>>, Json(body): J
                 space: body.space,
                 webhook: body.webhook,
                 notify_failures: body.notify_failures,
+                model: body.model,
+                effort: body.effort,
                 ..Default::default()
             },
             chrono::Local::now(),

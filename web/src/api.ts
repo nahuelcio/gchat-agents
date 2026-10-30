@@ -264,6 +264,8 @@ export interface Job {
   precheck?: string;
   webhook?: string;
   notifyFailures?: boolean;
+  model?: string;
+  effort?: string;
   pending?: { id: string; at: string; reason: string } | null;
 }
 
@@ -547,7 +549,7 @@ export const api = {
   queryDocs: (project: string, action: string, query = "", path = "") => call<{ text: string }>("/api/docs/query", { project, action, query, path }),
   deleteDoc: (project: string, path: string) => call("/api/docs/delete", { project, path }),
   schedules: () => call<Job[]>("/api/schedules"),
-  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean }) =>
+  addSchedule: (job: { name?: string; prompt: string; cron: string; space: string; repo?: string; trigger?: JobTrigger; command?: string; pattern?: string; needsApproval?: boolean; precheck?: string; webhook?: string; notifyFailures?: boolean; model?: string; effort?: string }) =>
     call<Job[]>("/api/schedules", job),
   approvals: () => call<Approval[]>("/api/approvals"),
   piSearch: (q: string, from = 0) => call<{ total: number; items: PiListing[] }>(`/api/pi/search?q=${encodeURIComponent(q)}&from=${from}`),
@@ -572,7 +574,7 @@ export const api = {
   usage: (days = 30) => call<UsageReport>(`/api/usage?days=${days}`),
   decideApproval: (id: string, approve: boolean) => call<Job>("/api/approvals/decide", { id, approve }),
   suggestSchedule: (text: string) => call<{ name: string; prompt: string; cron: string; when: string }>("/api/schedules/suggest", { text }),
-  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string; space?: string; webhook?: string; notifyFailures?: boolean }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
+  updateSchedule: (id: string, patch: { enabled?: boolean; name?: string; prompt?: string; cron?: string; precheck?: string; space?: string; webhook?: string; notifyFailures?: boolean; model?: string; effort?: string }) => call<Job[]>("/api/schedules/update", { id, ...patch }),
   runSchedule: (id: string) => call<Job[]>("/api/schedules/run", { id }),
   deleteSchedule: (id: string) => call<Job[]>("/api/schedules/delete", { id }),
   scheduleLog: (id: string) => call<{ messages: ScheduleLogMessage[] }>(`/api/schedules/log?id=${encodeURIComponent(id)}`),

@@ -235,14 +235,14 @@ pub fn build_runtime(mut config: Config, echo: bool) -> Result<Runtime, String> 
                     session_ref: None,
                     text: job.prompt,
                     workdir,
-                    model: None,
+                    model: job.model.clone(),
                     agent: None,
                     driver: None,
                     answer_questions: false,
                     request_id: None,
                     mcps_override: None,
                     instructions_override: None,
-                    effort: None,
+                    effort: job.effort.clone(),
                 })
                 .await;
             let reply = match &result {
