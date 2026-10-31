@@ -8,6 +8,7 @@ import { shell } from "@codemirror/legacy-modes/mode/shell";
 import type { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
+import { useCallback, useMemo, useRef } from "react";
 
 export type EditorLang = "markdown" | "html" | "javascript" | "typescript" | "python" | "json" | "shell" | "text";
 
@@ -22,6 +23,14 @@ export function langFromPath(path: string): EditorLang {
   if (p.endsWith(".md") || p.endsWith(".markdown") || p.endsWith("skill.md")) return "markdown";
   return "text";
 }
+
+const BASIC_SETUP = {
+  lineNumbers: true,
+  foldGutter: true,
+  highlightActiveLine: true,
+  autocompletion: false,
+  searchKeymap: true,
+};
 
 function extensionsFor(lang: EditorLang): Extension[] {
   const wrap = EditorView.lineWrapping;
@@ -63,24 +72,29 @@ export function CodeEditor({
   ariaLabel?: string;
 }) {
   const lang = path ? langFromPath(path) : language;
+  // @uiw/react-codemirror reconfigures the editor whenever `extensions`,
+  // `basicSetup` or `onChange` change identity. A fresh callback each keystroke
+  // rebuilds the document and drops the caret at the end, which then scrolls
+  // the page down to that caret.
+  const extensions = useMemo(() => extensionsFor(lang), [lang]);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const handleChange = useCallback((next: string) => {
+    onChangeRef.current(next);
+  }, []);
+  const min = `${minHeight}px`;
   return (
-    <div className="code-editor" style={{ ["--code-min-h" as string]: `${minHeight}px` }} aria-label={ariaLabel}>
+    <div className="code-editor" style={{ ["--code-min-h" as string]: min }} aria-label={ariaLabel}>
       <CodeMirror
         value={value}
         height="auto"
-        minHeight={`${minHeight}px`}
+        minHeight={min}
         maxHeight="480px"
         theme="light"
-        basicSetup={{
-          lineNumbers: true,
-          foldGutter: true,
-          highlightActiveLine: true,
-          autocompletion: false,
-          searchKeymap: true,
-        }}
+        basicSetup={BASIC_SETUP}
         placeholder={placeholder}
-        extensions={extensionsFor(lang)}
-        onChange={onChange}
+        extensions={extensions}
+        onChange={handleChange}
       />
     </div>
   );

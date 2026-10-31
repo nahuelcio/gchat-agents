@@ -7,8 +7,8 @@ use crate::driver::types::{AgentDriver, AgentQuestion, AgentTurnInput};
 use crate::google::{ChatClient, PostMessageBody, PostThread};
 use crate::personas::{
     active_personas, add_hint, addressed_personas, asked_personas, consult_open, consult_topics,
-    dialogue_open, dialogue_pass, flow_move, host_preamble, is_pass, last_bot_agent, mentioned_personas,
-    mentions_bot, persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update,
+    dialogue_open, dialogue_pass, flow_move, hears_reply, host_preamble, is_pass, last_bot_agent, mentioned_personas,
+    mentions_bot, persona_preamble, request_stop, room_append, room_catch_up, room_prompt, roster_update, switchboard_update,
     strip_self_prefix, FlowMove, MAX_DIALOGUE_HOPS, MAX_HOPS, MAX_INTERJECTIONS,
 };
 pub use crate::personas::BOT_NAME;
@@ -919,14 +919,25 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 );
                 mark_seen(deps, &req.thread_key, &req.space_name, BOT_NAME, room_n).await;
             }
-            if !personas.is_empty() || record.as_ref().and_then(|r| r.host_roster.as_ref()).is_some() {
+            let prompt_now = options.host_prompt.clone().unwrap_or_default();
+            let prompt_now = prompt_now.trim().to_string();
+            let seen = record.as_ref().and_then(|r| r.host_prompt_seen.clone());
+            let deliver_switchboard = !personas.is_empty()
+                || record.as_ref().and_then(|r| r.host_roster.as_ref()).is_some()
+                || !prompt_now.is_empty()
+                || seen.is_some();
+            if deliver_switchboard {
                 let names: Vec<String> = personas.iter().map(|p| p.name.clone()).collect();
-                if record.as_ref().and_then(|r| r.session_ref.as_ref()).is_none() {
+                let fresh = record.as_ref().and_then(|r| r.session_ref.as_ref()).is_none();
+                if fresh {
                     text = format!("{}\n\n---\n\n{text}", host_preamble(&personas, options.host_prompt.as_deref()));
                 } else if let Some(before) = record.as_ref().and_then(|r| r.host_roster.as_deref()) {
                     text.push_str(&roster_update(Some(before), &personas));
-                } else {
+                    text.push_str(&switchboard_update(seen.as_deref(), &prompt_now));
+                } else if record.as_ref().and_then(|r| r.host_roster.as_ref()).is_none() && !personas.is_empty() {
                     text.push_str(&format!("\n\n{}", host_preamble(&personas, options.host_prompt.as_deref())));
+                } else {
+                    text.push_str(&switchboard_update(seen.as_deref(), &prompt_now));
                 }
                 let _ = deps
                     .store
@@ -935,6 +946,7 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                         &req.space_name,
                         SessionPatch {
                             host_roster: Some(Some(names)),
+                            host_prompt_seen: Some(Some(prompt_now)),
                             ..Default::default()
                         },
                     )
@@ -1057,7 +1069,11 @@ async fn agent_turn(req: &TurnRequest, deps: &HandlerDeps) -> Result<bool, Strin
                 )
                 .await;
             } else {
-                let asked: Vec<Persona> = asked_personas(&reply, &room_now).into_iter().cloned().collect();
+                let asked: Vec<Persona> = asked_personas(&reply, &room_now)
+                .into_iter()
+                .filter(|p| hears_reply(p, &reply))
+                .cloned()
+                .collect();
                 if !asked.is_empty() {
                     let _ = persona_round(
                         req,
@@ -1358,6 +1374,7 @@ async fn persona_round(
         } else {
             asked_personas(&reply, all)
                 .into_iter()
+                .filter(|p| hears_reply(p, &reply))
                 .filter(|p| {
                     p.name != item.persona.name
                         && item.asked_by.as_ref().map(|a| a.name.as_str()) != Some(p.name.as_str())
@@ -1618,6 +1635,12 @@ async fn run_command(req: &TurnRequest, deps: &HandlerDeps) -> Result<String, St
     }
 }
 
+pub async fn set_thread_title(deps: &HandlerDeps, thread_key: &str, title: &str) -> Result<String, String> {
+    let clean: String = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clean: String = clean.chars().take(200).collect();
+    thread_command(deps, thread_key, &format!("/topic {clean}")).await
+}
+
 async fn set_title(req: &TurnRequest, deps: &HandlerDeps, title: Option<String>) -> Result<(), String> {
     deps.store
         .update(&req.thread_key, &req.space_name, SessionPatch { title: Some(title), ..Default::default() })
@@ -1798,6 +1821,7 @@ async fn clear_command(args: &[&str], req: &TurnRequest, deps: &HandlerDeps) -> 
                 turns: Some(None),
                 pending_questions: Some(None),
                 host_roster: Some(None),
+                host_prompt_seen: Some(None),
                 ..Default::default()
             },
         )
@@ -2754,6 +2778,144 @@ mod tests {
         process_message(req("@qa look at this"), d).await.unwrap();
         let calls = driver.calls.lock().unwrap().clone();
         assert!(calls.iter().any(|c| c.thread_key.ends_with("#qa") && c.text.contains("@qa look at this")));
+    }
+
+    #[tokio::test]
+    async fn mentions_only_agent_ignores_a_group_question_from_the_host() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "qa" => "qa note".into(),
+            "dev" => "dev note".into(),
+            _ => "Can @qa and @dev weigh in?".into(),
+        }));
+        let d = room_deps(
+            dir.path(),
+            driver.clone(),
+            vec![persona("qa", None), persona("dev", None)],
+            Some(vec!["qa", "dev"]),
+        )
+        .await;
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "open question".into(),
+                sender: Some("Ana".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: Some(captured.clone()),
+                reply_sink: None,
+                request_id: None,
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| !c.thread_key.contains('#')), "host still answers");
+        assert!(!calls.iter().any(|c| c.thread_key.ends_with("#qa") || c.thread_key.ends_with("#dev")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn mentions_only_agent_answers_a_direct_handoff() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|agent, _| match agent {
+            "qa" => "qa note".into(),
+            _ => "@qa look at login.".into(),
+        }));
+        let d = room_deps(
+            dir.path(),
+            driver.clone(),
+            vec![persona("qa", None), persona("dev", None)],
+            Some(vec!["qa", "dev"]),
+        )
+        .await;
+        process_message(
+            TurnRequest {
+                thread_key: "team/t1".into(),
+                space_name: "spaces/team".into(),
+                text: "open question".into(),
+                sender: Some("Ana".into()),
+                reply_via_chat: false,
+                thread: None,
+                room_n: None,
+                captured_replies: None,
+                reply_sink: None,
+                request_id: None,
+            },
+            d,
+        )
+        .await
+        .unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.thread_key.ends_with("#qa")));
+        assert!(!calls.iter().any(|c| c.thread_key.ends_with("#dev")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn control_plane_host_prompt_reaches_the_next_switchboard_turn() {
+        let dir = tempdir().unwrap();
+        let driver = Arc::new(ScriptedDriver::new(|_, _| "ok".into()));
+        let prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_for_opts = prompt.clone();
+        let personas = vec![persona("qa", None)];
+        let d = Arc::new(HandlerDeps {
+            verifier: Arc::new(AcceptAllVerifier),
+            driver: driver.clone(),
+            chat: Arc::new(RecordingChat::new()),
+            store: Arc::new(SessionStore::open(dir.path().join("sessions.json"))),
+            queue: Arc::new(TurnQueue::new()),
+            config: std::sync::Mutex::new(HandlerConfig {
+                allowed_spaces: vec!["spaces/team".into()],
+                workdir: dir.path().to_string_lossy().to_string(),
+            }),
+            workspaces: None,
+            activity: None,
+            scheduler: std::sync::OnceLock::new(),
+            ledger: None,
+            options: Arc::new(move || {
+                let current = prompt_for_opts.lock().unwrap().clone();
+                TurnOptions {
+                    context_footer: ContextFooter::Never,
+                    auto_compact_at: 0,
+                    debounce_ms: 0,
+                    parallel_room: false,
+                    default_model: None,
+                    default_driver: crate::config::AgentDriverKind::Pi,
+                    default_models: Default::default(),
+                    personas: personas.clone(),
+                    host_prompt: if current.is_empty() { None } else { Some(current) },
+                }
+            }),
+            media: None,
+        });
+        let send = |text: &str| TurnRequest {
+            thread_key: "team/t1".into(),
+            space_name: "spaces/team".into(),
+            text: text.into(),
+            sender: Some("Ana".into()),
+            reply_via_chat: false,
+            thread: None,
+            room_n: None,
+            captured_replies: None,
+            reply_sink: None,
+            request_id: None,
+        };
+        process_message(send("hola"), d.clone()).await.unwrap();
+        *prompt.lock().unwrap() = "Prefer Spanish.".into();
+        process_message(send("otra"), d.clone()).await.unwrap();
+        let calls = driver.calls.lock().unwrap().clone();
+        let host: Vec<_> = calls.iter().filter(|c| !c.thread_key.contains('#')).collect();
+        assert_eq!(host.len(), 2, "{calls:?}");
+        assert!(!host[0].text.contains("[Switchboard update:"), "{}", host[0].text);
+        assert!(host[1].text.contains("[Switchboard update:"), "{}", host[1].text);
+        assert!(host[1].text.contains("Prefer Spanish."), "{}", host[1].text);
+        assert_eq!(
+            d.store.get("team/t1").and_then(|r| r.host_prompt_seen),
+            Some("Prefer Spanish.".into())
+        );
     }
 
     #[tokio::test]

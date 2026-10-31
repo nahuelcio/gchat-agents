@@ -97,11 +97,13 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/api/team/archive", post(post_team_archive))
         .route("/api/team/delete", post(post_team_delete))
         .route("/api/team/members", post(post_team_members))
+        .route("/api/team/title", post(post_team_title))
         .route("/api/media/{id}", get(get_media))
         .route("/api/artifacts", post(post_artifact))
         .route("/api/thread/repos", get(get_thread_repos))
         .route("/api/thread/status", get(get_thread_status))
         .route("/api/thread/invite", post(post_thread_invite).put(post_thread_invite))
+        .route("/api/thread/topic", post(post_thread_topic).put(post_thread_topic))
         .route("/api/thread/repo", post(post_thread_repo).put(post_thread_repo))
         .route("/api/thread/app", post(post_thread_app).put(post_thread_app))
         .route("/api/work-item", axum::routing::put(put_work_item))
@@ -1572,6 +1574,27 @@ async fn post_team_archive(State(state): State<Arc<AppState>>, Json(body): Json<
     Json(json!({ "ok": true })).into_response()
 }
 
+#[derive(Deserialize)]
+struct TitleBody {
+    thread: Option<String>,
+    title: Option<String>,
+}
+
+async fn post_team_title(State(state): State<Arc<AppState>>, Json(body): Json<TitleBody>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    if !thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let key = format!("{TEAM_PREFIX}{thread}");
+    match crate::handler::set_thread_title(&state.handler, &key, body.title.as_deref().unwrap_or("")).await {
+        Ok(message) => {
+            let title = state.handler.store.get(&key).and_then(|r| r.title);
+            Json(json!({ "ok": true, "message": message, "title": title })).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
 async fn post_team_delete(State(state): State<Arc<AppState>>, Json(body): Json<TeamThreadBody>) -> Response {
     let thread = body.thread.unwrap_or_default();
     if !thread_id_ok(&thread) {
@@ -1718,6 +1741,7 @@ struct ThreadAction {
     repo: Option<Value>,
     action: Option<String>,
     id: Option<Value>,
+    title: Option<String>,
 }
 
 fn thread_key_of(key: Option<String>) -> Option<String> {
@@ -1767,6 +1791,19 @@ async fn get_thread_status(State(state): State<Arc<AppState>>, Query(q): Query<T
         "repos": settings.repos.keys().collect::<Vec<_>>(),
     }))
     .into_response()
+}
+
+async fn post_thread_topic(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {
+    let Some(key) = thread_key_of(body.thread_key) else {
+        return missing_thread_key();
+    };
+    match crate::handler::set_thread_title(&state.handler, &key, body.title.as_deref().unwrap_or("")).await {
+        Ok(message) => {
+            let title = state.handler.store.get(&key).and_then(|r| r.title);
+            Json(json!({ "ok": true, "message": message, "title": title })).into_response()
+        }
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
 }
 
 async fn post_thread_invite(State(state): State<Arc<AppState>>, Json(body): Json<ThreadAction>) -> Response {

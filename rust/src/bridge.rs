@@ -25,6 +25,7 @@ pub fn bridge_router(state: Arc<AppState>) -> Router {
         .route("/play/api/summarize", post(play_summarize))
         .route("/play/api/feedback", post(play_feedback))
         .route("/play/api/stop", post(play_stop))
+        .route("/play/api/title", post(play_title))
         .route("/play/api/agents", get(play_agents))
         .route("/play/api/personas", get(play_personas))
         .route("/play/api/media/{id}", get(crate::admin::get_media))
@@ -159,6 +160,30 @@ async fn play_send(State(state): State<Arc<AppState>>, Extension(scope): Extensi
     .await
     {
         Ok(v) => Json(v).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PlayTitle {
+    thread: Option<String>,
+    title: Option<String>,
+}
+
+async fn play_title(State(state): State<Arc<AppState>>, Extension(scope): Extension<ShareAccess>, Json(body): Json<PlayTitle>) -> Response {
+    let thread = body.thread.unwrap_or_default();
+    if !allows(&scope, &thread) {
+        return forbidden();
+    }
+    if !crate::team::thread_id_ok(&thread) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad thread id" }))).into_response();
+    }
+    let key = format!("{}{thread}", crate::handler::TEAM_PREFIX);
+    match crate::handler::set_thread_title(&state.handler, &key, body.title.as_deref().unwrap_or("")).await {
+        Ok(message) => {
+            let title = state.handler.store.get(&key).and_then(|r| r.title);
+            Json(json!({ "ok": true, "message": message, "title": title })).into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response(),
     }
 }

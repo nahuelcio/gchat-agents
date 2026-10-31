@@ -82,9 +82,9 @@ function ensureCoding(mcps: string[]): string[] {
 }
 
 const HOST_DEFAULT_PROMPT = `You are ${BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.
-When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.
-Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly PASS. If it fits none of them, say so and suggest who should take it.
-If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again.`;
+Each agent line says how it listens. "only @mentions" does not see a message unless that message names them: write @Name only to hand them that specific job, and start the sentence with @Name. Do not @mention them to keep them in the loop, and never list every agent in one question. "every message" already reads the room and may answer on its own; do not @mention one unless you need a follow-up.
+If the message fits none of them, answer it yourself. If it clearly belongs to one of them and you have nothing to add, reply exactly PASS.
+If a person asks to add an agent back to the room, use the invite_agent tool. To rename this chat, use the set_topic tool. Removed agents cannot be called until someone adds them again.`;
 
 const INTRO = {
   host: "e.g. prefer Spanish, keep all tools, shorter replies…",
@@ -214,7 +214,8 @@ export function CreateWithAiCard({ settings, save, setSettings, notify }: ViewPr
   }, []);
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const thread = bottom.current?.parentElement;
+    if (thread) thread.scrollTop = thread.scrollHeight;
   }, [messages, busy]);
 
   useEffect(() => {

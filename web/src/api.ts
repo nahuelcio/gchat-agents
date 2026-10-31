@@ -771,6 +771,8 @@ export interface TeamTransport {
   watch?: (id: string, onView: (view: ThreadViewState) => void) => () => void;
   /** Owner only: add or remove a room member. */
   members?: (id: string, op: "add" | "remove", member: MemberChange) => Promise<{ members: RoomMember[] }>;
+  /** Rename the session. Empty title clears the custom name. */
+  rename?: (id: string, title: string) => Promise<{ title?: string | null }>;
   rewrite?: (id: string, name: string, text?: string) => Promise<unknown>;
   fork?: (id: string, index: number) => Promise<{ thread: string }>;
   exportMd?: (id: string) => Promise<{ markdown: string }>;
@@ -800,6 +802,7 @@ export const ownerTransport: TeamTransport = {
   stopAgents: (id, agent, pause) => call("/api/team/stop", { thread: id, agent, pause }),
   resumeAgent: (id, agent) => call("/api/team/resume", { thread: id, agent }),
   members: (id, op, member) => call("/api/team/members", { thread: id, op, member }),
+  rename: (id, title) => call("/api/team/title", { thread: id, title }),
   rewrite: (id, name, text) => call("/api/team/rewrite", { thread: id, name, ...(text != null ? { text, edit: true } : {}) }),
   fork: (id, index) => call("/api/team/fork", { thread: id, index }),
   exportMd: (id) => call(`/api/team/export?thread=${encodeURIComponent(id)}`),
@@ -832,6 +835,7 @@ export function guestTransport(token: string): TeamTransport {
     personas: () => req("/play/api/personas"),
     mediaUrl: (id) => `/play/api/media/${id}?access=${encodeURIComponent(token)}`,
     stopAgents: (id, agent, pause) => req("/play/api/stop", { thread: id, agent, pause }),
+    rename: (id, title) => req("/play/api/title", { thread: id, title }),
     rewrite: (id, name, text) => req("/play/api/rewrite", { thread: id, name, ...(text != null ? { text, edit: true } : {}) }),
     fork: (id, index) => req("/play/api/fork", { thread: id, index }),
     exportMd: (id) => req(`/play/api/export?thread=${encodeURIComponent(id)}`),

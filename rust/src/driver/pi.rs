@@ -112,6 +112,10 @@ impl PiDriver {
             }
         } else if let Some(store) = &self.settings {
             let host = host_persona(&store.get());
+            let prompt = host.prompt.trim();
+            if !prompt.is_empty() {
+                parts.push(prompt.to_string());
+            }
             let skills = crate::skills::instructions(&host);
             if !skills.is_empty() {
                 parts.push(skills);
@@ -290,5 +294,17 @@ mod tests {
         let hint = with.instructions("dm/1").unwrap();
         assert!(hint.contains("engram__mem_save"), "{hint}");
         assert!(hint.contains("proactively"), "{hint}");
+        let store = with.settings.clone().unwrap();
+        rt.block_on(async {
+            store
+                .update(crate::settings::SettingsPatch {
+                    host_prompt: Some("Prefer Spanish.".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        });
+        let prompt = with.instructions("dm/1").unwrap();
+        assert!(prompt.contains("Prefer Spanish."), "{prompt}");
     }
 }

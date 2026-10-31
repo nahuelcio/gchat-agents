@@ -112,6 +112,9 @@ pub struct SessionRecord {
     pub persona_usage: Option<HashMap<String, PersonaUsage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_roster: Option<Vec<String>>,
+    /// Host prompt last given to Switchi. Empty string means the default prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_prompt_seen: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persona_roster: Option<HashMap<String, Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,6 +239,7 @@ pub struct SessionPatch {
     pub persona_sessions: Option<Option<HashMap<String, String>>>,
     pub persona_usage: Option<Option<HashMap<String, PersonaUsage>>>,
     pub host_roster: Option<Option<Vec<String>>>,
+    pub host_prompt_seen: Option<Option<String>>,
     pub persona_roster: Option<Option<HashMap<String, Vec<String>>>>,
     pub room: Option<Option<Vec<RoomEntry>>>,
     pub room_seen: Option<Option<HashMap<String, u64>>>,
@@ -304,6 +308,9 @@ impl SessionPatch {
         }
         if let Some(v) = self.host_roster {
             record.host_roster = v;
+        }
+        if let Some(v) = self.host_prompt_seen {
+            record.host_prompt_seen = v;
         }
         if let Some(v) = self.persona_roster {
             record.persona_roster = v;

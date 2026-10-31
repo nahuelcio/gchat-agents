@@ -342,6 +342,11 @@ fn call_line(p: &Persona) -> String {
         Some(d) => format!("@{} — {d}", p.name),
         None => format!("@{}", p.name),
     };
+    if p.listen.as_deref() == Some("all") {
+        line.push_str(" (every message)");
+    } else {
+        line.push_str(" (only @mentions)");
+    }
     if p.respond_to.as_deref() == Some("people") {
         line.push_str(" (answers only people)");
     }
@@ -380,9 +385,16 @@ fn roster_preamble(p: &Persona, all: &[Persona]) -> String {
         "People address you with @{}. Messages from other agents start with their @name.",
         p.name
     ));
-    parts.push(format!(
-        "You see every message in the chat. When one is not for you and you have nothing useful to add, reply exactly {PASS}."
-    ));
+    if p.listen.as_deref() == Some("all") {
+        parts.push(format!(
+            "You see every message in the chat. When one is not for you and you have nothing useful to add, reply exactly {PASS}."
+        ));
+    } else {
+        parts.push(format!(
+            "You only speak when someone addresses @{}. If this turn does not start a sentence with @{}, reply exactly {PASS}.",
+            p.name, p.name
+        ));
+    }
     parts.push(QUOTE_HINT.to_string());
     parts.push(CODE_HINT.to_string());
     parts.join("\n\n")
@@ -398,7 +410,7 @@ pub fn persona_preamble(p: &Persona, all: &[Persona]) -> String {
     }
 }
 
-pub fn asked_personas<'a>(reply: &str, personas: &'a [Persona]) -> Vec<&'a Persona> {
+fn sentences(reply: &str) -> Vec<&str> {
     let mut sentences = Vec::new();
     let mut start = 0;
     for (i, c) in reply.char_indices() {
@@ -415,6 +427,27 @@ pub fn asked_personas<'a>(reply: &str, personas: &'a [Persona]) -> Vec<&'a Perso
     if !tail.is_empty() {
         sentences.push(tail);
     }
+    sentences
+}
+
+/// A sentence that starts with @name: a direct hand-off, not a name dropped into a group question.
+pub fn direct_call(reply: &str, name: &str) -> bool {
+    let needle = format!("@{}", name.to_lowercase());
+    sentences(reply).into_iter().any(|s| {
+        let cleaned = s.trim_start_matches(['*', '_', ' ', '\t']);
+        let lower = cleaned.to_lowercase();
+        lower.starts_with(&needle) && mention_boundary_ok(&lower, needle.len())
+    })
+}
+
+/// "Every message" may be pulled in by a question that merely names them.
+/// "Only @mentions" wakes only when a sentence is addressed to them (`@Name …`).
+pub fn hears_reply(p: &Persona, reply: &str) -> bool {
+    p.listen.as_deref() == Some("all") || direct_call(reply, &p.name)
+}
+
+pub fn asked_personas<'a>(reply: &str, personas: &'a [Persona]) -> Vec<&'a Persona> {
+    let sentences = sentences(reply);
     mentioned_personas(reply, personas)
         .into_iter()
         .filter(|p| {
@@ -493,9 +526,9 @@ pub fn add_hint(text: &str) -> bool {
 pub fn default_host_prompt() -> String {
     format!(
         "You are {BOT_NAME}, the host of this shared chat. People talk to you; other agents are members of the room too.\n\
-When a message is about one of them (even named without @), or their opinion would help, ask them: start a sentence with @name or end it with a question mark. Otherwise just answer yourself.\n\
-Every agent here reads every message and answers on its own when it fits. If the message clearly belongs to them and you have nothing to add, reply exactly {PASS}. If it fits none of them, say so and suggest who should take it.\n\
-If a person asks to add an agent back to the room, use the invite_agent tool. Removed agents cannot be called until someone adds them again."
+Each agent line says how it listens. \"only @mentions\" does not see a message unless that message names them: write @Name only to hand them that specific job, and start the sentence with @Name. Do not @mention them to keep them in the loop, and never list every agent in one question. \"every message\" already reads the room and may answer on its own; do not @mention one unless you need a follow-up.\n\
+If the message fits none of them, answer it yourself. If it clearly belongs to one of them and you have nothing to add, reply exactly {PASS}.\n\
+If a person asks to add an agent back to the room, use the invite_agent tool. To rename this chat, use the set_topic tool. Removed agents cannot be called until someone adds them again."
     )
 }
 
@@ -538,6 +571,19 @@ pub fn roster_update(before: Option<&[String]>, now: &[Persona]) -> String {
         String::new()
     } else {
         format!("\n\n[Room update: {}]", changes.join(", "))
+    }
+}
+
+/// Tells an existing Switchi session that the control plane changed the host instructions.
+/// `seen` is the prompt last delivered (`Some("")` = default). `None` means this session
+/// never recorded one: a custom prompt is delivered once, an empty one stays quiet.
+pub fn switchboard_update(seen: Option<&str>, now: &str) -> String {
+    let now = now.trim();
+    match seen {
+        Some(prev) if prev.trim() == now => String::new(),
+        None if now.is_empty() => String::new(),
+        _ if now.is_empty() => "\n\n[Switchboard update: the host instructions were cleared. Follow your default host behavior.]".into(),
+        _ => format!("\n\n[Switchboard update: the host instructions changed. Follow these from now on:\n{now}]"),
     }
 }
 
@@ -680,6 +726,31 @@ mod tests {
     }
 
     #[test]
+    fn switchboard_update_is_quiet_until_the_host_prompt_changes() {
+        assert_eq!(super::switchboard_update(None, ""), "");
+        assert_eq!(super::switchboard_update(Some(""), ""), "");
+        assert_eq!(super::switchboard_update(Some("Prefer Spanish."), "Prefer Spanish."), "");
+        let note = super::switchboard_update(Some(""), "Prefer Spanish.");
+        assert!(note.contains("[Switchboard update:"), "{note}");
+        assert!(note.contains("Prefer Spanish."), "{note}");
+        assert!(super::switchboard_update(Some("Prefer Spanish."), "").contains("cleared"));
+        assert!(super::switchboard_update(None, "Prefer Spanish.").contains("Prefer Spanish."));
+    }
+
+    #[test]
+    fn mentions_only_ignores_a_name_dropped_into_a_question() {
+        let qa = p("qa");
+        let mut dev = p("dev");
+        dev.listen = Some("all".into());
+        let reply = "Can @qa and @dev weigh in?";
+        assert!(!super::direct_call(reply, "qa"));
+        assert!(!super::hears_reply(&qa, reply));
+        assert!(super::hears_reply(&dev, reply));
+        assert!(super::direct_call("@qa look at login.", "qa"));
+        assert!(super::hears_reply(&qa, "@qa look at login."));
+    }
+
+    #[test]
     fn pass_detection() {
         assert!(is_pass("PASS"));
         assert!(is_pass("**PASS**"));
@@ -697,6 +768,7 @@ mod tests {
         me.delegates = vec!["ScenarioCritic".into()];
         let guide = super::invoke_guide(&me, &[me.clone(), critic, coverage]);
         assert!(guide.contains("@ScenarioCritic — a scenario would pass while the feature is broken"));
+        assert!(guide.contains("(only @mentions)"));
         assert!(!guide.contains("ScenarioCoverage"));
         assert!(guide.contains("Write @name only when that line matches"));
     }

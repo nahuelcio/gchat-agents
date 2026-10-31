@@ -47,6 +47,7 @@ pub fn engram_registered(settings: &crate::settings::Settings) -> bool {
 fn tools() -> Value {
     json!([
         {"name":"invite_agent","description":"Add an agent to the current chat room.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+        {"name":"set_topic","description":"Rename the current chat. Use it when someone asks to change the title, topic, or name of this conversation. Pass an empty title to clear it.","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}},
         {"name":"link_work_item","description":"Attach an Azure DevOps work item.","inputSchema":{"type":"object","properties":{"id":{"type":"number"}},"required":["id"]}},
         {"name":"clear_work_item","description":"Remove the work item link.","inputSchema":{"type":"object","properties":{}}},
         {"name":"list_repos","description":"List configured repos.","inputSchema":{"type":"object","properties":{}}},
@@ -297,6 +298,11 @@ pub async fn run_tool(
             )
             .await?;
             Ok(format!("@{agent} joined the room."))
+        }
+        "set_topic" => {
+            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let data = call_admin("/api/thread/topic", "POST", Some(json!({ "title": title })), true, &env, client).await?;
+            Ok(data.get("message").and_then(|v| v.as_str()).unwrap_or("Topic updated.").to_string())
         }
         "link_work_item" => {
             let id = args.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -932,6 +938,7 @@ mod tests {
         .await
         .unwrap();
         assert!(out.contains("invite_agent"));
+        assert!(out.contains("set_topic"));
         assert!(out.contains("list_repos"));
     }
 }

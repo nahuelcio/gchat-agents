@@ -315,6 +315,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [pending, setPending] = useState<{ file: File; url: string }[]>([]);
   const [watched, setWatched] = useState<{ running: boolean; log?: TurnLog; startedAt?: number }>();
   const [sending, setSending] = useState(false);
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const [listening, setListening] = useState(false);
   const [speakingId, setSpeakingId] = useState<number | null>(null);
@@ -323,6 +324,8 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   const [speechIn] = useState(canListen);
   const [speechOut] = useState(canSpeak);
   const bottom = useRef<HTMLDivElement>(null);
+  const pinScroll = useRef(true);
+  const skipTitleBlur = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLInputElement>(null);
   const dictation = useRef<LiveDictation | undefined>(undefined);
@@ -612,7 +615,7 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
           last = json;
           setState(s);
           if (transport.guest) {
-            const title = s.messages.find((m) => !m.bot)?.text.slice(0, 60);
+            const title = s.title?.trim() || s.messages.find((m) => !m.bot)?.text.slice(0, 60);
             if (title) setThreads((list) => list.map((t) => (t.id === activeId ? { ...t, title, count: s.messages.length } : t)));
           }
         },
@@ -630,9 +633,27 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
   }, [activeId, transport]);
 
   useEffect(() => {
+    setTitleDraft(null);
+    pinScroll.current = true;
     const list = bottom.current?.parentElement;
-    if (list) list.scrollTop = list.scrollHeight;
+    if (!list) return;
+    const onScroll = () => {
+      pinScroll.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+    };
+    list.addEventListener("scroll", onScroll, { passive: true });
+    return () => list.removeEventListener("scroll", onScroll);
+  }, [activeId]);
+
+  useEffect(() => {
+    const list = bottom.current?.parentElement;
+    if (list && (pinScroll.current || sending)) list.scrollTop = list.scrollHeight;
   }, [state?.messages.length, sending]);
+
+  useEffect(() => {
+    const title = state?.title?.trim();
+    if (!activeId || !title) return;
+    setThreads((list) => list.map((t) => (t.id === activeId && t.title !== title ? { ...t, title } : t)));
+  }, [activeId, state?.title]);
 
   useEffect(() => {
     setWatched(undefined);
@@ -701,6 +722,25 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
       notify(err instanceof Error ? err.message : String(err), true);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function saveTitle(next: string) {
+    if (!activeId || !transport.rename) {
+      setTitleDraft(null);
+      return;
+    }
+    const title = next.trim();
+    const current = (state?.title ?? threads.find((t) => t.id === activeId)?.title ?? "").trim();
+    setTitleDraft(null);
+    if (title === current) return;
+    try {
+      const saved = await transport.rename(activeId, title);
+      const shown = saved.title?.trim() || title;
+      setState((s) => (s ? { ...s, title: shown || null } : s));
+      setThreads((list) => list.map((t) => (t.id === activeId ? { ...t, title: shown || "Team chat" } : t)));
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), true);
     }
   }
 
@@ -1055,7 +1095,51 @@ export function TeamChat({ transport, initialThread, linkFor, notify, shareSlot,
         }}
       >
         <header className="play-head">
-          <span className="strong title">{state?.title ?? active?.title ?? "Team chat"}</span>
+          {titleDraft == null ? (
+            <button
+              type="button"
+              className="strong title title-edit"
+              title="Edit title"
+              disabled={!activeId || !transport.rename}
+              onClick={() => {
+                if (!activeId || !transport.rename) return;
+                setTitleDraft(state?.title ?? active?.title ?? "");
+              }}
+            >
+              {state?.title ?? active?.title ?? "Team chat"}
+            </button>
+          ) : (
+            <form
+              className="title-edit-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveTitle(titleDraft);
+              }}
+            >
+              <input
+                className="title-edit-input"
+                value={titleDraft}
+                aria-label="Session title"
+                autoFocus
+                maxLength={200}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={() => {
+                  if (skipTitleBlur.current) {
+                    skipTitleBlur.current = false;
+                    return;
+                  }
+                  void saveTitle(titleDraft);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    skipTitleBlur.current = true;
+                    setTitleDraft(null);
+                  }
+                }}
+              />
+            </form>
+          )}
           {state?.repo ? <code className="tag">{state.repo} · {state.branch}</code> : state?.title?.startsWith("switchboard/") && <code className="tag muted">branch kept</code>}
           {(state?.agent || state?.model) && <code className="tag">{[state.agent, state.model].filter(Boolean).join(" · ")}</code>}
           {activeId && agents.length > 1 && (

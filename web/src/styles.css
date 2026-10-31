@@ -227,6 +227,7 @@ a { color: var(--accent); }
 .content-narrow {
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
 }
 .content-narrow > * {
   max-width: 1120px;
@@ -922,9 +923,16 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
   width: 100%;
   max-width: 100%;
 }
+.code-editor .cm-editor {
+  max-height: 480px;
+}
 .code-editor .cm-scroller {
   font-family: inherit;
+  max-height: 480px;
+  height: auto !important;
   overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overflow-anchor: none;
 }
 .code-editor .cm-content { max-width: 100%; }
 .code-editor .cm-focused { outline: none; }
@@ -1405,6 +1413,10 @@ td { padding: 12px 16px; border-top: 2px solid var(--line-2); vertical-align: mi
 }
 .playground.standalone .play-chat { min-height: 0; }
 .play-head .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+button.title-edit { border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: text; padding: 2px 4px; border-radius: var(--radius-sm); }
+button.title-edit:hover, button.title-edit:focus-visible { background: var(--soft); outline: none; }
+.title-edit-form { min-width: 0; max-width: 50%; flex: 1 1 180px; }
+.title-edit-input { width: 100%; font: inherit; font-weight: 600; padding: 2px 6px; }
 .agent-pick select { padding: 4px 8px; font-size: 13px; }
 .linklike { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
 .pad { padding: 8px 12px; margin: 0; }
